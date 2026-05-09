@@ -1,5 +1,37 @@
 # ChangeLog
 
+## 2026-05-09 (later⁴) — Step 4: format/version BCH, mask, decoder-bits orchestrator
+
+### Added
+
+- [include/boofcv_qr/qr_code.hpp](include/boofcv_qr/qr_code.hpp) + [src/decoder/qr_code.cpp](src/decoder/qr_code.cpp) — partial port of `QrCode` struct: data fields (`version`, `error`, `mask`, `rawbits`, `corrected`, `message`, `byteEncoding`, `failureCause`, `mode`, `totalBitErrors`, `bitsTransposed`, `thresh*`), `ErrorLevel` enum, `BlockInfo`, `VersionInfo`, plus the populated `VERSION_INFO[1..40]` table verbatim from ISO 18004 Tables 9 + E.1. Geometry fields (`ppCorner` etc.) deferred to step 7+ because they need OpenCV.
+- [include/boofcv_qr/qr_code_polynomial_math.hpp](include/boofcv_qr/qr_code_polynomial_math.hpp) + [src/decoder/qr_code_polynomial_math.cpp](src/decoder/qr_code_polynomial_math.cpp) — BCH(15,5) format codec, BCH(18,6) version codec, brute-force minimum-Hamming-distance corrector. Hamming pop-count inlined to avoid pulling in BoofCV's descriptor module.
+- [include/boofcv_qr/qr_code_mask_pattern.hpp](include/boofcv_qr/qr_code_mask_pattern.hpp) + [src/decoder/qr_code_mask_pattern.cpp](src/decoder/qr_code_mask_pattern.cpp) — abstract `QrCodeMaskPattern` + 8 Meyer's-singleton subclasses (M000…M111) with the ISO 18004 §7.8.2 / Table 10 XOR formulas verbatim.
+- [include/boofcv_qr/qr_code_decoder_bits.hpp](include/boofcv_qr/qr_code_decoder_bits.hpp) + [src/decoder/qr_code_decoder_bits.cpp](src/decoder/qr_code_decoder_bits.cpp) — orchestrator. `applyErrorCorrection` (per-block RS), `decodeMessage` (mode-aware payload extraction), `decodeEci`, `checkPaddingBytes`, `alignToBytes`, `getLengthBits{Numeric,Alphanumeric,Bytes,Kanji}` (mirrors `QrCodeEncoder` length-field-bits-per-version table — duplicated locally so the encoder isn't pulled in).
+
+### Tests
+
+- [tests/unit/test_qr_code.cpp](tests/unit/test_qr_code.cpp) — VERSION_INFO block-arithmetic identity, alignment-coord monotonicity, totalDataBytes against ISO spec, totalModules, reset.
+- [tests/unit/test_qr_code_mask_pattern.cpp](tests/unit/test_qr_code_mask_pattern.cpp) — all 9 JUnit cases mirrored.
+- [tests/unit/test_qr_code_polynomial_math.cpp](tests/unit/test_qr_code_polynomial_math.cpp) — encode + check + DCH-correct for both BCH codes; mirrors all 7 JUnit cases.
+- [tests/unit/test_qr_code_decoder_bits.cpp](tests/unit/test_qr_code_decoder_bits.cpp) — `alignToBytes`, `checkPaddingBytes`, `decodeEci_IsoExample`, `getLengthBits` table. The encoder-dependent tests from upstream (`applyErrorCorrection` round-trip, `invalidEncoding`) are deferred until step 9 since `QrCodeEncoder` isn't part of the decoder-only deliverable.
+
+### Algorithm docs
+
+- [src/decoder/qr_code.md](src/decoder/qr_code.md), [qr_code_polynomial_math.md](src/decoder/qr_code_polynomial_math.md), [qr_code_mask_pattern.md](src/decoder/qr_code_mask_pattern.md), [qr_code_decoder_bits.md](src/decoder/qr_code_decoder_bits.md).
+
+### Regression
+
+- C++ unit tests: **111/111 pass** in 0.56 s.
+- Java baseline re-run: zero drift.
+
+### Deferred
+
+- `QrCode` geometry fields (`ppCorner`, `ppDown`, `ppRight`, `bounds`, `Hinv`, `alignment[]`) — need OpenCV's `cv::Point2d`/`Matx33d`. Land in step 6 when OpenCV is added.
+- `QrCodeEncoder` — not part of the decoder-only deliverable. Length-field-bits table replicated locally.
+- `QrCodeCodeWordLocations` — used by `LOCATION_BITS[]` in BoofCV; only needed by the sampler. Step 5.
+- Encoder-dependent tests (`applyErrorCorrection` round-trip, `invalidEncoding`) — pick up at step 9 with end-to-end harness.
+
 ## 2026-05-09 (later still still) — Step 3 of the port: codec bits
 
 ### Added

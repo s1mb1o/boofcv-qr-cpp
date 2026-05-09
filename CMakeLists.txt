@@ -28,6 +28,10 @@ add_library(boofcv_qr STATIC
     src/reed_solomon/reed_solomon.cpp
     src/decoder/eci_encoding.cpp
     src/decoder/qr_codec_bits_utils.cpp
+    src/decoder/qr_code.cpp
+    src/decoder/qr_code_mask_pattern.cpp
+    src/decoder/qr_code_polynomial_math.cpp
+    src/decoder/qr_code_decoder_bits.cpp
 )
 
 target_include_directories(boofcv_qr
@@ -67,6 +71,10 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_packed_bits.cpp
         tests/unit/test_eci_encoding.cpp
         tests/unit/test_qr_codec_bits_utils.cpp
+        tests/unit/test_qr_code.cpp
+        tests/unit/test_qr_code_mask_pattern.cpp
+        tests/unit/test_qr_code_polynomial_math.cpp
+        tests/unit/test_qr_code_decoder_bits.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE
