@@ -1,5 +1,21 @@
 # ChangeLog
 
+## 2026-05-09 (later⁶) — Step 6: BoofCV BLOCK_OTSU binarizer
+
+### Added
+
+- [include/boofcv_qr/threshold_block_otsu.hpp](include/boofcv_qr/threshold_block_otsu.hpp) + [src/binary/threshold_block_otsu.cpp](src/binary/threshold_block_otsu.cpp) — port of BoofCV's `ThresholdBlock` + `ThresholdBlockOtsu` + `ComputeOtsu` collapsed into one class. Tile the input into 40×40 blocks (configurable), compute 256-bin per-block histograms, then for each block compute Otsu's threshold from the 3×3 neighbourhood-summed histogram and apply it. Defaults match `ConfigQrCode.java`: `useOtsu2=true`, `scale=1.0`, `down=true`, `tuning=4`, `requestedBlockWidth=40`, `thresholdFromLocalBlocks=true`. Output follows CLAUDE.md "Binary image convention" (`CV_8UC1`, `0/1`, foreground = dark module). Algorithm doc: [src/binary/threshold_block_otsu.md](src/binary/threshold_block_otsu.md).
+- [tests/unit/test_threshold_block_otsu.cpp](tests/unit/test_threshold_block_otsu.cpp) — bimodal-image partition checks (no JUnit parity test exists in `boofcv-recognition`; BoofCV's tests live in `boofcv-ip/src/test/` which we don't pull in).
+
+### Regression
+
+- C++ unit tests: **124/124 pass** in 1.4 s.
+- Java baseline re-run: zero quality drift.
+
+### Why not `cv::adaptiveThreshold`
+
+CLAUDE.md is explicit: per-pixel adaptive threshold isn't equivalent. The differences are real (Gaussian-weighted vs block-tiled Otsu, no texture-penalty term, no 3×3-block smoothing). We port verbatim.
+
 ## 2026-05-09 (later⁵) — Step 5: perspective grid sampler
 
 ### Added (OpenCV becomes a CMake dep at this step)
