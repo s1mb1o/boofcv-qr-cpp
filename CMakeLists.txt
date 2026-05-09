@@ -18,6 +18,24 @@ endif()
 
 option(BOOFCV_QR_BUILD_TESTS "Build the GoogleTest unit-test suite" ON)
 
+# OpenCV becomes required at step 5 (perspective grid sampler) — provides
+# cv::Matx33d, cv::Mat, cv::getPerspectiveTransform, cv::findHomography,
+# cv::perspectiveTransform. Image I/O and contour processing come in
+# later steps.
+# Hint Homebrew's keg-only opencv4 path on macOS.
+if(APPLE AND NOT DEFINED OpenCV_DIR)
+    foreach(_p
+        /opt/homebrew/lib/cmake/opencv4
+        /opt/homebrew/Cellar/opencv/4.13.0_10/lib/cmake/opencv4
+        /usr/local/lib/cmake/opencv4)
+        if(EXISTS "${_p}")
+            set(OpenCV_DIR "${_p}" CACHE PATH "OpenCV cmake config dir")
+            break()
+        endif()
+    endforeach()
+endif()
+find_package(OpenCV REQUIRED COMPONENTS core calib3d imgproc)
+
 # ---------------------------------------------------------------------------
 # Core library — populated stage-by-stage as the port progresses (see
 # CLAUDE.md "Porting order"). Step 1 (Galois) only.
@@ -32,6 +50,9 @@ add_library(boofcv_qr STATIC
     src/decoder/qr_code_mask_pattern.cpp
     src/decoder/qr_code_polynomial_math.cpp
     src/decoder/qr_code_decoder_bits.cpp
+    src/sampler/qr_code_codeword_locations.cpp
+    src/sampler/qr_code_binary_grid_to_pixel.cpp
+    src/sampler/qr_code_binary_grid_reader.cpp
 )
 
 target_include_directories(boofcv_qr
@@ -40,6 +61,8 @@ target_include_directories(boofcv_qr
 )
 
 target_compile_features(boofcv_qr PUBLIC cxx_std_17)
+
+target_link_libraries(boofcv_qr PUBLIC opencv_core opencv_calib3d opencv_imgproc)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(boofcv_qr PRIVATE
@@ -75,6 +98,8 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_qr_code_mask_pattern.cpp
         tests/unit/test_qr_code_polynomial_math.cpp
         tests/unit/test_qr_code_decoder_bits.cpp
+        tests/unit/test_qr_code_codeword_locations.cpp
+        tests/unit/test_qr_code_binary_grid_to_pixel.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE

@@ -1,5 +1,31 @@
 # ChangeLog
 
+## 2026-05-09 (later⁵) — Step 5: perspective grid sampler
+
+### Added (OpenCV becomes a CMake dep at this step)
+
+- `find_package(OpenCV)` in [CMakeLists.txt](CMakeLists.txt). Required components: `core` (Mat, Matx33d, perspectiveTransform), `calib3d` (findHomography), `imgproc` (getPerspectiveTransform). Hint Homebrew's keg-only `OpenCV_DIR` automatically.
+- [include/boofcv_qr/qr_code_codeword_locations.hpp](include/boofcv_qr/qr_code_codeword_locations.hpp) + [src/sampler/qr_code_codeword_locations.cpp](src/sampler/qr_code_codeword_locations.cpp) — feature mask + zigzag bit-traversal sequence per QR version. Uses our own `Point2I`; no OpenCV dependency. (MicroQR variant intentionally not ported.)
+- [include/boofcv_qr/qr_code_binary_grid_to_pixel.hpp](include/boofcv_qr/qr_code_binary_grid_to_pixel.hpp) + [src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp) — grid↔pixel homography. 4-pt setup via `cv::getPerspectiveTransform`; N-pt via `cv::findHomography(..., 0)`; point transforms via `cv::perspectiveTransform` (no `cv::warpPerspective` per CLAUDE.md). Includes outlier rejection (`removeFeatureWithLargestError`) and adjust-with-features residual lookup.
+- [include/boofcv_qr/qr_code_binary_grid_reader.hpp](include/boofcv_qr/qr_code_binary_grid_reader.hpp) + [src/sampler/qr_code_binary_grid_reader.cpp](src/sampler/qr_code_binary_grid_reader.cpp) — pixel-level sampler. CV_8UC1 only (Java template specialised). Nearest-neighbour read with EXTENDED-border clamping (matches BoofCV's `nearestNeighborPixelS`); 5-sample majority-vote `readBit`.
+- [src/sampler/qr_code_codeword_locations.md](src/sampler/qr_code_codeword_locations.md), [qr_code_binary_grid_to_pixel.md](src/sampler/qr_code_binary_grid_to_pixel.md), [qr_code_binary_grid_reader.md](src/sampler/qr_code_binary_grid_reader.md) — algorithm docs.
+
+### Tests
+
+- [tests/unit/test_qr_code_codeword_locations.cpp](tests/unit/test_qr_code_codeword_locations.cpp) — JUnit-mirrored bit-order check for v2, full-fill for v2..40, data-bit capacity per ISO §6.5.1 for v1/2/3/.../40.
+- [tests/unit/test_qr_code_binary_grid_to_pixel.cpp](tests/unit/test_qr_code_binary_grid_to_pixel.cpp) — synthetic 4-corner setup (upstream tests use `QrCodeEncoder`+`QrCodeGeneratorImage` which we don't ship); round-trip imageToGrid∘gridToImage.
+
+### Regression
+
+- C++ unit tests: **119/119 pass** in 1.6 s.
+- Java baseline re-run: zero quality drift.
+
+### Deferred from upstream
+
+- `setTransformFromLinesSquare` (line-correspondence DLT used when only 3 finder polygons are reliable) — depends on inputs that step 7's finder-pattern detector produces. Lands then.
+- `setLensDistortion` on the grid reader — not needed for QR; consumers can compose `cv::undistortPoints` if they need wide-FOV support.
+- `QrCodeBinaryGridReader<T>` template parameter — committed to `CV_8UC1` per CLAUDE.md.
+
 ## 2026-05-09 (later⁴) — Step 4: format/version BCH, mask, decoder-bits orchestrator
 
 ### Added
