@@ -1,5 +1,11 @@
 # ChangeLog
 
+## 2026-05-09 (later⁷) — Pause point: detailed plan for steps 7–9
+
+[docs/plans/01_steps_7_through_9.md](docs/plans/01_steps_7_through_9.md) documents what's needed to finish the port. Steps 7 (polygon + finder pattern detection), 8 (alignment), and 9 (orchestrator) remain — sized at ~8–11 work-days, dominated by `PolylineSplitMerge.java` (907 LOC) and the polygon stack under `boofcv-feature/.../shapes/`. Codex-review carry-overs from earlier steps (RS strategy injection, per-block decode status, `setTransformFromLinesSquare`) are listed for the step-9 work since they need the orchestrator to exist first.
+
+Status at this commit: 6 of 9 steps complete with full BoofCV parity. End-to-end runtime pipeline isn't yet wired; binarize → polygon → finder → alignment → sampler is missing the polygon and finder layers. The Java-baseline harness and `tests/baseline.json` are unchanged and still gate the eventual C++ regression at ±2% per category.
+
 ## 2026-05-09 (later⁶) — Step 6: BoofCV BLOCK_OTSU binarizer
 
 ### Added
