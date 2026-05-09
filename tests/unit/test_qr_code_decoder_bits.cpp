@@ -64,6 +64,35 @@ TEST(QrCodeDecoderBits, decodeEci_IsoExample) {
     EXPECT_EQ(8, newBit);
 }
 
+// applyErrorCorrection on garbage input must fail gracefully, not UB.
+TEST(QrCodeDecoderBits, applyErrorCorrection_invalidVersion) {
+    QrCode qr;  // version = -1 by default
+    QrCodeDecoderBits alg(std::optional<std::string>(EciEncoding::UTF8),
+                          EciEncoding::BINARY);
+    EXPECT_FALSE(alg.applyErrorCorrection(qr));
+    EXPECT_EQ(boofcv_qr::Failure::VERSION, qr.failureCause);
+}
+
+TEST(QrCodeDecoderBits, applyErrorCorrection_truncatedRawbits) {
+    QrCode qr;
+    qr.version = 1;
+    qr.error = boofcv_qr::ErrorLevel::L;
+    qr.rawbits.assign(5, 0);  // way short of the 26 codewords v1 needs
+    QrCodeDecoderBits alg(std::optional<std::string>(EciEncoding::UTF8),
+                          EciEncoding::BINARY);
+    EXPECT_FALSE(alg.applyErrorCorrection(qr));
+    EXPECT_EQ(boofcv_qr::Failure::READING_BITS, qr.failureCause);
+}
+
+// ECI prefix of all 1s would shift by negative — guard against UB.
+TEST(QrCodeDecoderBits, decodeEci_allOnesPrefix) {
+    PackedBits8 bits;
+    bits.append(0xFF, 8, false);
+    QrCodeDecoderBits alg(std::optional<std::string>(EciEncoding::UTF8),
+                          EciEncoding::BINARY);
+    EXPECT_THROW(alg.decodeEci(bits, 0), std::runtime_error);
+}
+
 TEST(QrCodeDecoderBits, getLengthBits) {
     // numeric: 10 / 12 / 14
     EXPECT_EQ(10, QrCodeDecoderBits::getLengthBitsNumeric(1));

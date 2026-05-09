@@ -5,6 +5,7 @@
 #include "boofcv_qr/eci_encoding.hpp"
 
 #include <cstring>
+#include <stdexcept>
 #include <utility>
 
 namespace boofcv_qr {
@@ -15,8 +16,18 @@ QrCodeDecoderBits::QrCodeDecoderBits(std::optional<std::string> forceEncoding,
       rscodes(8, 0b100011101, 0) {}
 
 bool QrCodeDecoderBits::applyErrorCorrection(QrCode& qr) {
+    // Sanity-check inputs. A public stage shouldn't UB on garbage; mirror
+    // Java's failure path (which would NPE / IOOB and propagate up).
+    if (qr.version < 1 || qr.version > QrCode::MAX_VERSION) {
+        qr.failureCause = Failure::VERSION;
+        return false;
+    }
     const VersionInfo& info =
         QrCode::VERSION_INFO()[static_cast<std::size_t>(qr.version)];
+    if (static_cast<int32_t>(qr.rawbits.size()) < info.codewords) {
+        qr.failureCause = Failure::READING_BITS;
+        return false;
+    }
     auto blockIt = info.levels.find(qr.error);
     if (blockIt == info.levels.end()) return false;
     const BlockInfo& block = blockIt->second;
@@ -234,8 +245,15 @@ int32_t QrCodeDecoderBits::decodeEci(const PackedBits8& data,
     bitLocation += 8;
 
     int32_t numCodeWords = 1;
-    while ((firstByte & (1 << (7 - numCodeWords))) != 0) {
+    while (numCodeWords <= 7 &&
+           (firstByte & (1 << (7 - numCodeWords))) != 0) {
         numCodeWords++;
+    }
+    if (numCodeWords > 7) {
+        // All-ones first byte: malformed ECI prefix. Java would walk off
+        // the end into UB shifts; we throw and let decodeMessage's
+        // try/catch convert this into Failure::DECODING_MESSAGE.
+        throw std::runtime_error("ECI: malformed numCodeWords prefix");
     }
     // strip the bits that indicate the number of code words
     if (numCodeWords > 1) {
