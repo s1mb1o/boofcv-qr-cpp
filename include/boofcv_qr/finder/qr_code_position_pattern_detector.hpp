@@ -30,12 +30,11 @@ public:
         return positionPatterns_;
     }
 
-    // Mutable variant — used by step 9's orchestrator which sometimes
-    // needs to update node state in place. Mirrors the part-2 wrapper's
-    // friend-access pattern.
-    std::vector<PositionPatternNode>& getMutablePositionPatterns() {
-        return positionPatterns_;
-    }
+    // Step 9's orchestrator and the graph generator need to mutate
+    // node state in place. Granted via friend so the mutable accessor
+    // doesn't leak into the public API — same pattern as
+    // `DetectPolygonBinaryGrayRefine`'s friend grant for this class.
+    friend class QrCodePositionPatternGraphGenerator;
 
     // ---- TEST-VISIBLE — Java JUnit reaches into these directly.
 

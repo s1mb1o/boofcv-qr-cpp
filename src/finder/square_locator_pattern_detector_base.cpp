@@ -57,15 +57,13 @@ void SquareLocatorPatternDetectorBase::configureContourDetector(
     int32_t maxContourSize =
         static_cast<int32_t>(std::min(gray.cols, gray.rows) * maxContourFraction_);
 
-    // Java's `setMaxContour` on the binary contour finder is a perf
-    // optimisation (caps external contour length). We don't have a
-    // direct setter on `DetectPolygonFromContour` for an upper bound
-    // — only the lower bound (`setMinimumContour`). Logging the cap as
-    // a hint and skipping is harmless for correctness because the
-    // polyline corner finder already gates on `maxSideError`. // TODO(perf):
-    // wire setMaximumContour into DetectPolygonFromContour and apply
-    // here.
-    (void)maxContourSize;
+    // Wire the upper cap into DetectPolygonFromContour (mirrors Java's
+    // `BinaryContourFinder.setMaxContour(ConfigLength.fixed(maxContourSize))`).
+    // Necessary for correctness: huge black rectangles (page borders,
+    // UI chrome) otherwise produce phantom 4-corner polygon candidates
+    // that pass the QR finder's 1:1:3:1:1 gate.
+    squareDetector_->getDetector().setMaximumContour(
+        ConfigLength::fixed(static_cast<double>(maxContourSize)));
 
     // `setSaveInnerContour(false)` — internal contours aren't used
     // post-detection by the QR finder. Save the bookkeeping cost.

@@ -307,6 +307,16 @@ void DetectPolygonFromContour::configure(int32_t width, int32_t height) {
     this->minimumContourPixels_ = std::max(4, minimumContourPixels_);  // This is needed to avoid processing zero or other impossible
     this->minimumArea_ = std::pow(this->minimumContourPixels_ / 4.0, 2);
 
+    // Same `computeNegMaxI` behaviour for the upper cap — negative
+    // threshold means "no cap" (INT32_MAX). Mirrors Java's
+    // `BinaryContourFinder.setMaxContour(ConfigLength)` which feeds
+    // through `computeNegMaxI`.
+    double maxSize = maximumContour_.compute(std::sqrt(static_cast<double>(width) * height));
+    if (maxSize >= 0.0)
+        this->maximumContourPixels_ = static_cast<int32_t>(std::lround(maxSize));
+    else
+        this->maximumContourPixels_ = std::numeric_limits<int32_t>::max();
+
     if (helper_)
         helper_->setImageShape(width, height);
 }
@@ -387,7 +397,16 @@ void DetectPolygonFromContour::findCandidateShapes(const cv::Mat& /*gray*/) {
     for (std::size_t i = 0; i < contours_.size(); i++) {
         Contour& c = contours_[i];
 
-        if (static_cast<int32_t>(c.external.size()) < minimumContourPixels_)
+        // Mirror Java's BinaryContourFinder pre-filter: discard
+        // contours below the min OR above the max cap. The upper cap
+        // is correctness-relevant — without it, page borders / UI
+        // chrome blobs produce phantom 4-corner candidates that pass
+        // every downstream check including the QR finder's 1:1:3:1:1
+        // gate.
+        int32_t contourSize = static_cast<int32_t>(c.external.size());
+        if (contourSize < minimumContourPixels_)
+            continue;
+        if (contourSize > maximumContourPixels_)
             continue;
         float edgeInside = -1, edgeOutside = -1;
 

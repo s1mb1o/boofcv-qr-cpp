@@ -301,6 +301,10 @@ public:
     // Mirrors Java's `DogArray<Info>` mutation semantics. Demoted to
     // friend access so it doesn't appear in the public API surface.
     friend class DetectPolygonBinaryGrayRefine;
+    // Step 7c's finder-pattern detector walks the polygon list and
+    // calls `DetectPolygonBinaryGrayRefine::refine(info)` on each
+    // entry, which requires a non-const Info&.
+    friend class QrCodePositionPatternDetector;
 
     // Configuration — getters/setters mirroring Java's @Getter/@Setter.
     bool isOutputClockwiseUpY() const { return outputClockwiseUpY_; }
@@ -331,6 +335,21 @@ public:
     // overrides to `fixed(40)`.
     void setMinimumContour(const ConfigLength& v) { minimumContour_.setTo(v); }
     const ConfigLength& getMinimumContour() const { return minimumContour_; }
+
+    // Maximum-contour cap. Mirrors Java's
+    // `BinaryContourFinder.setMaxContour` — contours with more pixels
+    // than this cap are *discarded* before the polyline fitter sees
+    // them. Necessary for correctness on inputs containing huge black
+    // rectangles (page borders, UI chrome) that would otherwise
+    // produce phantom 4-corner polygon candidates passing every
+    // downstream check including the QR finder's 1:1:3:1:1 gate.
+    //
+    // Default `fixed(-1)` matches Java's `ConfigPolygonFromContour`
+    // default — interpreted as "no cap" (cap = INT_MAX). The QR
+    // finder pattern detector overrides this in
+    // `SquareLocatorPatternDetectorBase::configureContourDetector`.
+    void setMaximumContour(const ConfigLength& v) { maximumContour_.setTo(v); }
+    const ConfigLength& getMaximumContour() const { return maximumContour_; }
 
     // Profiling timers in milliseconds (exponential moving average).
     double getMilliContour() const { return milliContour_; }
@@ -400,6 +419,9 @@ private:
     std::shared_ptr<PolygonHelper> helper_;
 
     ConfigLength minimumContour_ = ConfigLength::relative(0.044, 4.0);
+    // `fixed(-1)` matches Java's default — interpreted as "no cap"
+    // (`computeNegMaxI` → INT32_MAX).
+    ConfigLength maximumContour_ = ConfigLength::fixed(-1.0);
 
     // See `setSaveInternalContours` doc above. Default `true` is a
     // deviation from BoofCV's `polygonContour()` factory.
@@ -409,6 +431,7 @@ private:
     int32_t imageWidth_ = 0;
     int32_t imageHeight_ = 0;
     int32_t minimumContourPixels_ = 0;
+    int32_t maximumContourPixels_ = std::numeric_limits<int32_t>::max();
     double minimumArea_ = 0.0;
 
     // Per-call working buffers (kept as members to avoid reallocations,

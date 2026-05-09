@@ -3,13 +3,17 @@
 //
 // Deviation: BoofCV uses ddogleg's `NearestNeighbor` over `KdTreeSquareNode`
 // for asymptotic O(n log n). We use brute-force O(n²) — for QR-relevant
-// inputs the candidate count is O(20), and `SquareGraph::checkConnect`'s
-// best-score-edge-wins semantics make the iteration order irrelevant.
-// Documented in src/finder/finder_pattern.md.
+// inputs the candidate count is O(20). To make the C++ traversal
+// deterministic on exact-distance ties (which can otherwise flip
+// `SquareGraph::checkConnect`'s best-edge-wins decision since it keeps
+// the FIRST equal-score edge), we sort candidates by squared distance
+// ascending before considerConnect. See src/finder/finder_pattern.md.
 
 #include "boofcv_qr/finder/qr_code_position_pattern_graph_generator.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace boofcv_qr {
@@ -28,7 +32,7 @@ double lineSegmentLength(const LineSegment2D& s) {
 
 }  // namespace
 
-void QrCodePositionPatternGraphGenerator::process(
+void QrCodePositionPatternGraphGenerator::processPtrList(
     const std::vector<PositionPatternNode*>& positionPatterns) {
     // Reset the graph and compute node information
     graph_.reset();
@@ -46,9 +50,20 @@ void QrCodePositionPatternGraphGenerator::process(
 
         // Connect all the finder patterns which are near by each other together in a graph.
         //
-        // OpenCV substitution per the algorithm doc: brute-force O(n²)
-        // over `KdTreeSquareNode::distance` (the same squared-centre
-        // metric BoofCV's KdTree uses). For QR-relevant inputs n ≈ 20.
+        // Substitution per the algorithm doc: brute-force O(n²) over
+        // `KdTreeSquareNode::distance` (the same squared-centre metric
+        // BoofCV's KdTree uses). For QR-relevant inputs n ≈ 20.
+        //
+        // To make the C++ traversal deterministic on exact-distance
+        // ties — `SquareGraph::checkConnect` keeps the FIRST equal-
+        // score edge, so different orders give different graphs on
+        // floating-point ties — collect (distSq, candidate) pairs and
+        // sort ascending by distSq before invoking considerConnect.
+        // Java's KdTree does not guarantee distance-sorted output, so
+        // on a tie our graph and Java's may differ; in practice ties
+        // are unmeasurable on real images.
+        std::vector<std::pair<double, PositionPatternNode*>> neighbours;
+        neighbours.reserve(positionPatterns.size());
         for (std::size_t j = 0; j < positionPatterns.size(); j++) {
             PositionPatternNode* candidate = positionPatterns[j];
             if (candidate == f) continue;  // skip over if it's the square that initiated the search
@@ -56,7 +71,15 @@ void QrCodePositionPatternGraphGenerator::process(
             double dSq = KdTreeSquareNode::distance(f, candidate);
             if (dSq > searchRadiusSq) continue;
 
-            considerConnect(f, candidate);
+            neighbours.emplace_back(dSq, candidate);
+        }
+        std::sort(neighbours.begin(), neighbours.end(),
+                   [](const std::pair<double, PositionPatternNode*>& a,
+                      const std::pair<double, PositionPatternNode*>& b) {
+                       return a.first < b.first;
+                   });
+        for (const auto& pr : neighbours) {
+            considerConnect(f, pr.second);
         }
     }
 }
@@ -66,7 +89,7 @@ void QrCodePositionPatternGraphGenerator::process(
     std::vector<PositionPatternNode*> ptrs;
     ptrs.reserve(positionPatterns.size());
     for (auto& pp : positionPatterns) ptrs.push_back(&pp);
-    process(ptrs);
+    processPtrList(ptrs);
 }
 
 void QrCodePositionPatternGraphGenerator::considerConnect(SquareNode* node0,

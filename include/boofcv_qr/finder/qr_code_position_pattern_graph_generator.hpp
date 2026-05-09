@@ -32,19 +32,14 @@ public:
     int32_t getMaxVersionQR() const { return maxVersionQR_; }
     void setMaxVersionQR(int32_t v) { maxVersionQR_ = v; }
 
-    // Connects the supplied position patterns into a graph. The list
-    // is non-owning — pointers refer to nodes in the caller's storage.
-    // Edges are owned by the internal `SquareGraph`.
+    // Connects the supplied position patterns into a graph. Per
+    // CLAUDE.md "Public API design" line 32, only the value-typed
+    // overload is in the public surface; the pointer-list variant is
+    // private since it imports BoofCV's raw-pointer DogArray idiom.
     //
-    // `positionPatterns` is a span of pointers because `SquareGraph`'s
-    // edge bookkeeping uses raw `SquareNode*`; the caller guarantees
-    // these stay alive for the duration of process().
-    void process(const std::vector<PositionPatternNode*>& positionPatterns);
-
-    // Convenience overload — turns a contiguous vector of
-    // PositionPatternNode into the pointer-list. The vector is the
-    // exact storage backing the pointers; the caller must not invalidate
-    // it during `process()`.
+    // The vector backs the pointers used internally by `SquareGraph`'s
+    // edge bookkeeping — the caller must not invalidate it during
+    // process() (e.g. by adding/removing entries). Reading is fine.
     void process(std::vector<PositionPatternNode>& positionPatterns);
 
     SquareGraph& getGraph() { return graph_; }
@@ -54,6 +49,12 @@ public:
     void considerConnect(SquareNode* node0, SquareNode* node1);
 
 private:
+    // Pointer-list internal overload. Used by the public
+    // `vector<PositionPatternNode>&` overload after wrapping each
+    // entry in a pointer. Kept private per CLAUDE.md "Public API
+    // design" — `vector<T*>` is a raw-pointer leak.
+    void processPtrList(const std::vector<PositionPatternNode*>& positionPatterns);
+
     int32_t maxVersionQR_ = 40;  // QrCode::MAX_VERSION
 
     SquareGraph graph_;

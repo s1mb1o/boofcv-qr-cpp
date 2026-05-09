@@ -30,10 +30,28 @@ BoofCV uses ddogleg's `NearestNeighbor` over `KdTreeSquareNode` for asymptotic O
 ### Deferred from upstream
 
 - **Lens distortion** integration in `setLensDistortion` — same deferral pattern as steps 5 / 7b. Stub no-op so the API surface is parity-clean.
-- **`maxContour` upper bound** on the binary contour finder — Java's `BinaryContourFinder.setMaxContour` is a perf optimisation. Our `DetectPolygonFromContour` only exposes `setMinimumContour`; the upper-bound config is logged as a `// TODO(perf)`. Correctness is unaffected because the polyline corner finder already gates on `maxSideError`.
 - **`VerbosePrint`** dropped throughout.
 - **`KdTree`-based NN** — replaced with brute-force O(n²); see "Brute-force NN deviation" above.
 - **`TestQrCodePositionPatternDetector.withLensDistortion`** — depends on the lens-distortion stub.
+
+### Codex review fixes
+
+- **Owned-types-only public API** (raised by codex on 7c, finding 1; three sub-fixes).
+  - 1a — `process(const std::vector<PositionPatternNode*>&)` (vector of raw pointers in a public signature) demoted to a private `processPtrList`. The public `process(std::vector<PositionPatternNode>&)` overload is the only public entry point now.
+  - 1b — `getMutablePolygonInfo()` on `DetectPolygonBinaryGrayRefine` removed; replaced with `friend class QrCodePositionPatternDetector;` on both `DetectPolygonBinaryGrayRefine` and `DetectPolygonFromContour` (the friend chain the QR detector traverses). Same pattern as the part-2 wrapper's friend grant.
+  - 1c — `getMutablePositionPatterns()` on `QrCodePositionPatternDetector` removed; replaced with `friend class QrCodePositionPatternGraphGenerator;`.
+- **Brute-force NN ordering** (finding 2). Codex correctly noted that `SquareGraph::checkConnect`'s "first equal-score edge wins" semantics make iteration order observable on floating-point ties. Fixed by sorting candidates by squared distance ascending before invoking `considerConnect`, making C++ traversal deterministic. Java's KdTree doesn't guarantee distance-sorted output, so on a tie our graph and Java's may differ; in practice ties are unmeasurable on real images. Documented in the algorithm doc and at the call site.
+- **`setMaximumContour` cutoff** (finding 3, parity-affecting). Replaced the `// TODO(perf)` no-op with a real `DetectPolygonFromContour::setMaximumContour(ConfigLength)` setter + `maximumContourPixels_` storage + filtering in `findCandidateShapes`. Wired from `SquareLocatorPatternDetectorBase::configureContourDetector` to set the cap to `ConfigLength::fixed(min(W,H) × maxContourFraction)`. Without this gate, page borders / UI chrome blobs produce phantom 4-corner candidates passing the QR finder's 1:1:3:1:1 check; Java drops them in `BinaryContourFinder.setMaxContour`. Default `fixed(-1)` matches Java's `ConfigPolygonFromContour.maximumContour` default (no cap).
+- **Test coverage gaps** (finding 4).
+  - 4a — Extended `QrCodePositionPatternDetector.easy` to feed the detected patterns into the graph generator and assert the L-shape's edge counts (centre = 2, outer = 1 each), mirroring `TestQrCodePositionPatternDetector.easy()` lines 52-68 of the Java suite.
+  - 4b — Added `distractor_solidBlackSquareIsRejected` (3 valid finders + 1 solid-black 50×50 distractor; only 3 finders survive) and `checkPositionPatternAppearance_negative_solidBlack` (direct unit test of the 1:1:3:1:1 gate on a solid-black square).
+  - 4c — Added `withLensDistortion` deferral comment in the test file's header explaining why the upstream parity test isn't ported (depends on `QrCodeDistortedChecks` + `LensDistortionNarrowFOV` + `SimulatePlanarWorld` infrastructure that this port hasn't ported).
+- **Codex finding #3 (length_ reset) was a misread** — reviewer traced through and cleared it. The per-`checkLine` zero-out of `length_` is semantically equivalent to Java's behaviour: Java's class-field state is implicitly zero on first use; we re-zero per call so the second call's RLE doesn't carry over from the first. No change needed.
+
+### Regression after fixes
+
+- C++ unit tests: **228/228 pass** (was 226/226).
+- Java baseline re-run: zero quality drift on `tests/baseline.json` (74.40 % aggregate, BoofCV 1.3.0 on 562 / 1258).
 
 ## 2026-05-10 (later²) — Step 7b (part 3): RefinePolygonToGray chain
 

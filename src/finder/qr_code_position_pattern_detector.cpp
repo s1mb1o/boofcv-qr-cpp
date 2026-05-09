@@ -26,7 +26,10 @@ void QrCodePositionPatternDetector::findLocatorPatternsFromSquares() {
 
 void QrCodePositionPatternDetector::squaresToPositionList() {
     positionPatterns_.clear();
-    auto& infoList = squareDetector_->getMutablePolygonInfo();
+    // Friend access on `DetectPolygonBinaryGrayRefine` — the wrapper's
+    // public surface is const, but we need to mutate per-Info in
+    // `refine(info)` calls below.
+    auto& infoList = squareDetector_->detector_->foundInfo_;
     for (std::size_t i = 0; i < infoList.size(); i++) {
         DetectPolygonFromContour::DetectedInfo& info = infoList[i];
 

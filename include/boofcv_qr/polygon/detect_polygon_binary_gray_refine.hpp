@@ -165,14 +165,12 @@ public:
         return detector_->getFoundInfo();
     }
 
-    // Mutable variant — used by step 7c's finder-pattern detector and
-    // step 9's orchestrator, both of which need to walk the polygon
-    // list and call `refine(info)` (which takes a non-const Info&).
-    // Java's `DogArray<Info>` is implicitly mutable; we expose it
-    // explicitly since `getPolygonInfo()` is const.
-    std::vector<DetectPolygonFromContour::DetectedInfo>& getMutablePolygonInfo() {
-        return detector_->foundInfo_;
-    }
+    // QrCodePositionPatternDetector walks the polygon list and calls
+    // `refine(info)` (which takes a non-const Info&). Granted access
+    // via friend so the mutable accessor doesn't leak into the public
+    // API surface — same pattern as DetectPolygonFromContour's friend
+    // grant from step 7b/3.
+    friend class QrCodePositionPatternDetector;
 
     DetectPolygonFromContour& getDetector() { return *detector_; }
     const DetectPolygonFromContour& getDetector() const { return *detector_; }
