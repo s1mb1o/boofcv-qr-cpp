@@ -165,6 +165,15 @@ public:
         return detector_->getFoundInfo();
     }
 
+    // Mutable variant — used by step 7c's finder-pattern detector and
+    // step 9's orchestrator, both of which need to walk the polygon
+    // list and call `refine(info)` (which takes a non-const Info&).
+    // Java's `DogArray<Info>` is implicitly mutable; we expose it
+    // explicitly since `getPolygonInfo()` is const.
+    std::vector<DetectPolygonFromContour::DetectedInfo>& getMutablePolygonInfo() {
+        return detector_->foundInfo_;
+    }
+
     DetectPolygonFromContour& getDetector() { return *detector_; }
     const DetectPolygonFromContour& getDetector() const { return *detector_; }
 

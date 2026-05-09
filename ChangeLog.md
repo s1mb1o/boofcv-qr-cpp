@@ -1,5 +1,40 @@
 # ChangeLog
 
+## 2026-05-10 (later³) — Step 7c: QR finder-pattern detector chain
+
+Three classes that turn the candidate-polygon list from `DetectPolygonBinaryGrayRefine` (step 7b/3) into a graph of QR finder patterns (the three "L"-corner squares with the 1:1:3:1:1 black/white ratio). Step 9's orchestrator (next) walks the graph to find triplets.
+
+### Added
+
+- [include/boofcv_qr/finder/square_locator_pattern_detector_base.hpp](include/boofcv_qr/finder/square_locator_pattern_detector_base.hpp) + [src/finder/square_locator_pattern_detector_base.cpp](src/finder/square_locator_pattern_detector_base.cpp) — verbatim port of `SquareLocatorPatternDetectorBase` (147 LOC). Abstract base wrapping `DetectPolygonBinaryGrayRefine`; configures the wrapped polygon detector for "convex 4-sided shape, output CCW image-coords (`outputClockwiseUpY=false`)", binds an EXTENDED-border bilinear gray sampler, runs `process()` and the abstract `findLocatorPatternsFromSquares()` hook. `MovingAverage` replaced with the inline exponential-decay update from steps 7b/2 and 7b/3.
+- [include/boofcv_qr/finder/qr_code_position_pattern_detector.hpp](include/boofcv_qr/finder/qr_code_position_pattern_detector.hpp) + [src/finder/qr_code_position_pattern_detector.cpp](src/finder/qr_code_position_pattern_detector.cpp) — verbatim port of `QrCodePositionPatternDetector` (219 LOC). Each candidate polygon is gated by `checkPositionPatternAppearance` — two perpendicular centerline scans (46 samples each) RLE'd against the 1:1:3:1:1 ratio with `[0.4×, 3×]` tolerance bands. Survivors get an extra refinement pass and a `PositionPatternNode` is materialised with `grayThreshold = (edgeInside + edgeOutside) / 2`. `UtilPoint2D_F64.mean(a, b, out)` and `UtilLine2D_F64.convert(LineSegment, LineParametric)` formulas inlined at the call site.
+- [include/boofcv_qr/finder/qr_code_position_pattern_graph_generator.hpp](include/boofcv_qr/finder/qr_code_position_pattern_graph_generator.hpp) + [src/finder/qr_code_position_pattern_graph_generator.cpp](src/finder/qr_code_position_pattern_graph_generator.cpp) — verbatim port of `QrCodePositionPatternGraphGenerator` (176 LOC). For each candidate finder pattern, search nearby finders within `1.2 × maximumQrCodeWidth` and pair them in `SquareGraph` if their geometry is consistent (sides intersect near midpoint within 0.35× tolerance, similar lengths within 25 %, almost-parallel within 45°, max smallest/largest ratio ≤ 1.3). Score is `lineLength × (1 + acuteAngle + sideOffset/2)`; `SquareGraph::checkConnect` keeps the best edge per side. Two `process()` overloads: `vector<PositionPatternNode*>` (used internally) and `vector<PositionPatternNode>&` (caller-friendly convenience).
+- [src/finder/finder_pattern.md](src/finder/finder_pattern.md) — combined algorithm doc covering the chain (base → 1:1:3:1:1 check → graph generation), the brute-force NN deviation, all tunables with QR defaults, failure modes, integration points for step 9.
+- Added `getMutablePolygonInfo()` on `DetectPolygonBinaryGrayRefine` so the QR finder-pattern detector can walk the wrapper's polygon list and call `refine(info)` (which takes a non-const `Info&`). Same pattern as the friend access added in step 7b/3 — explicit accessor since `getPolygonInfo()` is const.
+
+### Brute-force NN deviation
+
+BoofCV uses ddogleg's `NearestNeighbor` over `KdTreeSquareNode` for asymptotic O(n log n) finder-pattern lookup. We use brute-force O(n²) — for QR-relevant inputs the candidate count is O(20) finder squares per image (typically much less), making brute-force ~400 distance evaluations per image (well under 1 ms). **Reachability of the same set of triplets is preserved**: both algorithms enumerate the same neighbour set within the search radius; only the iteration order can differ. `SquareGraph::checkConnect` is order-insensitive (best-score edge wins per node side regardless of insertion order). Documented in the algorithm doc.
+
+### Tests
+
+- [tests/unit/test_square_locator_pattern_detector_base.cpp](tests/unit/test_square_locator_pattern_detector_base.cpp) — 4 cases: ctor configures the wrapped detector (convex / output-CCW / sides=4..4); process invokes the hook and disables internal contours; `maxContourFraction` roundtrip; `process` rejects non-CV_8UC1.
+- [tests/unit/test_qr_code_position_pattern_detector.cpp](tests/unit/test_qr_code_position_pattern_detector.cpp) — mirrors `TestQrCodePositionPatternDetector.java`. `easy` (3 finder patterns in an L), `checkPositionPatternAppearance_positive`, `checkPositionPatternAppearance_negative_filledStone`, `positionSquareIntensityCheck`. The Java AWT `Graphics2D.fillRect` rendering is replaced by `cv::rectangle`; same end-to-end coverage. The `withLensDistortion` Java test is deferred (it depends on the lens-distortion stub).
+- [tests/unit/test_qr_code_position_pattern_graph_generator.cpp](tests/unit/test_qr_code_position_pattern_graph_generator.cpp) — mirrors `TestQrCodePositionPatternGraphGenerator.java`. `considerConnect_positive`, `considerConnect_negative_rotated` (45°-rotated neighbour rejected). Plus `process_LShapedTriple` (an L of 3 finders has the centre-corner connected to both outer corners, asserts the brute-force NN finds them) and `maxVersionRoundtrip`.
+
+### Regression
+
+- C++ unit tests: **226/226 pass** in 2.5 s (was 214/214; 12 new cases).
+- Java baseline re-run: zero quality drift on `tests/baseline.json` (74.40 % aggregate, BoofCV 1.3.0 on 562 / 1258).
+
+### Deferred from upstream
+
+- **Lens distortion** integration in `setLensDistortion` — same deferral pattern as steps 5 / 7b. Stub no-op so the API surface is parity-clean.
+- **`maxContour` upper bound** on the binary contour finder — Java's `BinaryContourFinder.setMaxContour` is a perf optimisation. Our `DetectPolygonFromContour` only exposes `setMinimumContour`; the upper-bound config is logged as a `// TODO(perf)`. Correctness is unaffected because the polyline corner finder already gates on `maxSideError`.
+- **`VerbosePrint`** dropped throughout.
+- **`KdTree`-based NN** — replaced with brute-force O(n²); see "Brute-force NN deviation" above.
+- **`TestQrCodePositionPatternDetector.withLensDistortion`** — depends on the lens-distortion stub.
+
 ## 2026-05-10 (later²) — Step 7b (part 3): RefinePolygonToGray chain
 
 Subpixel polygon refinement. Wraps the contour stage from part 2 with an EM-style line-refit that snaps each polygon side to the underlying gray-image edge using line-integral-derivative weights, plus an edge-intensity quality gate. Per CLAUDE.md "Forbidden moves" line 142, this stage is mandatory verbatim — no `cv::cornerSubPix` substitute.
