@@ -4,6 +4,7 @@
 #include "boofcv_qr/squares/square_edge.hpp"
 
 #include <limits>
+#include <stdexcept>
 
 namespace boofcv_qr {
 
@@ -36,6 +37,29 @@ void SquareNode::reset() {
     for (std::size_t i = 0; i < edges.size(); i++) {
         edges[i] = nullptr;
         sideLengths[i] = 0.0;
+    }
+}
+
+void SquareNode::updateArrayLength() {
+    if (edges.size() != square.size()) {
+        edges.assign(square.size(), nullptr);
+        sideLengths.assign(square.size(), 0.0);
+    }
+}
+
+double KdTreeSquareNode::distance(const SquareNode* a, const SquareNode* b) {
+    double dx = a->center.x - b->center.x;
+    double dy = a->center.y - b->center.y;
+    return dx * dx + dy * dy;
+}
+
+double KdTreeSquareNode::valueAt(const SquareNode* node, int32_t index) {
+    switch (index) {
+        case 0: return node->center.x;
+        case 1: return node->center.y;
+        default:
+            throw std::invalid_argument(
+                "KdTreeSquareNode: index out of bounds");
     }
 }
 

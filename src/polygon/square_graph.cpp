@@ -27,8 +27,11 @@ bool lineLineIntersection(const cv::Point2d& a0, const cv::Point2d& a1,
     double dxB = b1.x - b0.x;
     double dyB = b1.y - b0.y;
 
+    // Mirrors georegression Intersection2D_F64 — exact-zero check, no
+    // tolerance. Near-parallel-but-valid intersections still go through
+    // (the caller deals with extreme magnitudes).
     double denom = dxA * dyB - dyA * dxB;
-    if (std::fabs(denom) < 1e-12) return false;  // parallel / coincident
+    if (denom == 0.0) return false;
 
     double t = ((b0.x - a0.x) * dyB - (b0.y - a0.y) * dxB) / denom;
     out.x = a0.x + t * dxA;
@@ -48,7 +51,7 @@ bool segmentSegmentIntersection(const LineSegment2D& s1,
     double x4 = s2.b.x, y4 = s2.b.y;
 
     double denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-    if (std::fabs(denom) < 1e-12) return false;
+    if (denom == 0.0) return false;  // exact-zero, mirrors georegression
 
     double t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
     double u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
@@ -69,12 +72,19 @@ double angleDist(double a, double b) {
 
 // Mirror of `Vector2D_F64.acute(Vector2D_F64)` — the unsigned angle
 // between two vectors in [0, pi].
+//
+// Java behaviour for zero vectors: divides by zero norm → NaN
+// propagates out. We deliberately preserve that here: returning 0.0
+// for the degenerate case would cause `almostParallel` to treat a
+// zero-length side as parallel to anything, which is *less* useful
+// than NaN propagation (NaN comparisons are all false, so the
+// `selected > parallelThreshold` check in almostParallel falls
+// through to the "still parallel" path — same as Java).
 double vectorAcute(double ax, double ay, double bx, double by) {
     double dot = ax * bx + ay * by;
     double na = std::sqrt(ax * ax + ay * ay);
     double nb = std::sqrt(bx * bx + by * by);
-    if (na == 0.0 || nb == 0.0) return 0.0;
-    double c = dot / (na * nb);
+    double c = dot / (na * nb);  // NaN on zero-vector input, by design
     if (c > 1.0) c = 1.0;
     if (c < -1.0) c = -1.0;
     return std::acos(c);
@@ -177,7 +187,12 @@ void SquareGraph::connect(SquareNode* a, int32_t indexA, SquareNode* b,
 bool SquareGraph::almostParallel(const SquareNode& a, int32_t sideA,
                                  const SquareNode& b, int32_t sideB) const {
     double selected = acuteAngle(a, sideA, b, sideB);
-    return selected <= parallelThreshold;
+    // Mirrors Java: `if (selected > threshold) return false; return true;`.
+    // The `>` comparison returns false on NaN, so a degenerate side falls
+    // through to the parallel-true branch — matching upstream behaviour.
+    if (selected > parallelThreshold)
+        return false;
+    return true;
 }
 
 double SquareGraph::acuteAngle(const SquareNode& a, int32_t sideA,
