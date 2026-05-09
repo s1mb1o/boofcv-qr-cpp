@@ -1,5 +1,33 @@
 # ChangeLog
 
+## 2026-05-10 — Step 7b (part 1): PolylineSplitMerge + MaximumLineDistance
+
+Largest single file in the port at 907 LOC of Java source (excluding the inner `Corner`, `CandidatePolyline`, `SplitResults`, `ErrorValue` types). This is the corner-finding algorithm that turns a contour pixel sequence into a polyline with subpixel-quality corners — the unique-to-BoofCV stage that CLAUDE.md "OpenCV substitution policy" forbids replacing with `cv::approxPolyDP`.
+
+### Added
+
+- [include/boofcv_qr/polyline/polyline_split_merge.hpp](include/boofcv_qr/polyline/polyline_split_merge.hpp) + [src/polygon/polyline_split_merge.cpp](src/polygon/polyline_split_merge.cpp) — verbatim port of `PolylineSplitMerge` and `MaximumLineDistance` (the only `SplitSelector` used for QR). The grow-then-shrink algorithm: build a triangle, repeatedly split the side whose split would change the score the most, then repeatedly remove the worst-cost-effective corner. `// TODO(perf): recycle` markers on the `CornerPool` and `polylines_` vector mark the BoofCV `DogArray.reset()` recycle sites we'll revisit later.
+  - Inner-class `Corner`, `CandidatePolyline`, `ErrorValue`, `SplitResults` ported as nested structs; field names verbatim. `SplitSelector` and `MaximumLineDistance` kept at namespace scope (not nested) so callers can declare custom selectors.
+  - `DogLinkedList<Corner>` → in-house `CornerList` over `std::list<Corner*>`. Iterators give pointer-stable Element handles; `Element<Corner>` becomes `CornerList::Iter`. `end()` is the "null Element" sentinel.
+  - `ConfigLength` ported as a tiny local struct (`compute(double)` + `computeI(double)` only — full BoofCV `ConfigLength` is in `boofcv-types` which we don't pull in).
+  - Geometric helpers inlined: `lineParametricDistanceSq`, `lineSegmentDistanceSq` (mirroring `Distance2D_F64.distanceSq` for both line types per the bytecode-decompiled formula, not a textbook re-derivation), `isPositiveZ` (UtilPolygons2D_I32), `circularDistanceP` / `circularPlusPOffset` / `circularMinusPOffset` (boofcv-ip `CircularIndex`).
+  - `INT_MAX + INT_MAX` overflow in `sequentialSideFit`'s `limit` is widened to `int64_t` then clamped — Java's int wrap-around → fallback to `contour.size()` is preserved without invoking C++ signed-overflow UB.
+- [src/polygon/polyline_split_merge.md](src/polygon/polyline_split_merge.md) — algorithm doc per CLAUDE.md "Algorithm documentation requirement". Covers the grow-then-shrink approach, why it beats `cv::approxPolyDP` / RANSAC / Hough, all 11 tunables with QR defaults, failure modes, integration points for downstream recovery (`getPolylines()` exposes the per-side-count saved candidates).
+
+### Tests
+
+- [tests/unit/test_polyline_split_merge.cpp](tests/unit/test_polyline_split_merge.cpp) — mirrors all 30 cases from `TestPolylineSplitMerge.java` + 2 cases from `TestMaximumLineDistance.java`. The `process_line` test in the Java suite does not assert the return of `process()` — `bestPolyline` is set even when the final `bestSize<minSides` gate trips with default `minSides=3` on a 2-corner result; comment in the test explains.
+
+### Regression
+
+- C++ unit tests: **173/173 pass** in 1.9 s.
+- Java baseline re-run: zero quality drift on `tests/baseline.json` (74.40 % aggregate detection rate, BoofCV 1.3.0 on 562 images / 1258 GT). C++ output isn't yet wired into the pipeline — the regression confirms no upstream-side regressions, as expected at this stage.
+
+### Deferred from upstream
+
+- `MinimizeEnergyPrune`, `FitLinesToContour`, `RefinePolyLineCorner`, `SplitMergeLineFit*` — alternative polyline algorithms that QR doesn't use. We only need `PolylineSplitMerge` + `MaximumLineDistance`.
+- `SplitSelector` strategy-injection at construction time (CLAUDE.md "Public API design" line 26) — `setSplitter()` exists, but the `// TODO` for ctor-time injection follows the same deferral pattern as the RS one in step 2.
+
 ## 2026-05-09 (later⁸) — Step 7a: square graph utilities
 
 Plan reversed: user opted to implement after all. Starting with the

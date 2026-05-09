@@ -56,6 +56,7 @@ add_library(boofcv_qr STATIC
     src/binary/threshold_block_otsu.cpp
     src/polygon/square_node.cpp
     src/polygon/square_graph.cpp
+    src/polygon/polyline_split_merge.cpp
 )
 
 target_include_directories(boofcv_qr
@@ -106,6 +107,7 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_threshold_block_otsu.cpp
         tests/unit/test_square_node.cpp
         tests/unit/test_square_graph.cpp
+        tests/unit/test_polyline_split_merge.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE
