@@ -1,5 +1,29 @@
 # ChangeLog
 
+## 2026-05-09 (later⁸) — Step 7a: square graph utilities
+
+Plan reversed: user opted to implement after all. Starting with the
+small structural pieces — `SquareNode`, `SquareEdge`, `SquareGraph`,
+`PositionPatternNode` — before the heavy polygon stack in 7b.
+
+### Added
+
+- [include/boofcv_qr/squares/square_node.hpp](include/boofcv_qr/squares/square_node.hpp) + [src/polygon/square_node.cpp](src/polygon/square_node.cpp) — verbatim port of `SquareNode`. Edges are non-owning `SquareEdge*` (ownership lives in `SquareGraph`). `KdTreeSquareNode` inner class skipped (unused by QR).
+- [include/boofcv_qr/squares/square_edge.hpp](include/boofcv_qr/squares/square_edge.hpp) — header-only port of `SquareEdge`.
+- [include/boofcv_qr/squares/square_graph.hpp](include/boofcv_qr/squares/square_graph.hpp) + [src/polygon/square_graph.cpp](src/polygon/square_graph.cpp) — verbatim port of `SquareGraph`. Geometric helpers (line-line / segment-segment intersection, vector acute angle, circular index, angle distance) inlined here instead of pulling in BoofCV's `georegression` module + `ejml`. `connect()` is public for parity-test access.
+- [include/boofcv_qr/position_pattern_node.hpp](include/boofcv_qr/position_pattern_node.hpp) — header-only port of `PositionPatternNode`.
+- [src/polygon/squares.md](src/polygon/squares.md) — combined algorithm doc.
+
+### Tests
+
+- [tests/unit/test_square_node.cpp](tests/unit/test_square_node.cpp) — mirrors `TestSquareNode.java` + `TestSquareEdge.java`.
+- [tests/unit/test_square_graph.cpp](tests/unit/test_square_graph.cpp) — mirrors all 7 cases from `TestSquareGraph.java` including `almostParallel`/`acuteAngle` over both polygon windings.
+
+### Regression
+
+- C++ unit tests: **135/135 pass** in 1.6 s.
+- Java baseline re-run: zero quality drift.
+
 ## 2026-05-09 (later⁷) — Pause point: detailed plan for steps 7–9
 
 [docs/plans/01_steps_7_through_9.md](docs/plans/01_steps_7_through_9.md) documents what's needed to finish the port. Steps 7 (polygon + finder pattern detection), 8 (alignment), and 9 (orchestrator) remain — sized at ~8–11 work-days, dominated by `PolylineSplitMerge.java` (907 LOC) and the polygon stack under `boofcv-feature/.../shapes/`. Codex-review carry-overs from earlier steps (RS strategy injection, per-block decode status, `setTransformFromLinesSquare`) are listed for the step-9 work since they need the orchestrator to exist first.
