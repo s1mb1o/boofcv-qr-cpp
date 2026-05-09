@@ -38,6 +38,22 @@ Subpixel polygon refinement. Wraps the contour stage from part 2 with an EM-styl
 - **`VerbosePrint`** dropped throughout.
 - Most of `TestSnapToLineEdge.fit_noisy_affine` and `TestRefinePolygonToGrayLine.fit_*` — they synthesise images via BoofCV's `FDistort` (affine resampling) which we don't pull in. Synthetic equivalents using `cv::rectangle` cover the easy-aligned branches.
 
+### Codex review fixes
+
+- **Owned-types-only public API** (raised by codex on 7b part 3, finding 1). `getPolygons()` no longer takes a `std::vector<DetectedInfo*>* storageInfo` arg — that was BoofCV's storage-arg-recycling idiom imported wholesale and exposed two layers of raw pointers in a public signature. Now returns `std::vector<std::vector<cv::Point2d>>` by value. Added a sibling `getPolygonInfoFiltered()` that returns the filtered `Info` entries by value for callers that need the full diagnostic record. `DetectPolygonFromContour::getMutableFoundInfo()` is demoted: replaced with a `friend class DetectPolygonBinaryGrayRefine` declaration so the wrapper can mutate per-detection state in place without the mutable accessor leaking into the public surface.
+- **QR config plumbing test** (finding 2). Added `DetectPolygonBinaryGrayRefine.qrConfigDefaultsReachUnderlying` — constructs the wrapper with `ConfigRefinePolygonLineToImage`'s upstream defaults (the same path `FactoryShapeDetector.refinePolygon` takes) and asserts every field lands on the underlying `RefinePolygonToGrayLine` and `SnapToLineEdge` (cornerOffset, lineSamples, sampleRadius, maxIterations, convergeTolPixels, maxCornerChangePixel) plus the wrapper-level `minimumRefineEdgeIntensity`/`outputClockwise`/`contourEdgeThreshold`. Added the corresponding getters (`getCornerOffset`, `getMaxIterations`, `getConvergeTolPixels`, `getMaxCornerChangePixel`) on `RefinePolygonToGrayLine`, plus `getRefineGray()` and a const `getDetector()` overload on the wrapper.
+- **Strengthened threshold-bias test** (finding 3). Replaced the previous "still 4 corners" assertion with three directional cases: `axisAlignedSquare_imageCw` asserts the exact post-shift corner positions for QR's `clockwise=false` path (right and bottom edges shift outward by 1 pixel, top-left unchanged); `axisAlignedSquare_clockwiseTrue` covers the opposite branch (catches sign-of-direction bugs); `rotatedSquare` asserts the diamond-orientation case (each corner moves ≤ √2 px and adjacent corners stay non-degenerate). Documented Java's exact behaviour in the test comments.
+- **Algorithmic-core synthetics** (finding 4). Added four cases that exercise specific code paths beyond the noise-free black rectangle:
+  - `noisyEdge_weightedPolarFitConvergence` — Gaussian noise σ=10 added to a 30×30 black square. Asserts refined corners land within 2 px of the threshold-bias-adjusted ground truth.
+  - `rotatedSquare_perpendicularSign` — 45°-rotated diamond via `cv::fillPoly`. Catches sign-of-tangent bugs in `SnapToLineEdge` (a flipped perpendicular would push refinement off the edge).
+  - `lowContrastPolygonRejected` — fg=196, bg=200 (delta 4). With QR's `minimumRefineEdgeIntensity=6` gate the polygon must drop. Plus a high-contrast control assertion.
+  - `ScoreLineSegmentEdge.blackToWhiteDerivative` — direct unit test of the line-integral derivative on a black→white step edge.
+
+### Regression after fixes
+
+- C++ unit tests: **214/214 pass** (was 207/207).
+- Java baseline re-run: zero quality drift on `tests/baseline.json`.
+
 ## 2026-05-10 (later) — Step 7b (part 2): DetectPolygonFromContour + ContourEdgeIntensity
 
 The contour-to-polygon stage. Wraps `cv::findContours` (per CLAUDE.md "OpenCV substitution policy") + `PolylineSplitMerge` (from part 1) + an edge-intensity false-positive filter. Produces the candidate polygon list that the QR finder-pattern detector (next file) consumes.

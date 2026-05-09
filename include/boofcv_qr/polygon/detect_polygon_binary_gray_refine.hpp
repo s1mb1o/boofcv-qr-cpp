@@ -142,11 +142,23 @@ public:
     void refineAll();
 
     // Returns just the polygons whose `Info::computeEdgeIntensity()` is
-    // at or above the configured `minimumRefineEdgeIntensity`. The
-    // optional `storageInfo` mirrors the Java overload — if non-null
-    // it's filled with the corresponding `Info` entries.
-    std::vector<std::vector<cv::Point2d>> getPolygons(
-        std::vector<DetectPolygonFromContour::DetectedInfo*>* storageInfo = nullptr);
+    // at or above the configured `minimumRefineEdgeIntensity`. Values
+    // are deep-copied from the underlying detection storage — per
+    // CLAUDE.md "Public API design" line 32 (owned types only; no raw
+    // pointers in public signatures).
+    //
+    // Java's overload took an optional `DogArray<Info>` storage arg
+    // for the corresponding entries; we expose that view via
+    // `getPolygonInfoFiltered()` instead, which returns the surviving
+    // `Info` entries by value.
+    std::vector<std::vector<cv::Point2d>> getPolygons() const;
+
+    // Returns the `Info` entries for polygons that pass the
+    // `minimumRefineEdgeIntensity` gate. Same filter as `getPolygons()`
+    // but returns the full `DetectedInfo` (corner array + contour +
+    // edge-intensity diagnostics + per-corner border flags). Deep-copy
+    // by value per CLAUDE.md "Public API design".
+    std::vector<DetectPolygonFromContour::DetectedInfo> getPolygonInfoFiltered() const;
 
     // Reference invalidated by next `process()` call.
     const std::vector<DetectPolygonFromContour::DetectedInfo>& getPolygonInfo() const {
@@ -154,6 +166,12 @@ public:
     }
 
     DetectPolygonFromContour& getDetector() { return *detector_; }
+    const DetectPolygonFromContour& getDetector() const { return *detector_; }
+
+    // Underlying refinement strategy. May be null if the wrapper was
+    // constructed without one. Useful for parity checks asserting that
+    // a plumbed-config ctor delivered every field.
+    std::shared_ptr<RefinePolygonToGray> getRefineGray() const { return refineGray_; }
 
     int32_t getMinimumSides() const { return detector_->getMinimumSides(); }
     int32_t getMaximumSides() const { return detector_->getMaximumSides(); }

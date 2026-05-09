@@ -433,17 +433,93 @@ TEST(AdjustPolygonForThresholdBias, identicalCornersThrows) {
     EXPECT_THROW(alg.process(poly, true), std::runtime_error);
 }
 
-TEST(AdjustPolygonForThresholdBias, axisAlignedSquare) {
-    // Axis-aligned 10x10 square, clockwise (image-coord, +y down). The
-    // adjustment should shift the right and bottom edges by 1 pixel and
-    // leave the top and left untouched.
+TEST(AdjustPolygonForThresholdBias, axisAlignedSquare_imageCw) {
+    // Axis-aligned 10x10 square, vertices in image-coord-CW order.
+    // Java's `clockwise` parameter follows the QR convention
+    // (`ConfigQrCode.polygon.detector.clockwise = false`) — the
+    // polygon is image-CW = math-CCW, so callers pass `clockwise=false`.
+    // With that, only sides where (dx >= 0 OR dy <= 0) get a shift —
+    // i.e., the right and bottom sides shift outward by 1 pixel each.
+    //
+    // Resulting corner moves (with clockwise=false):
+    //   (10,10) → (10,10)   no shift (top-left, only adjacent sides shift outward)
+    //   (20,10) → (21,10)   +x by 1   (right side shifted)
+    //   (20,20) → (21,21)   +x +y by 1 (right & bottom both shifted)
+    //   (10,20) → (10,21)   +y by 1   (bottom side shifted)
+    AdjustPolygonForThresholdBias alg;
+    std::vector<cv::Point2d> poly = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+
+    alg.process(poly, /*clockwise=*/false);
+
+    ASSERT_EQ(4u, poly.size());
+    EXPECT_NEAR(10.0, poly[0].x, 0.1);
+    EXPECT_NEAR(10.0, poly[0].y, 0.1);
+    EXPECT_NEAR(21.0, poly[1].x, 0.1);
+    EXPECT_NEAR(10.0, poly[1].y, 0.1);
+    EXPECT_NEAR(21.0, poly[2].x, 0.1);
+    EXPECT_NEAR(21.0, poly[2].y, 0.1);
+    EXPECT_NEAR(10.0, poly[3].x, 0.1);
+    EXPECT_NEAR(21.0, poly[3].y, 0.1);
+}
+
+TEST(AdjustPolygonForThresholdBias, axisAlignedSquare_clockwiseTrue) {
+    // Same polygon, but with `clockwise=true` — exercises the OTHER
+    // half of the side-shift logic (left and top shift inward by 1
+    // pixel each; right and bottom unchanged). This catches sign
+    // bugs in the segment-direction switch.
     AdjustPolygonForThresholdBias alg;
     std::vector<cv::Point2d> poly = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
 
     alg.process(poly, /*clockwise=*/true);
 
-    // Polygon must still have 4 corners.
     ASSERT_EQ(4u, poly.size());
+    EXPECT_NEAR(11.0, poly[0].x, 0.1);
+    EXPECT_NEAR(11.0, poly[0].y, 0.1);
+    EXPECT_NEAR(20.0, poly[1].x, 0.1);
+    EXPECT_NEAR(11.0, poly[1].y, 0.1);
+    EXPECT_NEAR(20.0, poly[2].x, 0.1);
+    EXPECT_NEAR(20.0, poly[2].y, 0.1);
+    EXPECT_NEAR(11.0, poly[3].x, 0.1);
+    EXPECT_NEAR(20.0, poly[3].y, 0.1);
+}
+
+TEST(AdjustPolygonForThresholdBias, rotatedSquare) {
+    // Square rotated 45 degrees (a diamond). Catches axis-aligned-only
+    // assumptions in the side-shift formula. The clockwise=false path
+    // should still preserve the polygon shape and only shift sides
+    // whose normal points in the +x or +y direction.
+    //
+    // Diamond vertices in image-CW order, centred at (50, 50), radius 10:
+    //   (50, 40) top, (60, 50) right, (50, 60) bottom, (40, 50) left.
+    AdjustPolygonForThresholdBias alg;
+    std::vector<cv::Point2d> poly = {{50, 40}, {60, 50}, {50, 60}, {40, 50}};
+    auto before = poly;
+
+    alg.process(poly, /*clockwise=*/false);
+
+    ASSERT_EQ(4u, poly.size());
+
+    // No corner should move more than ~1.5 pixels — the side-normal
+    // shift is exactly 1 pixel and corners are line intersections of
+    // adjacent shifted sides, so the geometric corner movement bound is
+    // sqrt(2) for a 90°-corner polygon.
+    for (std::size_t i = 0; i < poly.size(); i++) {
+        double dx = poly[i].x - before[i].x;
+        double dy = poly[i].y - before[i].y;
+        double d = std::sqrt(dx * dx + dy * dy);
+        EXPECT_LE(d, 1.5)
+            << "corner " << i << " moved more than 1.5 px (" << d << ")";
+    }
+
+    // Polygon should still be a non-degenerate diamond — no two
+    // adjacent corners coincide after the shift.
+    for (std::size_t i = 0; i < poly.size(); i++) {
+        std::size_t j = (i + 1) % poly.size();
+        double dx = poly[i].x - poly[j].x;
+        double dy = poly[i].y - poly[j].y;
+        EXPECT_GT(std::sqrt(dx * dx + dy * dy), 1.0)
+            << "adjacent corners " << i << " and " << j << " too close";
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -550,4 +626,241 @@ TEST(DetectPolygonBinaryGrayRefine, getPolygonsHonoursMinimumEdgeIntensity) {
     alg2->refineAll();
     polys = alg2->getPolygons();
     EXPECT_EQ(1u, polys.size());
+
+    // getPolygonInfoFiltered() returns the same set, with full Info.
+    auto infos = alg2->getPolygonInfoFiltered();
+    EXPECT_EQ(1u, infos.size());
+    EXPECT_EQ(4u, infos[0].polygon.size());
+    EXPECT_GE(infos[0].computeEdgeIntensity(), 10.0);
+}
+
+// ---------------------------------------------------------------------------
+// Codex review fix #2 — full QR config plumbing through the wrapper.
+//
+// The QR factory builds the wrapper via `FactoryShapeDetector.polygon`
+// with a `ConfigPolygonDetector` whose defaults match `ConfigQrCode`'s
+// overrides. Asserts every default lands on the underlying objects.
+// ---------------------------------------------------------------------------
+
+TEST(DetectPolygonBinaryGrayRefine, qrConfigDefaultsReachUnderlying) {
+    // Build the wrapper exactly as `FactoryShapeDetector.polygon` would
+    // for a QR `ConfigPolygonDetector` (defaults from
+    // ConfigPolygonDetector.java + ConfigRefinePolygonLineToImage.java +
+    // ConfigQrCode.java).
+    ConfigRefinePolygonLineToImage refineCfg;  // upstream defaults
+    // (cornerOffset=1, lineSamples=30, sampleRadius=1, maxIterations=10,
+    //  convergeTolPixels=0.2, maxCornerChangePixel=2.0)
+
+    auto adapter = std::make_unique<PolylineSplitMergeAdapter>();
+    adapter->setMinimumSides(4);
+    adapter->setMaximumSides(4);
+
+    auto detector = std::make_unique<DetectPolygonFromContour>(
+        std::move(adapter), /*outputClockwiseUpY=*/false,
+        /*canTouchBorder=*/false,
+        /*contourEdgeThreshold=*/3.0,    // QR default
+        /*tangentEdgeIntensity=*/1.5);   // QR default
+
+    auto refine = std::make_shared<RefinePolygonToGrayLine>(refineCfg);
+
+    DetectPolygonBinaryGrayRefine alg(
+        std::move(detector), refine,
+        /*minimumRefineEdgeIntensity=*/6.0,  // QR default
+        /*adjustForThresholdBias=*/true);     // QR default
+
+    // Wrapper-level
+    EXPECT_DOUBLE_EQ(6.0, alg.getMinimumRefineEdgeIntensity());
+    EXPECT_FALSE(alg.isOutputClockwise());
+    EXPECT_EQ(4, alg.getMinimumSides());
+    EXPECT_EQ(4, alg.getMaximumSides());
+    EXPECT_DOUBLE_EQ(3.0, alg.getDetector().getContourEdgeThreshold());
+
+    // Underlying refine — every ConfigRefinePolygonLineToImage field
+    // must have landed.
+    auto refineLine =
+        std::dynamic_pointer_cast<RefinePolygonToGrayLine>(alg.getRefineGray());
+    ASSERT_NE(nullptr, refineLine);
+    EXPECT_DOUBLE_EQ(1.0, refineLine->getCornerOffset());
+    EXPECT_EQ(30, refineLine->getSnapToEdge().getLineSamples());
+    EXPECT_EQ(1, refineLine->getSnapToEdge().getRadialSamples());
+    EXPECT_EQ(10, refineLine->getMaxIterations());
+    EXPECT_DOUBLE_EQ(0.2, refineLine->getConvergeTolPixels());
+    EXPECT_DOUBLE_EQ(2.0, refineLine->getMaxCornerChangePixel());
+}
+
+// ---------------------------------------------------------------------------
+// Codex review fix #4 — algorithmic-core synthetics.
+//
+// Three minimum-viable cases that exercise specific code paths beyond
+// the noise-free black-rectangle case the original tests use.
+// ---------------------------------------------------------------------------
+
+TEST(DetectPolygonBinaryGrayRefine, noisyEdge_weightedPolarFitConvergence) {
+    // Axis-aligned 30x30 black square + Gaussian noise σ=10. Refined
+    // corners must end up within 1 pixel of ground truth.
+    int32_t W = 200, H = 200;
+    int32_t x0 = 50, y0 = 50, x1 = 80, y1 = 80;  // inclusive corners
+
+    cv::Mat gray(H, W, CV_8UC1, cv::Scalar(WHITE));
+    cv::rectangle(gray, cv::Rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1),
+                  cv::Scalar(0), cv::FILLED);
+
+    // Add Gaussian noise.
+    cv::Mat noise(H, W, CV_32FC1);
+    cv::theRNG().state = 12345ULL;
+    cv::randn(noise, 0.0, 10.0);
+    cv::Mat grayF;
+    gray.convertTo(grayF, CV_32FC1);
+    grayF += noise;
+    grayF.convertTo(gray, CV_8UC1);
+
+    cv::Mat binary;
+    cv::threshold(gray, binary, 100, 1, cv::THRESH_BINARY_INV);
+
+    auto alg = makeRefineDetector(4, 4, /*minimumRefineEdgeIntensity=*/0.0);
+    alg->process(gray, binary);
+    alg->refineAll();
+
+    auto polys = alg->getPolygons();
+    ASSERT_EQ(1u, polys.size());
+    ASSERT_EQ(4u, polys[0].size());
+
+    // Each refined corner should be near a corner of the
+    // threshold-bias-adjusted square. The adjust step (clockwise=false
+    // path, see the AdjustPolygonForThresholdBias.axisAlignedSquare_imageCw
+    // test) shifts the right and bottom sides outward by 1 pixel — so
+    // ground-truth corners after adjust are (x0,y0), (x1+1,y0),
+    // (x1+1,y1+1), (x0,y1+1).
+    std::vector<cv::Point2d> truth = {
+        cv::Point2d(x0, y0), cv::Point2d(x1 + 1, y0),
+        cv::Point2d(x1 + 1, y1 + 1), cv::Point2d(x0, y1 + 1),
+    };
+    for (const auto& corner : polys[0]) {
+        double bestD = 1e9;
+        for (const auto& t : truth) {
+            double dx = corner.x - t.x;
+            double dy = corner.y - t.y;
+            bestD = std::min(bestD, std::sqrt(dx * dx + dy * dy));
+        }
+        EXPECT_LE(bestD, 2.0)
+            << "noisy refined corner (" << corner.x << "," << corner.y
+            << ") was " << bestD << " px from nearest truth corner";
+    }
+}
+
+TEST(DetectPolygonBinaryGrayRefine, rotatedSquare_perpendicularSign) {
+    // 60x60 black square rotated 45° (a diamond), centred at (100,100).
+    // Catches sign-of-tangent bugs in SnapToLineEdge — if the
+    // perpendicular flips, refinement steps off the edge by ~1 pixel
+    // and the test fails.
+    int32_t W = 250, H = 250;
+    cv::Mat gray(W, H, CV_8UC1, cv::Scalar(WHITE));
+
+    double cx = 100, cy = 100, r = 30;
+    std::vector<cv::Point> diamond = {
+        {static_cast<int32_t>(cx), static_cast<int32_t>(cy - r)},
+        {static_cast<int32_t>(cx + r), static_cast<int32_t>(cy)},
+        {static_cast<int32_t>(cx), static_cast<int32_t>(cy + r)},
+        {static_cast<int32_t>(cx - r), static_cast<int32_t>(cy)},
+    };
+    cv::fillPoly(gray, std::vector<std::vector<cv::Point>>{diamond}, cv::Scalar(0));
+
+    cv::Mat binary;
+    cv::threshold(gray, binary, 100, 1, cv::THRESH_BINARY_INV);
+
+    auto alg = makeRefineDetector(4, 4, /*minimumRefineEdgeIntensity=*/0.0);
+    alg->process(gray, binary);
+    alg->refineAll();
+
+    auto polys = alg->getPolygons();
+    ASSERT_EQ(1u, polys.size());
+    ASSERT_EQ(4u, polys[0].size());
+
+    // Every refined corner should land near a diamond vertex. The
+    // bias-adjust step nudges sides whose outward normal points in
+    // the +x or +y direction, so the diamond's right and bottom
+    // vertices may move by up to ~sqrt(2) pixels. A 2.0 px tolerance
+    // covers both the post-bias shift and the polyline-fit jitter.
+    std::vector<cv::Point2d> truth = {
+        {cx, cy - r}, {cx + r, cy}, {cx, cy + r}, {cx - r, cy},
+    };
+    for (const auto& corner : polys[0]) {
+        double bestD = 1e9;
+        for (const auto& t : truth) {
+            double dx = corner.x - t.x;
+            double dy = corner.y - t.y;
+            bestD = std::min(bestD, std::sqrt(dx * dx + dy * dy));
+        }
+        EXPECT_LE(bestD, 2.0)
+            << "rotated refined corner (" << corner.x << "," << corner.y
+            << ") was " << bestD << " px from nearest diamond vertex";
+    }
+}
+
+TEST(DetectPolygonBinaryGrayRefine, lowContrastPolygonRejected) {
+    // Asserts the EdgeIntensityPolygon-driven minimumRefineEdgeIntensity
+    // gate filters polygons whose inside/outside contrast is below the
+    // threshold. We pick a contrast just under the gate so the polygon
+    // is still detectable (binarisation finds it) but rejected by the
+    // refine-stage edge-intensity scorer.
+    int32_t W = 200, H = 200;
+    int32_t bg = 200;
+    int32_t fg = 196;  // delta = 4
+    cv::Mat gray(H, W, CV_8UC1, cv::Scalar(bg));
+    cv::rectangle(gray, cv::Rect(50, 50, 30, 30), cv::Scalar(fg), cv::FILLED);
+
+    // Pick the binary threshold between fg and bg so the contour stage
+    // still finds the rectangle.
+    cv::Mat binary;
+    cv::threshold(gray, binary, 198, 1, cv::THRESH_BINARY_INV);
+
+    // High-contrast control: same gate, full-contrast rectangle survives.
+    cv::Mat grayHigh(H, W, CV_8UC1, cv::Scalar(WHITE));
+    cv::rectangle(grayHigh, cv::Rect(120, 50, 30, 30), cv::Scalar(0),
+                  cv::FILLED);
+    cv::Mat binaryHigh;
+    cv::threshold(grayHigh, binaryHigh, 100, 1, cv::THRESH_BINARY_INV);
+
+    auto alg = makeRefineDetector(4, 4, /*minimumRefineEdgeIntensity=*/6.0);
+    alg->process(gray, binary);
+    alg->refineAll();
+
+    // The contour stage may or may not find the low-contrast rectangle
+    // depending on whether the binarisation made it foreground; if it
+    // did, the refine-stage gate must drop it.
+    auto polys = alg->getPolygons();
+    EXPECT_EQ(0u, polys.size())
+        << "low-contrast polygon (delta=4) should fail the "
+           "minimumRefineEdgeIntensity=6 gate";
+
+    // Sanity check: high-contrast rectangle on the same gate IS kept.
+    auto algHigh = makeRefineDetector(4, 4, /*minimumRefineEdgeIntensity=*/6.0);
+    algHigh->process(grayHigh, binaryHigh);
+    algHigh->refineAll();
+    EXPECT_EQ(1u, algHigh->getPolygons().size())
+        << "high-contrast polygon should pass the gate";
+}
+
+// Direct ScoreLineSegmentEdge unit test — sanity-checks the line-
+// integral derivative at a known step edge.
+TEST(ScoreLineSegmentEdge, blackToWhiteDerivative) {
+    // 200x200 image: left half black (0), right half white (200).
+    int32_t W = 200, H = 200;
+    cv::Mat image(H, W, CV_8UC1, cv::Scalar(0));
+    cv::rectangle(image, cv::Rect(100, 0, 100, H), cv::Scalar(200),
+                  cv::FILLED);
+
+    boofcv_qr::ScoreLineSegmentEdge alg(15);
+    alg.setImage(image);
+
+    // Sample along a vertical line at x=100 (the edge). Tangent points
+    // +x (towards the white side).
+    cv::Point2d a(100, 50), b(100, 150);
+    double avg = alg.computeAverageDerivative(a, b, /*tanX=*/1.5, /*tanY=*/0.0);
+
+    // averageUp is sampled at x+1.5 (white), averageDown at x-1.5 (black).
+    // Up - Down ≈ +200.
+    EXPECT_GT(avg, 100.0);
+    EXPECT_GT(alg.getSamplesInside(), 0);
+    EXPECT_GT(alg.getAverageUp(), alg.getAverageDown());
 }

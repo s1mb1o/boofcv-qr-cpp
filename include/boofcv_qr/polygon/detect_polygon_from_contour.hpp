@@ -296,12 +296,11 @@ public:
     // consumers wanting longer lifetimes should copy.
     const std::vector<DetectedInfo>& getFoundInfo() const { return foundInfo_; }
 
-    // Mutable variant — used by the refine wrapper which mutates
-    // polygons in place (post-process bias adjustment, post-refine
-    // edge-intensity update). Mirrors Java's behaviour where
-    // `getFoundInfo()` returns a `DogArray` whose elements are
-    // mutable.
-    std::vector<DetectedInfo>& getMutableFoundInfo() { return foundInfo_; }
+    // The refine wrapper needs to mutate polygons in place after
+    // threshold-bias adjustment and post-refine edge-intensity update.
+    // Mirrors Java's `DogArray<Info>` mutation semantics. Demoted to
+    // friend access so it doesn't appear in the public API surface.
+    friend class DetectPolygonBinaryGrayRefine;
 
     // Configuration — getters/setters mirroring Java's @Getter/@Setter.
     bool isOutputClockwiseUpY() const { return outputClockwiseUpY_; }

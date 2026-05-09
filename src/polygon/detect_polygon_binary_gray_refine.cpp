@@ -276,8 +276,8 @@ void DetectPolygonBinaryGrayRefine::process(const cv::Mat& gray,
     auto time0 = std::chrono::steady_clock::now();
 
     // detector's foundInfo is a value-typed vector; we mutate it in
-    // place (Java mutates the same DogArray<Info>).
-    auto& detections = detector_->getMutableFoundInfo();
+    // place via friend access (Java mutates the same DogArray<Info>).
+    auto& detections = detector_->foundInfo_;
 
     if (adjustForBias_) {
         int32_t minSides = getMinimumSides();
@@ -338,25 +338,38 @@ bool DetectPolygonBinaryGrayRefine::refine(
 }
 
 void DetectPolygonBinaryGrayRefine::refineAll() {
-    auto& detections = detector_->getMutableFoundInfo();
+    // friend access to mutate Info entries in place.
+    auto& detections = detector_->foundInfo_;
 
     for (std::size_t i = 0; i < detections.size(); i++) {
         refine(detections[i]);
     }
 }
 
-std::vector<std::vector<cv::Point2d>> DetectPolygonBinaryGrayRefine::getPolygons(
-    std::vector<DetectPolygonFromContour::DetectedInfo*>* storageInfo) {
+std::vector<std::vector<cv::Point2d>> DetectPolygonBinaryGrayRefine::getPolygons() const {
     std::vector<std::vector<cv::Point2d>> storage;
-    if (storageInfo) storageInfo->clear();
 
-    auto& detections = detector_->getMutableFoundInfo();
+    const auto& detections = detector_->getFoundInfo();
     for (std::size_t i = 0; i < detections.size(); i++) {
-        DetectPolygonFromContour::DetectedInfo& d = detections[i];
+        const DetectPolygonFromContour::DetectedInfo& d = detections[i];
 
         if (d.computeEdgeIntensity() >= minimumRefineEdgeIntensity_) {
             storage.push_back(d.polygon);
-            if (storageInfo) storageInfo->push_back(&d);
+        }
+    }
+    return storage;
+}
+
+std::vector<DetectPolygonFromContour::DetectedInfo>
+DetectPolygonBinaryGrayRefine::getPolygonInfoFiltered() const {
+    std::vector<DetectPolygonFromContour::DetectedInfo> storage;
+
+    const auto& detections = detector_->getFoundInfo();
+    for (std::size_t i = 0; i < detections.size(); i++) {
+        const DetectPolygonFromContour::DetectedInfo& d = detections[i];
+
+        if (d.computeEdgeIntensity() >= minimumRefineEdgeIntensity_) {
+            storage.push_back(d);
         }
     }
     return storage;

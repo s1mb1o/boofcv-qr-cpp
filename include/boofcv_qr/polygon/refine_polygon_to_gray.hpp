@@ -71,6 +71,15 @@ public:
                  std::vector<cv::Point2d>& output) override;
 
     SnapToLineEdge& getSnapToEdge() { return snapToEdge_; }
+    const SnapToLineEdge& getSnapToEdge() const { return snapToEdge_; }
+
+    // Tunable getters — useful for asserting the plumbed-config ctor
+    // landed every field on `impl_` (matches the same pattern as
+    // `PolylineSplitMergeAdapter::impl()` exposed for parity tests).
+    double getCornerOffset() const { return cornerOffset_; }
+    int32_t getMaxIterations() const { return maxIterations_; }
+    double getConvergeTolPixels() const { return convergeTolPixels_; }
+    double getMaxCornerChangePixel() const { return maxCornerChangePixel_; }
 
     // ---- TEST-VISIBLE
     bool optimize(const cv::Point2d& a, const cv::Point2d& b,
