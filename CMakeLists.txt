@@ -24,6 +24,8 @@ option(BOOFCV_QR_BUILD_TESTS "Build the GoogleTest unit-test suite" ON)
 # ---------------------------------------------------------------------------
 add_library(boofcv_qr STATIC
     src/galois/galois.cpp
+    src/galois/galois_table_ops.cpp
+    src/reed_solomon/reed_solomon.cpp
 )
 
 target_include_directories(boofcv_qr
@@ -58,6 +60,8 @@ if(BOOFCV_QR_BUILD_TESTS)
 
     add_executable(boofcv_qr_tests
         tests/unit/test_galois.cpp
+        tests/unit/test_galois_table_ops.cpp
+        tests/unit/test_reed_solomon.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE
