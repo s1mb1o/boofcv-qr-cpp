@@ -47,10 +47,12 @@ void QrCodeBinaryGridReader::gridToImage(double row, double col,
 }
 
 float QrCodeBinaryGridReader::sampleNearest(double x, double y) const {
-    // BoofCV's `nearestNeighborPixelS` rounds to int and uses
-    // EXTENDED border (clamp).
-    int32_t ix = static_cast<int32_t>(std::lround(x));
-    int32_t iy = static_cast<int32_t>(std::lround(y));
+    // BoofCV's `NearestNeighborPixel_U8.get(x, y)` does `(int)x`, `(int)y`
+    // — truncation toward zero — then clamps via the EXTENDED border.
+    // Use std::floor (== truncation for non-negatives, but stable for the
+    // possible-negative coords cv::perspectiveTransform can produce).
+    int32_t ix = static_cast<int32_t>(std::floor(x));
+    int32_t iy = static_cast<int32_t>(std::floor(y));
     if (ix < 0) ix = 0;
     if (iy < 0) iy = 0;
     if (ix >= imageWidth) ix = imageWidth - 1;

@@ -35,8 +35,19 @@ The classes in BoofCV split responsibilities differently than we do:
 
 ## Deferred from upstream
 
-- **`setTransformFromLinesSquare(qr)`**: the line-correspondence DLT. Used by the orchestrator when finder patterns are detected but the alignment pattern hasn't been refined yet. Will land in step 7 alongside the finder-pattern detector that supplies its inputs. Not exercised by the step-5 deliverable.
-- **`HomographyDirectLinearTransform` line variant**: same — only used by `setTransformFromLinesSquare`.
+- **`setTransformFromLinesSquare(qr)`**: the line-correspondence DLT.
+  Java uses this in `QrCodeDecoderImage` BEFORE the QR's version is known,
+  to estimate the rough homography from the 3 finder patterns alone (3
+  point correspondences + 4 line directions). Without it the orchestrator
+  cannot do version-detection reads on a fresh QR. Lands at step 9 (the
+  orchestrator that uses it); see [src/decoder/qr_code_decoder_image.md] when
+  that file exists. Not exercised by the step-5 deliverable. The
+  consequence today: a consumer who tries to call `setMarkerUnknownVersion`
+  on the C++ reader has nothing to call yet — they must use
+  `setTransformFromSquare` (single finder) or `addAllFeatures` (post-
+  alignment-detection) until step 9.
+- **`HomographyDirectLinearTransform` line variant**: same scope as
+  `setTransformFromLinesSquare` — only useful for the line-DLT path.
 
 These deferrals are documented in the header.
 
