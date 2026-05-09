@@ -58,6 +58,10 @@ add_library(boofcv_qr STATIC
     src/polygon/square_graph.cpp
     src/polygon/polyline_split_merge.cpp
     src/polygon/detect_polygon_from_contour.cpp
+    src/polygon/image_line_integral.cpp
+    src/polygon/snap_to_line_edge.cpp
+    src/polygon/refine_polygon_to_gray.cpp
+    src/polygon/detect_polygon_binary_gray_refine.cpp
 )
 
 target_include_directories(boofcv_qr
@@ -110,6 +114,7 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_square_graph.cpp
         tests/unit/test_polyline_split_merge.cpp
         tests/unit/test_detect_polygon_from_contour.cpp
+        tests/unit/test_refine_polygon_to_gray.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE

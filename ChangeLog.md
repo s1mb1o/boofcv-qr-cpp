@@ -1,5 +1,43 @@
 # ChangeLog
 
+## 2026-05-10 (later²) — Step 7b (part 3): RefinePolygonToGray chain
+
+Subpixel polygon refinement. Wraps the contour stage from part 2 with an EM-style line-refit that snaps each polygon side to the underlying gray-image edge using line-integral-derivative weights, plus an edge-intensity quality gate. Per CLAUDE.md "Forbidden moves" line 142, this stage is mandatory verbatim — no `cv::cornerSubPix` substitute.
+
+### Added
+
+- [include/boofcv_qr/polygon/image_line_integral.hpp](include/boofcv_qr/polygon/image_line_integral.hpp) + [src/polygon/image_line_integral.cpp](src/polygon/image_line_integral.cpp) — verbatim port of `boofcv.alg.interpolate.ImageLineIntegral`. Sums `pixel_value * fraction-of-line-in-pixel` for every pixel a line segment touches. Pure algorithmic, no OpenCV equivalent.
+- [include/boofcv_qr/polygon/snap_to_line_edge.hpp](include/boofcv_qr/polygon/snap_to_line_edge.hpp) + [src/polygon/snap_to_line_edge.cpp](src/polygon/snap_to_line_edge.cpp) — verbatim port of `SnapToLineEdge` + `BaseIntegralEdge` (collapsed). Samples line-integrals perpendicular to a candidate edge, weights each by the absolute step between adjacent integrals, then fits a polar line via weighted least squares (`FitLine_F64.polar` formula inlined byte-for-byte). Local-coordinate trick (centre + scale) preserved.
+- [include/boofcv_qr/polygon/refine_polygon_to_gray.hpp](include/boofcv_qr/polygon/refine_polygon_to_gray.hpp) + [src/polygon/refine_polygon_to_gray.cpp](src/polygon/refine_polygon_to_gray.cpp) — verbatim port of `RefinePolygonToGray` interface, `RefinePolygonToGrayLine` (the QR-relevant concrete impl), and `UtilShapePolygon::convert`. EM-style outer loop: fit each side independently, recompute corners as line intersections, iterate to convergence (`convergeTolPixels`) or `maxIterations` (10 default). Per-side divergence guard via `maxCornerChangePixel`.
+  - `ConfigRefinePolygonLineToImage` struct mirrors the upstream `boofcv.factory.shape.ConfigRefinePolygonLineToImage` field-for-field; plumbed-config ctor matches `FactoryShapeDetector.refinePolygon`.
+- [include/boofcv_qr/polygon/detect_polygon_binary_gray_refine.hpp](include/boofcv_qr/polygon/detect_polygon_binary_gray_refine.hpp) + [src/polygon/detect_polygon_binary_gray_refine.cpp](src/polygon/detect_polygon_binary_gray_refine.cpp) — verbatim ports of:
+  - `DetectPolygonBinaryGrayRefine` — top-level wrapper that runs the contour stage, applies `AdjustPolygonForThresholdBias` per polygon, exposes `refine(Info)` / `refineAll()` that gate on `EdgeIntensityPolygon` (refinement rolled back if edge contrast drops below `before / 1.5`), and `getPolygons` that filters on `minimumRefineEdgeIntensity` (QR default `6`).
+  - `EdgeIntensityPolygon` + `ScoreLineSegmentEdge` — the post-refine quality gate (samples 15 points along each side perpendicular to the line, sums up/down line integrals).
+  - `AdjustPolygonForThresholdBias` — undoes the half-pixel bias that binary thresholding introduces by shifting two of the four sides per polygon by 1 pixel along the side normal, then re-cornering via line intersections. Java's `UtilPolygons2D_F64.removeAdjacentDuplicates` inlined for the post-shift duplicate sweep.
+- Added `getMutableFoundInfo()` on `DetectPolygonFromContour` so the wrapper can mutate detection polygons in place after threshold-bias adjustment without resorting to `const_cast`.
+- [src/polygon/refine_polygon_to_gray.md](src/polygon/refine_polygon_to_gray.md) — algorithm doc covering the full chain (line-integral primitive → snap-to-edge → polygon-level EM → top-level wrapper), why this beats `cv::cornerSubPix` per CLAUDE.md "Forbidden moves", all tunables with QR defaults from `ConfigRefinePolygonLineToImage`, failure modes (border-aligned sides, divergence guard, parallel adjacent lines), and integration points for step 7c.
+
+### Tests
+
+- [tests/unit/test_refine_polygon_to_gray.cpp](tests/unit/test_refine_polygon_to_gray.cpp) — 19 cases:
+  - **Java parity** — all 5 cases from `TestImageLineIntegral.java` (`zeroLengthLine`, `inside_SlopeZero`, `across_SlopeZero`, `inside_nonZero`, `across_nonZero`, `isInside`). Plus `easy_aligned`, `computePointsAndWeights`, `computePointsAndWeights_border`, `localToGlobal` from `TestSnapToLineEdge.java` (the cases that don't need `FDistort`).
+  - **Synthetic end-to-end substitutes** for the Java tests that pull in `FDistort`/`CommonFitPolygonChecks`: `RefinePolygonToGrayLine.alignedSquare` (perfect initial), `alignedSquare_noisyInitial` (sub-pixel jitter on each corner), `fit_tooSmall` (1×1 square is rejected), plus a config-ctor field-landing test.
+  - **`EdgeIntensityPolygon` + `AdjustPolygonForThresholdBias` + the wrapper**: `blackSquareClockwise` (inside/outside intensities), `axisAlignedSquare` adjust, `identicalCornersThrows`, `rectanglesProcessThenRefine`, `getPolygonsHonoursMinimumEdgeIntensity`.
+
+### Regression
+
+- C++ unit tests: **207/207 pass** in 2.2 s (was 188/188).
+- Java baseline re-run: zero quality drift on `tests/baseline.json` (74.40 % aggregate, BoofCV 1.3.0 on 562 / 1258).
+
+### Deferred from upstream
+
+- **`RefinePolygonToContour`** — the QR factory wires `refineContour=null`, only `RefinePolygonToGrayLine` is used. Documented in the algorithm doc.
+- **Lens distortion** — `setLensDistortion` / `setTransform` are no-op stubs throughout the chain (same deferral pattern as in step 5's grid reader and step 7b's contour stage).
+- **`AdjustBeforeRefineEdge` hook** on `DetectPolygonBinaryGrayRefine` — unused by QR; not ported.
+- **Bilinear-sampled distorted-image variant** of `BaseIntegralEdge` (`GImageGrayDistorted`) — depends on the lens-distortion deferral above.
+- **`VerbosePrint`** dropped throughout.
+- Most of `TestSnapToLineEdge.fit_noisy_affine` and `TestRefinePolygonToGrayLine.fit_*` — they synthesise images via BoofCV's `FDistort` (affine resampling) which we don't pull in. Synthetic equivalents using `cv::rectangle` cover the easy-aligned branches.
+
 ## 2026-05-10 (later) — Step 7b (part 2): DetectPolygonFromContour + ContourEdgeIntensity
 
 The contour-to-polygon stage. Wraps `cv::findContours` (per CLAUDE.md "OpenCV substitution policy") + `PolylineSplitMerge` (from part 1) + an edge-intensity false-positive filter. Produces the candidate polygon list that the QR finder-pattern detector (next file) consumes.

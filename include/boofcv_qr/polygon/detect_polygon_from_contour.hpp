@@ -296,6 +296,13 @@ public:
     // consumers wanting longer lifetimes should copy.
     const std::vector<DetectedInfo>& getFoundInfo() const { return foundInfo_; }
 
+    // Mutable variant — used by the refine wrapper which mutates
+    // polygons in place (post-process bias adjustment, post-refine
+    // edge-intensity update). Mirrors Java's behaviour where
+    // `getFoundInfo()` returns a `DogArray` whose elements are
+    // mutable.
+    std::vector<DetectedInfo>& getMutableFoundInfo() { return foundInfo_; }
+
     // Configuration — getters/setters mirroring Java's @Getter/@Setter.
     bool isOutputClockwiseUpY() const { return outputClockwiseUpY_; }
     void setOutputClockwiseUpY(bool v) { outputClockwiseUpY_ = v; }
