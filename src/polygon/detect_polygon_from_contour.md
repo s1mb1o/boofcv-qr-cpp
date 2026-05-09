@@ -41,6 +41,8 @@ A previously-investigated edge case: BoofCV's contours and OpenCV's contours can
 
 **Winding direction:** OpenCV's `findContours` emits *external* contours **CCW in image coords** (CW in math) and *internal* contours **CW in image** (CCW in math). BoofCV's `LinearContourLabelChang2004` emits the OPPOSITE windings. The polyline corner finder's convex check (`PolylineSplitMerge::setSplitVariables`'s `isPositiveZ(a, b, c)`) is hard-coded for BoofCV's convention — under the OpenCV winding, the check rejects splits that would form a CONVEX corner instead of concave. So `buildContoursFromOpenCV` reverses each contour in place. Without the reversal, a perfect black square never gets a 4-corner fit (only the initial 3-corner triangle survives), which surfaced as the original failing JUnit-equivalent rectangle tests.
 
+**Contour start-pixel rotation:** Reversing alone is not enough. `PolylineSplitMerge` seeds its initial-triangle search from `contour[0]` (`findCornerSeed`), so corner indices are sensitive to the start pixel. After reversal the start becomes BoofCV's *last* scanned pixel — corner indices come out rotated relative to BoofCV. After reversing we therefore rotate the contour so that the **topmost row's leftmost pixel** sits at index 0, matching `LinearContourLabelChang2004`'s row-major scan order which always starts at the topmost-then-leftmost foreground pixel. Same fixup applied to internal contours. Without this rotation, `findCornerSeed` picks the wrong "diametrically opposite" point and the resulting corner indices don't line up with BoofCV's, even though the polygons themselves are equivalent up to cyclic rotation.
+
 ## Failure modes
 
 - **Empty blob list** — clean image, no foreground. Returns empty result. Not an error.
@@ -91,3 +93,7 @@ Per CLAUDE.md "Public API design":
 - **Lens distortion** (`setLensDistortion`, `removeDistortionFromContour`, `distToUndist` / `undistToDist`) deferred — same deferral pattern as in step 5's grid reader. The undistorted/distorted polygon fields are still populated, with both holding the same coordinates.
 - **`MovingAverage`** ported as a tiny inline helper (one `double avg`, exponential decay).
 - **`RefinePolygonToGray`** is the next file; not part of this port. Result corners are integer pixels.
+
+## Deviations from upstream
+
+- **`saveInternalContours_` defaults to `true`**. BoofCV's `polygonContour()` factory wires `LinearExternalContours` (`isSaveInternalContours = false`) and only the QR finder-pattern subclass re-enables internal contours. Our default is the more permissive variant: downstream recovery pipelines (per CLAUDE.md "Public API design") that need hole topology — including the QR finder-pattern detector at step 7c, which is the only consumer in this port — get it without an explicit setter call. Callers that want strict-Java parity for non-QR uses can call `setSaveInternalContours(false)`. The `donut` synthetic test in `tests/unit/test_detect_polygon_from_contour.cpp` exercises and asserts this default.

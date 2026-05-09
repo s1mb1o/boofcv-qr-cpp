@@ -332,8 +332,29 @@ void DetectPolygonFromContour::buildContoursFromOpenCV(
     // call in `setSplitVariables` rejects splits whose new corner b
     // would form a convex turn under the OpenCV winding, which is
     // exactly the wrong half. Reversing per-contour fixes it.
-    auto reverse_in_place = [](std::vector<cv::Point2i>& v) {
+    //
+    // Reversing alone isn't enough. PolylineSplitMerge seeds its
+    // initial-triangle search from `contour[0]` (`findCornerSeed`),
+    // so the corner indices it produces are sensitive to where the
+    // contour starts. After reversal the start pixel becomes
+    // BoofCV's *last* scanned pixel, which rotates the corner indices
+    // relative to BoofCV. To restore parity we rotate the contour so
+    // that the topmost row's leftmost pixel sits at index 0 — this
+    // matches BoofCV's `LinearContourLabelChang2004` row-major scan
+    // order, which always starts a contour at the topmost-then-leftmost
+    // foreground pixel.
+    auto rotate_to_canonical_start = [](std::vector<cv::Point2i>& v) {
+        if (v.empty()) return;
+        auto canonical = std::min_element(
+            v.begin(), v.end(),
+            [](const cv::Point2i& a, const cv::Point2i& b) {
+                return a.y < b.y || (a.y == b.y && a.x < b.x);
+            });
+        std::rotate(v.begin(), canonical, v.end());
+    };
+    auto fixup = [&rotate_to_canonical_start](std::vector<cv::Point2i>& v) {
         std::reverse(v.begin(), v.end());
+        rotate_to_canonical_start(v);
     };
 
     for (std::size_t i = 0; i < cvContours.size(); i++) {
@@ -343,16 +364,18 @@ void DetectPolygonFromContour::buildContoursFromOpenCV(
         const auto& src = cvContours[i];
         c.external.reserve(src.size());
         for (const auto& p : src) c.external.emplace_back(p.x, p.y);
-        reverse_in_place(c.external);
+        fixup(c.external);
 
-        for (int32_t child = hierarchy[i][2]; child != -1;
-             child = hierarchy[static_cast<std::size_t>(child)][0]) {
-            const auto& csrc = cvContours[static_cast<std::size_t>(child)];
-            std::vector<cv::Point2i> inner;
-            inner.reserve(csrc.size());
-            for (const auto& p : csrc) inner.emplace_back(p.x, p.y);
-            reverse_in_place(inner);
-            c.internal.push_back(std::move(inner));
+        if (saveInternalContours_) {
+            for (int32_t child = hierarchy[i][2]; child != -1;
+                 child = hierarchy[static_cast<std::size_t>(child)][0]) {
+                const auto& csrc = cvContours[static_cast<std::size_t>(child)];
+                std::vector<cv::Point2i> inner;
+                inner.reserve(csrc.size());
+                for (const auto& p : csrc) inner.emplace_back(p.x, p.y);
+                fixup(inner);
+                c.internal.push_back(std::move(inner));
+            }
         }
 
         contours_.push_back(std::move(c));

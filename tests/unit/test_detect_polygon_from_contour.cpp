@@ -207,9 +207,11 @@ TEST(DetectPolygonFromContour, detect_triangle) {
 }
 
 TEST(DetectPolygonFromContour, internalContourPreserved) {
-    // Render a thick black ring (donut). The ring's inner edge is an
-    // internal contour — finder-pattern detection downstream relies on
-    // internal contours being preserved.
+    // Asserts the C++ port's `saveInternalContours_=true` default. The
+    // Java QR factory wires `polygonContour()` → `linearExternal()`
+    // which sets `isSaveInternalContours=false`; this test confirms our
+    // deviation is intentional. Downstream pipelines (the QR finder-
+    // pattern detector at step 7c) rely on hole topology being available.
     int32_t W = 150, H = 150;
     cv::Mat gray(H, W, CV_8UC1, cv::Scalar(200));
     cv::circle(gray, cv::Point(75, 75), 40, cv::Scalar(0), cv::FILLED);
@@ -321,4 +323,117 @@ TEST(ContourEdgeIntensity, smallContours) {
     alg.process(contour, true);
     EXPECT_LT(alg.getEdgeOutsideAverage(), 8.0f);
     EXPECT_GT(alg.getEdgeInsideAverage(), 195.0f);
+}
+
+// ---------------------------------------------------------------------------
+// Codex review fix #1 — full ConfigPolylineSplitMerge plumbed through
+// adapter to the underlying PolylineSplitMerge.
+// ---------------------------------------------------------------------------
+
+TEST(PolylineSplitMergeAdapter, qrConfigDefaultsReachImpl) {
+    // Mirror the QR-specific overrides from `ConfigQrCode.java`
+    // (lines 93-105 in upstream). The previous adapter dropped these
+    // silently — every override below MUST land on impl_.
+    boofcv_qr::ConfigPolylineSplitMerge cfg;
+    cfg.minimumSides = 4;
+    cfg.maximumSides = 4;
+    cfg.convex = true;
+    cfg.loops = true;
+    cfg.minimumSideLength = 2;        // QR override (default 2 in cfg, 10 in impl)
+    cfg.cornerScorePenalty = 0.4;     // QR override (default 0.025)
+    cfg.maxSideError =
+        boofcv_qr::ConfigLength::relative(0.12, 3);  // QR override
+    cfg.thresholdSideSplitScore = 0.2;
+    cfg.maxNumberOfSideSamples = 50;
+    cfg.convexTest = 2.5;
+    cfg.extraConsider = boofcv_qr::ConfigLength::relative(1.0, 0);
+
+    PolylineSplitMergeAdapter adapter(cfg);
+    const auto& impl = adapter.impl();
+
+    EXPECT_EQ(4, impl.getMinSides());
+    EXPECT_EQ(4, impl.getMaxSides());
+    EXPECT_TRUE(impl.isConvex());
+    EXPECT_TRUE(impl.isLoops());
+    EXPECT_EQ(2, impl.getMinimumSideLength());
+    EXPECT_DOUBLE_EQ(0.4, impl.getCornerScorePenalty());
+    EXPECT_DOUBLE_EQ(0.2, impl.getThresholdSideSplitScore());
+    EXPECT_EQ(50, impl.getMaxNumberOfSideSamples());
+    EXPECT_DOUBLE_EQ(2.5, impl.getConvexTest());
+    EXPECT_DOUBLE_EQ(0.12, impl.getMaxSideError().fraction);
+    EXPECT_DOUBLE_EQ(3.0, impl.getMaxSideError().length);
+    EXPECT_DOUBLE_EQ(1.0, impl.getExtraConsider().fraction);
+    EXPECT_DOUBLE_EQ(0.0, impl.getExtraConsider().length);
+}
+
+TEST(PolylineSplitMergeAdapter, defaultCtorMatchesUpstreamDefaults) {
+    // Mirror the upstream `ConfigPolylineSplitMerge` default values
+    // (which differ from `PolylineSplitMerge`'s own ctor defaults —
+    // that's the original parity bug).
+    PolylineSplitMergeAdapter adapter;
+    const auto& impl = adapter.impl();
+
+    EXPECT_EQ(2, impl.getMinimumSideLength());
+    EXPECT_DOUBLE_EQ(0.025, impl.getCornerScorePenalty());
+    EXPECT_DOUBLE_EQ(0.2, impl.getThresholdSideSplitScore());
+    EXPECT_DOUBLE_EQ(2.5, impl.getConvexTest());
+    EXPECT_DOUBLE_EQ(0.05, impl.getMaxSideError().fraction);
+    EXPECT_DOUBLE_EQ(3.0, impl.getMaxSideError().length);
+}
+
+// ---------------------------------------------------------------------------
+// Codex review fix #2 — contour rotated to canonical (topmost,
+// leftmost) start pixel after winding reversal.
+// ---------------------------------------------------------------------------
+
+TEST(DetectPolygonFromContour, contourCanonicalStart) {
+    // Black 30x30 square; the topmost row's leftmost pixel must be the
+    // first contour element after reversal+rotation. BoofCV's
+    // LinearContourLabelChang2004 is row-major, so the first scanned
+    // foreground pixel is (x_min, y_min).
+    int32_t W = 200, H = 200;
+    int32_t x0 = 30, y0 = 30, x1 = 60, y1 = 60;  // inclusive corners
+    cv::Mat gray(H, W, CV_8UC1, cv::Scalar(200));
+    cv::rectangle(gray, cv::Rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1),
+                  cv::Scalar(0), cv::FILLED);
+    cv::Mat binary;
+    cv::threshold(gray, binary, 100, 1, cv::THRESH_BINARY_INV);
+
+    auto alg = makeDetector(4, 4);
+    alg->process(gray, binary);
+
+    ASSERT_EQ(1u, alg->getFoundInfo().size());
+    const auto& info = alg->getFoundInfo()[0];
+    ASSERT_FALSE(info.contour.external.empty());
+    const cv::Point2i& first = info.contour.external[0];
+
+    // Expected: the topmost row's leftmost foreground pixel.
+    EXPECT_EQ(x0, first.x);
+    EXPECT_EQ(y0, first.y);
+}
+
+// ---------------------------------------------------------------------------
+// Codex review fix #4 — saveInternalContours toggle.
+// ---------------------------------------------------------------------------
+
+TEST(DetectPolygonFromContour, saveInternalContoursToggle) {
+    // Same donut as `internalContourPreserved`, but with
+    // `setSaveInternalContours(false)` we expect no internal contours
+    // in the output Contour.
+    int32_t W = 150, H = 150;
+    cv::Mat gray(H, W, CV_8UC1, cv::Scalar(200));
+    cv::circle(gray, cv::Point(75, 75), 40, cv::Scalar(0), cv::FILLED);
+    cv::circle(gray, cv::Point(75, 75), 25, cv::Scalar(200), cv::FILLED);
+
+    cv::Mat binary;
+    cv::threshold(gray, binary, 100, 1, cv::THRESH_BINARY_INV);
+
+    auto alg = makeDetector(3, 100, /*canTouchBorder=*/true);
+    alg->setSaveInternalContours(false);
+    alg->process(gray, binary);
+
+    for (const auto& info : alg->getFoundInfo()) {
+        EXPECT_FALSE(info.hasInternal())
+            << "internal contour should have been suppressed";
+    }
 }

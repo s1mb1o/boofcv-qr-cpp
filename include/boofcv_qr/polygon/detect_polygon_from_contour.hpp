@@ -66,15 +66,61 @@ struct PointsToPolyline {
     virtual bool isConvex() const = 0;
 };
 
+// Mirror of boofcv.abst.shapes.polyline.{BaseConfigPolyline,ConfigPolylineSplitMerge}.
+// Holds every PolylineSplitMerge tunable that BoofCV's
+// `NewSplitMerge_to_PointsToPolyline` ctor plumbs through. The
+// `PolylineSplitMergeAdapter` ctor below applies *all* of these to its
+// underlying `PolylineSplitMerge` — without this the QR overrides from
+// `ConfigQrCode.java` (minimumSideLength=2, cornerScorePenalty=0.4,
+// maxSideError=relative(0.12,3), etc.) would silently revert to
+// `PolylineSplitMerge`'s baked-in defaults at the contour-fitting
+// stage. Defaults below match Java's `ConfigPolylineSplitMerge`
+// defaults verbatim.
+struct ConfigPolylineSplitMerge {
+    // BaseConfigPolyline fields
+    bool loops = true;
+    int32_t minimumSides = 3;
+    int32_t maximumSides = std::numeric_limits<int32_t>::max();
+    bool convex = true;
+
+    // ConfigPolylineSplitMerge fields (defaults from upstream)
+    int32_t minimumSideLength = 2;
+    ConfigLength extraConsider = ConfigLength::relative(1.0, 0);
+    double cornerScorePenalty = 0.025;
+    double thresholdSideSplitScore = 0.2;
+    int32_t maxNumberOfSideSamples = 50;
+    double convexTest = 2.5;
+    ConfigLength maxSideError = ConfigLength::relative(0.05, 3);
+    // refineIterations is intentionally not exposed: RefinePolyLineCorner
+    // is a separate (deferred) port stage. Setting refineIterations on
+    // this struct has no effect — documented here so callers don't
+    // expect it to.
+};
+
 // Default `PointsToPolyline` impl wrapping `PolylineSplitMerge`.
 // Owns its `PolylineSplitMerge` and forwards configuration through.
 class PolylineSplitMergeAdapter : public PointsToPolyline {
 public:
-    PolylineSplitMergeAdapter() {
-        impl_.setLoops(true);
-        impl_.setConvex(true);
-        impl_.setMinSides(3);
-        impl_.setMaxSides(std::numeric_limits<int32_t>::max());
+    // Default ctor: matches `ConfigPolylineSplitMerge`'s defaults.
+    PolylineSplitMergeAdapter() : PolylineSplitMergeAdapter(ConfigPolylineSplitMerge{}) {}
+
+    // Plumbed-config ctor — mirrors
+    // `boofcv.abst.shapes.polyline.NewSplitMerge_to_PointsToPolyline`'s
+    // ctor exactly: applies every one of the 11 ConfigPolylineSplitMerge
+    // fields to the underlying `PolylineSplitMerge`. The QR factory
+    // wires this up via `ConfigQrCode.polygon.detector.contourToPoly`.
+    explicit PolylineSplitMergeAdapter(const ConfigPolylineSplitMerge& cfg) {
+        impl_.setMinimumSideLength(cfg.minimumSideLength);
+        impl_.setMaxNumberOfSideSamples(cfg.maxNumberOfSideSamples);
+        impl_.setMaxSides(cfg.maximumSides);
+        impl_.setMinSides(cfg.minimumSides);
+        impl_.setExtraConsider(cfg.extraConsider);
+        impl_.setConvex(cfg.convex);
+        impl_.setThresholdSideSplitScore(cfg.thresholdSideSplitScore);
+        impl_.setCornerScorePenalty(cfg.cornerScorePenalty);
+        impl_.setConvexTest(cfg.convexTest);
+        impl_.setMaxSideError(cfg.maxSideError);
+        impl_.setLoops(cfg.loops);
     }
 
     bool process(const std::vector<cv::Point2i>& input,
@@ -98,8 +144,11 @@ public:
     bool isConvex() const override { return impl_.isConvex(); }
 
     // Direct access for callers that need to tune the underlying
-    // PolylineSplitMerge (cornerScorePenalty, minimumSideLength, etc.).
+    // PolylineSplitMerge after construction. Prefer the
+    // ConfigPolylineSplitMerge ctor over poking at impl() — keeping all
+    // config in one struct makes parity with upstream visible.
     PolylineSplitMerge& impl() { return impl_; }
+    const PolylineSplitMerge& impl() const { return impl_; }
 
 private:
     PolylineSplitMerge impl_;
@@ -241,8 +290,10 @@ public:
     // `cv::findContours` mutates its input.
     void process(const cv::Mat& gray, const cv::Mat& binary);
 
-    // Detection results. Owned by the detector; remain valid until the
-    // next process() call.
+    // Detection results. The reference is invalidated by the next
+    // `process()` call (the underlying vector is reused). Per CLAUDE.md
+    // "Public API design", this owns its storage value-typed —
+    // consumers wanting longer lifetimes should copy.
     const std::vector<DetectedInfo>& getFoundInfo() const { return foundInfo_; }
 
     // Configuration — getters/setters mirroring Java's @Getter/@Setter.
@@ -252,7 +303,13 @@ public:
     double getContourEdgeThreshold() const { return contourEdgeThreshold_; }
     void setContourEdgeThreshold(double v) { contourEdgeThreshold_ = v; }
 
-    void setHelper(PolygonHelper* helper) { helper_ = helper; }
+    // shared_ptr per CLAUDE.md "Public API design" line 32 (no raw
+    // pointers in public signatures). Java's GC makes ownership trivial
+    // here; in C++ shared ownership is the closest match for an
+    // injectable strategy hook.
+    void setHelper(std::shared_ptr<PolygonHelper> helper) {
+        helper_ = std::move(helper);
+    }
 
     // Number-of-sides forwarders (mirror Java's setNumberOfSides).
     void setNumberOfSides(int32_t minSides, int32_t maxSides);
@@ -282,6 +339,17 @@ public:
 
     // Underlying polyline fitter (downcast to inspect tunables).
     PointsToPolyline& getContourToPolyline() { return *contourToPolyline_; }
+
+    // Whether internal-hole contours are preserved in the output
+    // `Contour`. Deviation from BoofCV: BoofCV's `polygonContour()`
+    // factory wires `LinearExternalContours` (`isSaveInternalContours
+    // = false`); we default to `true` so downstream recovery
+    // pipelines (per CLAUDE.md "Public API design") can access hole
+    // topology — the QR finder pattern in particular is three nested
+    // squares. Documented in the algorithm doc under "Deviations
+    // from upstream".
+    bool isSaveInternalContours() const { return saveInternalContours_; }
+    void setSaveInternalContours(bool v) { saveInternalContours_ = v; }
 
     // ---- methods exercised by the JUnit suite (package-private in
     //      Java) — exposed here so tests can call them directly.
@@ -321,9 +389,15 @@ private:
     // tangentEdgeIntensity is consumed at ctor time when wiring
     // contourEdgeIntensity_; not stored as a field.
 
-    PolygonHelper* helper_ = nullptr;  // non-owning
+    // Per CLAUDE.md "Public API design" — shared ownership for
+    // injectable hooks (no raw pointers in public signatures).
+    std::shared_ptr<PolygonHelper> helper_;
 
     ConfigLength minimumContour_ = ConfigLength::relative(0.044, 4.0);
+
+    // See `setSaveInternalContours` doc above. Default `true` is a
+    // deviation from BoofCV's `polygonContour()` factory.
+    bool saveInternalContours_ = true;
 
     // Internal state — image dims, computed thresholds.
     int32_t imageWidth_ = 0;
