@@ -1,5 +1,40 @@
 # ChangeLog
 
+## 2026-05-10 (later) — Step 7b (part 2): DetectPolygonFromContour + ContourEdgeIntensity
+
+The contour-to-polygon stage. Wraps `cv::findContours` (per CLAUDE.md "OpenCV substitution policy") + `PolylineSplitMerge` (from part 1) + an edge-intensity false-positive filter. Produces the candidate polygon list that the QR finder-pattern detector (next file) consumes.
+
+### Added
+
+- [include/boofcv_qr/polygon/detect_polygon_from_contour.hpp](include/boofcv_qr/polygon/detect_polygon_from_contour.hpp) + [src/polygon/detect_polygon_from_contour.cpp](src/polygon/detect_polygon_from_contour.cpp) — verbatim port of `DetectPolygonFromContour` (638 LOC) and `ContourEdgeIntensity` (140 LOC), plus the `Contour` data struct, `PointsToPolyline` and `PolygonHelper` interfaces.
+  - **Contour extraction**: `cv::findContours(binary, contours, hierarchy, cv::RETR_CCOMP, cv::CHAIN_APPROX_NONE)` per CLAUDE.md "OpenCV substitution policy" line 145. `RETR_CCOMP` matches BoofCV's `LinearContourLabelChang2004` external+internal blob topology — top-level entries are external boundaries, their hierarchy children are internal-hole boundaries. We re-bundle them into the same `Contour` shape BoofCV uses.
+  - **Winding-direction adjustment**: OpenCV's `findContours` emits external contours **CCW in image coords**, BoofCV's tracer emits them **CW in image coords**. The polyline corner finder's convex check (`PolylineSplitMerge::setSplitVariables` / `isPositiveZ`) is hard-coded for BoofCV's winding — under OpenCV's winding it rejects splits that would form CONVEX corners (instead of concave). `buildContoursFromOpenCV` reverses each contour in place to fix this. Without the reversal, a perfect black square never reaches a 4-corner fit. Documented in the algorithm doc.
+  - `cv::findContours` mutates its input; we clone defensively (one allocation per `process()`).
+  - `PolylineSplitMergeAdapter : PointsToPolyline` wraps the part-1 `PolylineSplitMerge` so callers can swap in alternative corner finders.
+  - `BinaryContourFinder` / `LinearContourLabelChang2004` / `ContourPacked` indirection dropped (we get full point arrays from OpenCV).
+  - `MovingAverage` ported as an inline exponential-decay update (`milliContour` / `milliShapes`).
+  - **Lens distortion** deferred — same deferral pattern as in step 5's grid reader. The `polygon` and `polygonDistorted` fields are populated identically until distortion lands.
+  - Verbose-print paths skipped (no `boofcv.misc.VerbosePrint` infra ported).
+- [src/polygon/detect_polygon_from_contour.md](src/polygon/detect_polygon_from_contour.md) — algorithm doc per CLAUDE.md "Algorithm documentation requirement". Covers the 5-stage pipeline, `RETR_CCOMP` vs `LinearContourLabelChang2004` mapping, the winding-direction footgun, all tunables with their `ConfigQrCode` defaults, failure modes, integration points for downstream stages.
+
+### Tests
+
+- [tests/unit/test_detect_polygon_from_contour.cpp](tests/unit/test_detect_polygon_from_contour.cpp) — 11 cases:
+  - **Java parity** (subset that doesn't depend on `FactoryShapeDetector` / `FactoryThresholdBinary` / `CommonFitPolygonChecks`): `touchesBorder` (positive + negative branches), `determineCornersOnBorder`, `flip` static (mirrors the Java behaviour: vertex 0 preserved, 1..N-1 reversed). Plus all 2 cases from `TestContourEdgeIntensity.java` (`simpleCase`, `smallContours`).
+  - **Synthetic end-to-end** (substitutes for the upstream tests that pull in BoofCV's image-rendering/factory infrastructure): rectangle detection (4 black rectangles → 4 found polygons), circle rejection (3-6 sides — none match), triangle detection (3 sides → 1 found, 4-6 → none), internal-contour preservation (donut shape — internal hole survives in the output `Contour`), `canTouchBorder` toggle.
+
+### Regression
+
+- C++ unit tests: **184/184 pass** in 2.0 s (was 173/173).
+- Java baseline re-run: zero quality drift on `tests/baseline.json` (74.40 % aggregate, BoofCV 1.3.0 on 562 / 1258).
+
+### Deferred from upstream
+
+- `RefinePolygonToGray` and the subpixel-corner refinement chain — next assignment, not part of this commit. The output polygons here have integer-pixel corners; refinement is a separate stage that consumes them.
+- `setLensDistortion` — same deferral as step 5's grid reader. Stub no-op so the API surface is parity-clean; documented in the algorithm doc.
+- `VerbosePrint` instrumentation — not ported.
+- Most of `TestDetectPolygonFromContour.java`'s end-to-end tests — they depend on `FactoryThresholdBinary` / `FactoryShapeDetector.polygonContour` / `CommonFitPolygonChecks` (BoofCV factory infra). Synthetic equivalents using `cv::rectangle` / `cv::fillPoly` cover the same code paths.
+
 ## 2026-05-10 — Step 7b (part 1): PolylineSplitMerge + MaximumLineDistance
 
 Largest single file in the port at 907 LOC of Java source (excluding the inner `Corner`, `CandidatePolyline`, `SplitResults`, `ErrorValue` types). This is the corner-finding algorithm that turns a contour pixel sequence into a polyline with subpixel-quality corners — the unique-to-BoofCV stage that CLAUDE.md "OpenCV substitution policy" forbids replacing with `cv::approxPolyDP`.

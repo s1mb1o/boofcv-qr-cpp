@@ -57,6 +57,7 @@ add_library(boofcv_qr STATIC
     src/polygon/square_node.cpp
     src/polygon/square_graph.cpp
     src/polygon/polyline_split_merge.cpp
+    src/polygon/detect_polygon_from_contour.cpp
 )
 
 target_include_directories(boofcv_qr
@@ -108,6 +109,7 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_square_node.cpp
         tests/unit/test_square_graph.cpp
         tests/unit/test_polyline_split_merge.cpp
+        tests/unit/test_detect_polygon_from_contour.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE
