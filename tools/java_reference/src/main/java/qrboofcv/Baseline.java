@@ -132,9 +132,23 @@ public final class Baseline {
         rec.put("subset", subset);
         rec.put("category", category);
 
+        // Parse GT first — independent of whether the image loads, so
+        // intermittent load failures (BoofCV's JPEG path is occasionally
+        // flaky under heavy host load) don't drop the GT count.
+        rec.put("ground_truth", parseGroundTruth(image));
+
+        // Load with a single retry. A second call has been observed to
+        // succeed when the first transiently returned null on a known-good
+        // JPEG — likely a thread-unsafety in the JPEG decoder under load.
         GrayU8 g = UtilImageIO.loadImage(image.toString(), GrayU8.class);
         if (g == null) {
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            g = UtilImageIO.loadImage(image.toString(), GrayU8.class);
+        }
+        if (g == null) {
             rec.put("error", "load_failed");
+            rec.put("detections", new ArrayList<>());
+            rec.put("failures", new ArrayList<>());
             return rec;
         }
         rec.put("image_width", g.width);
@@ -145,7 +159,6 @@ public final class Baseline {
         long elapsedNs = System.nanoTime() - t0;
         rec.put("elapsed_ms", elapsedNs / 1_000_000.0);
 
-        rec.put("ground_truth", parseGroundTruth(image));
         rec.put("detections", serialiseDetections(detector.getDetections()));
         rec.put("failures", serialiseDetections(detector.getFailures()));
         return rec;
