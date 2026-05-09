@@ -302,6 +302,7 @@ void QrCode::reset() {
     message.clear();
     bitsTransposed = false;
     totalBitErrors = 0;
+    alignment.clear();
 }
 
 }  // namespace boofcv_qr

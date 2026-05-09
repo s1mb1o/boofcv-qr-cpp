@@ -65,6 +65,7 @@ add_library(boofcv_qr STATIC
     src/finder/square_locator_pattern_detector_base.cpp
     src/finder/qr_code_position_pattern_detector.cpp
     src/finder/qr_code_position_pattern_graph_generator.cpp
+    src/alignment/qr_code_alignment_pattern_locator.cpp
 )
 
 target_include_directories(boofcv_qr
@@ -121,6 +122,7 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_square_locator_pattern_detector_base.cpp
         tests/unit/test_qr_code_position_pattern_detector.cpp
         tests/unit/test_qr_code_position_pattern_graph_generator.cpp
+        tests/unit/test_qr_code_alignment_pattern_locator.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE

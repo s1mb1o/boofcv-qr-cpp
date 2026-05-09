@@ -1,5 +1,37 @@
 # ChangeLog
 
+## 2026-05-10 (later⁴) — Step 8: QrCodeAlignmentPatternLocator + `QrCode::alignment[]`
+
+The alignment-pattern subpixel locator. Per QR spec, every version ≥ 2 has at least one alignment pattern at known grid coordinates inside the marker; the orchestrator (step 9, next) seeds a homography from the three finder patterns, then this stage refines each alignment-pattern centre to subpixel accuracy so the homography can correct for image-distortion drift far from the finders.
+
+### Added
+
+- [include/boofcv_qr/alignment/qr_code_alignment_pattern_locator.hpp](include/boofcv_qr/alignment/qr_code_alignment_pattern_locator.hpp) + [src/alignment/qr_code_alignment_pattern_locator.cpp](src/alignment/qr_code_alignment_pattern_locator.cpp) — verbatim port of `QrCodeAlignmentPatternLocator` (311 LOC). Two-stage subpixel refinement: `centerOnSquare` (10-iter 3×3 grey-image gradient walk) + `meanshift` (10-iter 8×8 mean-shift on `[-1.5, +1.5]` modules with 0.7 step decay). Adjustment seeded from previously-found patterns in the same row/column to carry homography drift forward. The `localize()` edge-scan path (commented out at line 139 of upstream) is ported but reachable only via `setUseEdgeScan(true)` — default false matches Java.
+- [src/alignment/qr_code_alignment_pattern_locator.md](src/alignment/qr_code_alignment_pattern_locator.md) — algorithm doc covering the two-stage refinement, why this approach, the lookup-table-of-pointers contract (qr.alignment must not be re-grown after `initializePatterns`), and integration points for step 9.
+- **`QrCode::Alignment` inner struct + `alignment[]` field** ([include/boofcv_qr/qr_code.hpp](include/boofcv_qr/qr_code.hpp) + [src/decoder/qr_code.cpp](src/decoder/qr_code.cpp)). `Alignment` carries `pixel`, `moduleX`, `moduleY`, `moduleFound`, `threshold` — same shape as Java's nested `QrCode.Alignment` class. `QrCode::reset()` clears `alignment` to maintain the existing test invariant.
+
+### Tests
+
+- [tests/unit/test_qr_code_alignment_pattern_locator.cpp](tests/unit/test_qr_code_alignment_pattern_locator.cpp) — 9 cases:
+  - **Java parity**: `greatestDown`, `greatestUp` (the two static helpers, mirrors Java verbatim); `initializePatterns` (mirrors `TestQrCodeAlignmentPatternLocator.initializePatterns` for v2 + v7 with the same expected module coordinates).
+  - **`QrCode` extensions**: `alignment_emptyAfterReset` (asserts the new field clears with `reset()`), `Alignment_resetClearsFields` (the inner type's reset).
+  - **Coverage extensions**: `initializePatterns_v1HasNoAlignment`, `initializePatterns_v40HasMaxCount` (49 - 3 = 46 for v40), `useEdgeScanRoundtrip`.
+  - **Synthetic centerOnSquare**: renders a 5×5 alignment pattern via `cv::rectangle`, sets up a v2 QR with finder corners that put the alignment at module (18, 18), runs the full `process()` pipeline, asserts the located pixel coordinates land within ~1 module of ground truth.
+
+The Java JUnit's `simple` and `withLensDistortion` cases need `QrCodeEncoder` + `QrCodeGeneratorImage` (encoder-side, deferred — out of scope per CLAUDE.md decoder-only deliverable). The synthetic case substitutes for the same code path coverage.
+
+### Regression
+
+- C++ unit tests: **237/237 pass** (was 228/228; 9 new cases).
+- Java baseline re-run: zero quality drift on `tests/baseline.json` (74.40 % aggregate, BoofCV 1.3.0 on 562 / 1258).
+
+### Deferred from upstream
+
+- **Lens distortion** integration in `setLensDistortion` — same deferral pattern as steps 5 / 7b / 7c. Stub no-op.
+- **`localize()` edge-scan path** wired off by default. Reachable via `setUseEdgeScan(true)`. Java has it commented out at line 139.
+- **Encoder-side test cases** (`simple`, `withLensDistortion`, `centerOnSquare`/`localize` direct tests with `QrCodeGeneratorImage`) — depend on `QrCodeEncoder` which is out of scope. Synthetic equivalents using `cv::rectangle` cover the same code paths.
+- **Java's `setMarker(qr)` 1-arg form** — our `QrCodeBinaryGridReader::setMarker` takes the finder-corner coordinates as separate args (since `QrCode` doesn't have `ppCorner`/`ppRight`/`ppDown` geometry fields yet — those land at step 9). The locator's `process()` accepts them as parameters, mirroring the orchestrator's call flow.
+
 ## 2026-05-10 (later³) — Step 7c: QR finder-pattern detector chain
 
 Three classes that turn the candidate-polygon list from `DetectPolygonBinaryGrayRefine` (step 7b/3) into a graph of QR finder patterns (the three "L"-corner squares with the 1:1:3:1:1 black/white ratio). Step 9's orchestrator (next) walks the graph to find triplets.

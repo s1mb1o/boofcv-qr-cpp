@@ -4,9 +4,12 @@
 // VERSION_INFO[] table, and the data-side runtime fields the
 // QrCodeDecoderBits orchestrator needs (version, error, mask, rawbits,
 // corrected, message, byteEncoding, failureCause, mode, totalBitErrors,
-// bitsTransposed). The geometry fields (ppCorner, ppDown, ppRight,
-// bounds, Hinv, alignment list) are deferred to step 7 / 9 — they need
-// OpenCV which we add at step 6 with the binarization layer.
+// bitsTransposed).
+//
+// Step 8 adds the `Alignment` inner struct and `alignment[]` field —
+// populated by the alignment-pattern locator. The remaining geometry
+// fields (`ppCorner`, `ppDown`, `ppRight`, `bounds`, `Hinv`) are
+// deferred to step 9's orchestrator.
 //
 // Algorithm description: src/decoder/qr_code.md.
 
@@ -14,6 +17,8 @@
 #define BOOFCV_QR_QR_CODE_HPP
 
 #include "boofcv_qr/qr_mode.hpp"
+
+#include <opencv2/core.hpp>
 
 #include <array>
 #include <cstdint>
@@ -97,6 +102,29 @@ public:
 // QR code result struct. Public mutable surface mirrors the Java original.
 class QrCode {
 public:
+    // Alignment-pattern record. Populated by the alignment-pattern
+    // locator (step 8) — one entry per alignment pattern that the
+    // locator was able to find for this QR. `moduleX`/`moduleY` are
+    // the expected grid coordinates from `VERSION_INFO[v].alignment`;
+    // `moduleFound` is the refined sub-module grid coord; `pixel` is
+    // the corresponding image-pixel position; `threshold` is the local
+    // gray threshold the locator picked.
+    struct Alignment {
+        cv::Point2d pixel{0.0, 0.0};
+        int32_t moduleX = 0;
+        int32_t moduleY = 0;
+        cv::Point2d moduleFound{0.0, 0.0};
+        double threshold = 0.0;
+
+        void reset() {
+            pixel = cv::Point2d(0.0, 0.0);
+            moduleX = 0;
+            moduleY = 0;
+            moduleFound = cv::Point2d(0.0, 0.0);
+            threshold = 0.0;
+        }
+    };
+
     // Mask applied to format information when encoding (ISO 18004 §7.9).
     static constexpr int32_t FORMAT_MASK = 0b101010000010010;
 
@@ -133,6 +161,14 @@ public:
     double threshDown = 0.0;
     double threshRight = 0.0;
     double threshDownRight = 0.0;
+
+    // Alignment patterns located by step 8 (`QrCodeAlignmentPatternLocator`).
+    // Empty for v1 (no alignment patterns); for v2+ this is populated
+    // with one entry per non-corner-overlapping cell in
+    // `VERSION_INFO[v].alignment` × `alignment` after the locator
+    // succeeds. Java's `DogArray<Alignment>` → `std::vector<Alignment>`
+    // (value-typed; `// TODO(perf): recycle`).
+    std::vector<Alignment> alignment;
 
     QrCode() { reset(); }
 
