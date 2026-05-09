@@ -68,7 +68,10 @@ Files to port verbatim, in order:
    → `include/boofcv_qr/squares/square_graph.hpp` + `src/polygon/square_graph.cpp`
 4. `boofcv-recognition/.../qrcode/PositionPatternNode.java`
    → `include/boofcv_qr/position_pattern_node.hpp`
-5. Tests: mirror `TestSquareGraph.java` and any `TestPositionPattern*`.
+5. Tests: mirror `TestSquareNode.java`, `TestSquareEdge.java`,
+   `TestSquareGraph.java`, and any `TestPositionPattern*`. (CLAUDE.md
+   "Workflow per file" mandates mirroring the corresponding JUnit
+   tests for every ported file.)
 
 Each of these uses `cv::Point2d` / `std::array<cv::Point2d, 4>` per
 CLAUDE.md type mappings. Total: ~500 lines of source. Estimate: 0.5
@@ -96,8 +99,20 @@ Order matters because the dependencies cascade:
 
 Estimate: 3–5 work-days. Carries the highest parity risk — corner
 accuracy here propagates into homography accuracy and bit-sampling
-accuracy. **Run `tests/regression/score.py` after every commit in
-this segment** and gate on per-category drift < 5%.
+accuracy.
+
+**Parity gating during 7b**: `tests/regression/score.py` consumes
+the detector summary JSON produced by the Java baseline harness;
+the equivalent C++ CLI summary doesn't exist until step 9 wires
+the orchestrator. So during 7b, gate on **component parity tests
+instead** — each ported file's JUnit cases must pass byte-for-byte,
+and add cross-implementation tests where the same input is fed to
+the Java reference (`tools/java_reference/Baseline` extended with
+intermediate-state dumps per CLAUDE.md "Intermediate-state dumps
+for debugging parity failures") and the C++ port, and the
+intermediate outputs (contour list, polygon corner coordinates,
+refined polygon coordinates) compared. Defer the per-category
+±2% dataset gate to step 9 where it belongs.
 
 ### 7c. Finder pattern detector
 
@@ -123,51 +138,129 @@ triplet detected.
 ### 8. Alignment pattern detector
 
 `qrcode/QrCodeAlignmentPatternLocator.java` (311 LOC, self-contained).
-The algorithm: given a coarse homography from the 3 finders + the QR
-version, look up the expected alignment-pattern positions from
-`VERSION_INFO[v].alignment`, locally search a 5×5 module window
-around each expected position for a 5×5 alignment-pattern signature
-(black centre + white ring + black ring + white background), and
-refine the centre subpixel.
+
+The actual Java algorithm (do **not** describe it as a 5×5 signature
+search — that path exists as `localize()` but is **commented out** in
+the live code, see `localizePositionPatterns()` lines 112–148):
+
+1. **Initialize expected positions** from `VERSION_INFO[v].alignment` —
+   produces the `lookup[]` array of `Alignment` entries with
+   `moduleX`/`moduleY` set, skipping the three corners that overlap
+   the finder patterns.
+2. **For each expected position, in row-major order**: compute an
+   adjustment `(adjX, adjY)` from previously-found alignment patterns
+   in the same row (left neighbour) and column (above neighbour) —
+   `adj = (predicted_module - found_module)`. Carries homography drift
+   forward across the grid.
+3. **`centerOnSquare(a, moduleY + 0.5 + adjY, moduleX + 0.5 + adjX)`** —
+   coarse centring on the 5×5 alignment square via grey-pixel scoring.
+4. **`meanshift(a, moduleFound.y, moduleFound.x)`** — subpixel
+   refinement via a few mean-shift iterations on the local greyscale.
+
+The edge-scan `localize()` method is in the source but disabled
+(commented out at line 139). Port it for completeness/reachability
+via configuration but do **not** wire it into the default flow.
 
 Tests: mirror `TestQrCodeAlignmentPatternLocator.java`. **Add the
 geometry fields to `QrCode`** at this point (`ppCorner`, `ppDown`,
-`ppRight` populated by step 7c above; `alignment` populated here).
+`ppRight` populated by step 7c above; `alignment[]` populated here;
+`Hinv` populated by step 9 below).
 
 Estimate: 1 work-day.
 
 ### 9. Top-level orchestrator + dataset regression
 
-`qrcode/QrCodeDecoderImage.java` (625 LOC). Wires:
+`qrcode/QrCodeDecoderImage.java` (625 LOC).
 
-```
-binary → polygon → finder → version-detection (decoder bits)
-       → alignment (with rough homography) → final homography
-       → bit sampling → format/mask/RS/mode (already done in steps 2–4)
-```
+**Runtime decode order** (mirrors `QrCodeDecoderImage.decode()`
+starting at line 226 of the Java source — port verbatim):
+
+1. **`extractFormatInfo(qr)`** — read the format-info bits using a
+   homography seeded from the 3 finder-pattern corners alone (no
+   alignment yet, no version yet); BCH-correct via
+   `QrCodePolynomialMath::correctFormatBits`; populate `qr.error`
+   and `qr.mask`. Returns `false` → `Failure::FORMAT`.
+2. **`extractVersionInfo(qr)`** — for QR ≥ v7, read the version-info
+   bits and BCH-correct. For v1..v6, version is inferred from the
+   distance between the finders. Returns `false` → `Failure::VERSION`.
+3. **`alignmentLocator.process(gray, qr)`** — step-8 alignment-pattern
+   localisation. Needs the rough homography from step 1's finder
+   corners + the now-known version. Returns `false` →
+   `Failure::ALIGNMENT`.
+4. **Iterative transform + read raw data** (up to 6 attempts):
+   - `gridReader.setMarker(qr)` then `getTransformGrid().addAllFeatures(qr)`
+     (= 12 finder corners + alignment centres).
+   - On each retry after the first, call `removeFeatureWithLargestError()`
+     to drop the worst-fitting correspondence (typically a damaged
+     outside finder corner). Stop if no removal reduces the error.
+   - `computeTransform()` then `readRawData(qr)` (sample every data
+     module via the homography → fill `qr.rawbits`).
+   - `decoder.applyErrorCorrection(qr)` (steps 2 + 4 already wired).
+   - On any failure, retry with one more pair removed.
+5. **`decoder.decodeMessage(qr)`** — only after RS succeeds. Mode
+   dispatch (steps 3 + 4 already wired). Failure here is captured in
+   `qr.failureCause` but the orchestrator returns `true` because the
+   QR was at least RS-correctable.
+
+**Do not** describe this as "bit sampling → format/mask/RS/mode" —
+that wording inverts the order (format/mask are extracted *before*
+sampling, not after) and would steer the port away from Java parity.
 
 Plus considerable bookkeeping for `bitsTransposed`, multi-attempt
-decoding, threshold-feedback between binarization and grid sampling.
-This is also where:
+decoding (the 6-iteration retry loop above), and the multi-stage
+homography (rough → refined-with-alignment → outlier-rejected).
 
-- `setTransformFromLinesSquare` from step 5 finally gets used (the
-  unknown-version sampling path).
-- The `std::function` strategy injection hooks called out by codex
-  in step 4 (RS strategy, alignment-pattern strategy) should land,
-  per CLAUDE.md "Public API design".
-- The per-block decode status / RS error positions field that codex
-  flagged on step 4 should be added to `QrCode` and threaded through
-  `QrCodeDecoderBits::applyErrorCorrection`.
+This is also where the **CLAUDE.md "Public API design" mandates that
+have been deferred since step 4 finally land**:
+
+- **Stage-isolation public entry points** (CLAUDE.md line 25):
+  `find_finders(const cv::Mat& binary)`, `sample_bit_matrix(corners,
+  version)`, `extract_raw_codewords(...)`, `rs_correct(...)`,
+  `decode_message(...)`. Each must be callable directly without going
+  through the top-level orchestrator. Add gtests that exercise each
+  in isolation with hand-built inputs.
+- **Strategy injection** (CLAUDE.md line 26): `std::function`-typed
+  hooks at construction time for the RS decoder and the
+  alignment-pattern detector. Add tests that verify a custom
+  injection runs in place of the default (e.g. a known-prefix RS
+  stub).
+- **Polygon-only mode** (CLAUDE.md line 27): `detect_polygons_only()`
+  that stops after the alignment-pattern stage and returns candidate
+  quadrilaterals + finder triplets without paying RS / mode-decode
+  cost. Add a gtest.
+- **Raw codewords + erasure positions in the public result**
+  (CLAUDE.md line 28): add `std::vector<uint8_t> rawCodewords`,
+  `std::vector<int32_t> rsErrorLocations`, and per-block
+  `BlockStatus blockStatus[]` to `QrCode`; thread them through
+  `QrCodeDecoderBits::applyErrorCorrection` (which currently only
+  surfaces the aggregate `totalBitErrors` — the codex review on
+  step 4 flagged this).
+- **`setTransformFromLinesSquare`** from step 5 finally gets used
+  here (the rough-homography pre-version path inside
+  `extractFormatInfo`).
+- **`setMarkerUnknownVersion`** on the grid reader: trivial follow-on
+  once `setTransformFromLinesSquare` exists.
+- **pybind11-friendliness check** (CLAUDE.md line 32): the public API
+  should compose into a Python binding without rewriting. Add a smoke
+  pybind11 module under `tools/python/` that wraps the orchestrator
+  and confirms `cv::Mat` round-trips through cv2's buffer protocol.
+
+These are not "after-the-fact retrofits" — they are part of the
+step-9 deliverable, with explicit test tasks per item.
 
 **Step-9 commit boundary**: end-to-end pipeline with `cv::Mat
-input → std::vector<QrCode> output`. Runs the full
+input → std::vector<QrCode> output`, plus the public stage-level API
+listed above with isolated gtests for each entry point. New
+`tools/cli/` binary that runs the full
 `pricetag-vision-datasets/data/external/boofcv-qrcodes` regression
-set via a new `tools/cli/` binary, score with the existing
-`tests/regression/score.py`. CI gate per CLAUDE.md: per-category
-read rate within 2% of the Java baseline in `tests/baseline.json`.
+set and emits a summary JSON in the same shape as
+`tools/java_reference/Baseline.java` so `tests/regression/score.py`
+can compare them. CI gate per CLAUDE.md: per-category read rate
+within 2% of the Java baseline in `tests/baseline.json`.
 
-Estimate: 3–4 work-days, plus regression-iteration time to close the
-gap if early runs come in below the ±2% target.
+Estimate: 3–4 work-days for the orchestrator + public-API surface +
+gtests, plus 2–4 days of regression-iteration to close the gap if
+early runs come in below the ±2% target.
 
 ## Total estimate
 
