@@ -14,6 +14,25 @@ Deliverable: a standalone C++17 library `qr-boofcv-cpp` exposing a `QrCodeDetect
 
 Do NOT prioritize code beauty over correctness. Do NOT invent algorithms. Do NOT "fix" things that look weird in the Java source — they are usually load-bearing.
 
+## Public API design — for downstream recovery pipelines
+
+This library is consumed by **pricetag-vision** (the Lenta-hackathon price-tag CV pipeline), which builds custom QR recovery on top of standard decode. That use case is non-negotiable and shapes the public surface from day 1.
+
+The recovery techniques pricetag-vision plans to layer on top — known-prefix Reed-Solomon decoding, clipped-QR fallback, multi-frame codeword fusion, alignment-pattern-missing fallback, retailer-specific format dialects — **all require owning the post-binarization chain**: calling individual stages in isolation, swapping specific algorithms, and reading raw intermediate output. The API must support that without forking the library.
+
+Concrete requirements:
+
+- **Stages must be callable in isolation.** Runtime order: `binary → polygon → finder → alignment → sampler → format/version + mask XOR → raw-codeword extraction (de-interleave) → RS error correction (uses Galois) → mode decode`. Each stage in this chain is part of the public API, not private implementation. Expose entry points like `find_finders(const cv::Mat& binary)`, `sample_bit_matrix(corners, version)`, `extract_raw_codewords(const BitMatrix& m, format_info)`, `rs_correct(std::vector<uint8_t>& codewords, version, ec_level)`, `decode_message(const std::vector<uint8_t>& corrected_codewords)`. The top-level `QrCodeDetector::detect()` is just one composition; consumers compose differently. Note: this runtime order is **the inverse** of the porting order under "Porting order (bottom-up, mandatory)" — port leaves first, compose them last.
+- **Strategy injection for RS decoder and alignment-pattern detector.** Concrete near-term consumer needs: known-prefix RS (treat a fixed payload prefix as known erasures to recover otherwise-unrecoverable codes) and clipped-QR fallback (one finder missing or right edge cut). Provide `std::function`-based or pure-virtual hooks at construction time. Do NOT require inheritance from the concrete detector class.
+- **Polygon-only / detection-only mode.** Best-frame selection over video calls detection many times per full decode. Expose `detect_polygons_only()` that stops after the alignment-pattern stage and returns candidate quadrilaterals + finder triplets, without paying RS / mode-decode cost.
+- **Raw codewords and erasure positions exposed in the result.** After bit sampling but before mode decoding, the public result must include raw codeword bytes, RS error/erasure positions used, and per-block decode status. Downstream may re-decode with custom RS parameters, apply known-prefix recovery, or fuse codewords across frames before mode-decoding.
+- **Stay single-frame.** No multi-frame state, no temporal voting, no panorama logic in this library. That is the consumer's responsibility. The library exposes enough per-frame intermediate state that the consumer can build it on top.
+- **No tag-style or domain knowledge.** The port understands ISO/IEC 18004 QR codes only. Retailer-specific dialects (e.g. Lenta's 24-bit prefix) live in the consumer, built on top of the codeword stream this library exposes.
+- **`cv::Mat` at boundaries, no global state, value-semantic config.** Detector instances are reentrant. Config passed by value at construction. No singletons, no thread-locals, no `init()` calls.
+- **pybind11-friendly from day 1.** Public APIs return owned types (`std::vector`, `std::optional`); no raw pointers in public signatures. `cv::Mat` round-trips through cv2's buffer protocol cleanly. Python bindings are out of v1 scope but the surface must not require an API rewrite to add them.
+
+The intermediate-state debug-dump hooks under "Intermediate-state dumps for debugging parity failures" are diagnostic, not a substitute for these production-API requirements. The two are independent: dumps may be `#ifdef`'d out in release builds; the stage-level API never is.
+
 ## Stack
 
 - **C++17** strictly. Do not use C++20 features.
@@ -103,6 +122,19 @@ for (int y = 0; y < image.rows; y++) {
 
 Use row pointers (`image.ptr<uint8_t>(y)`) inside hot loops for speed once parity is verified. Not before.
 
+## Binary image convention
+
+After binarization (step 6), binary images follow BoofCV's convention so that ported code can mirror Java pixel-for-pixel:
+
+- **Format**: `cv::Mat` of type `CV_8UC1`.
+- **Values**: `0` = background (light pixel in source), `1` = foreground (dark pixel = a QR module). This matches BoofCV's `GrayU8` binary output.
+- **Polarity**: foreground = the **dark** modules. When porting Java conditions like `if (image.unsafe_get(x,y) == 1)`, keep the literal `1`. Do NOT rewrite to `255`.
+- **`cv::findContours`**: accepts any non-zero pixel as foreground, so `0/1` works directly — no scale-up needed before contour extraction.
+- **PNG dumps**: multiply by `255` only at the dump boundary (`cv::Mat dump = binary * 255;`) so the file is human-readable and byte-comparable across Java / C++ pipelines. Never alter the in-memory `0/1` buffer.
+- **Parity diffs**: Java `boofcv.alg.filter.binary` writes `0/1` `GrayU8` too, so byte-for-byte parity diffs against a Java reference dump are direct after both sides apply the `*255` PNG-dump rule.
+
+If a stage genuinely needs `0/255` semantics (e.g. an OpenCV op that interprets the value, not just zero/non-zero), make the conversion local and explicit (`bin * 255`), and convert back if the result re-enters the pipeline.
+
 ## OpenCV substitution policy
 
 **Replace with OpenCV** (do NOT port from Java):
@@ -110,8 +142,8 @@ Use row pointers (`image.ptr<uint8_t>(y)`) inside hot loops for speed once parit
 - Image I/O (`cv::imread`, `cv::imwrite`).
 - Color conversion (`cv::cvtColor`).
 - Resize / pyramid (`cv::resize`, `cv::pyrDown`).
-- Contour extraction from a binary image (`cv::findContours` with `RETR_EXTERNAL`, `CHAIN_APPROX_NONE`).
-- `cv::getPerspectiveTransform`, `cv::warpPerspective`, `cv::remap`.
+- Contour extraction from a binary image (`cv::findContours` with `CHAIN_APPROX_NONE`). Pick the retrieval mode to **match BoofCV's `LinearContourLabelChang2004` configuration** — most stages need both external and internal contours plus the parent/child hierarchy because finder patterns are nested (the inner 3×3 black island lives inside the hole of the outer 7×7 ring). Use `RETR_CCOMP` or `RETR_TREE` and consume the hierarchy as BoofCV does. Do **not** default to `RETR_EXTERNAL` — it silently discards the nested blobs that finder/alignment detection rely on.
+- Homography math only: `cv::getPerspectiveTransform` (compute matrix), `cv::perspectiveTransform` (transform individual points). Do **not** use `cv::warpPerspective` or `cv::remap` to rectify a QR for bit sampling — BoofCV samples the source binary directly at homography-mapped grid coordinates, and OpenCV's interpolation / rounding / border-replication choices would change sampled bits. `cv::warpPerspective` and `cv::remap` are permitted only outside the QR sampling path (e.g. visualization or debug renders).
 - Generic Gaussian blur and Sobel (when not customized by BoofCV).
 
 **Port verbatim** (do NOT substitute OpenCV equivalents):
@@ -136,7 +168,7 @@ Each step ships with green unit tests before the next begins.
 6. **Binary image preparation**: BoofCV's local threshold. Compare binarized output pixel-for-pixel against the Java reference on a small image set.
 7. **Polygon detector** and **finder pattern (position pattern) detector**. Compare detected polygons against Java.
 8. **Alignment pattern detector**.
-9. **Top-level `QrCodeDetector` orchestrator** wiring 6 → 7 → 8 → 5 → 4 → 3 → 2.
+9. **Top-level `QrCodeDetector` orchestrator.** Runtime wiring is `6 → 7 → 8 → 5 → 4 → 2 → 3` — i.e. `binary → polygon/finder → alignment → sampler → format/version + mask XOR → RS (using Galois from step 1) → mode decode`. Note this is the inverse of the porting order: porting goes bottom-up by dependency (Galois first), runtime goes top-down through the pipeline. **Mode decoding consumes RS-corrected codewords, not raw bits — never invert step 2 and step 3 in the runtime path.**
 
 Do NOT skip ahead. If step N is failing, do not start N+1.
 
@@ -160,6 +192,9 @@ When unsure, default to verbatim.
 - Do NOT skip the parity check after each ported file.
 - Do NOT use `using namespace std;` or `using namespace cv;`. Always qualify.
 - Do NOT include `<bits/stdc++.h>` ever.
+- Do NOT commit an algorithmic source file without its companion `.md` algorithm doc — the doc is part of the port, not a follow-up.
+- Do NOT make a stage callable only through the top-level `QrCodeDetector`. Each stage in steps 1–8 must be reachable as a public entry point so downstream recovery pipelines can compose differently — see "Public API design".
+- Do NOT bake retailer-specific or domain-specific knowledge (Lenta prefix, any specific tag style) into this library. Domain dialects live in the consumer.
 
 ## Test harness contract
 
@@ -225,16 +260,38 @@ qr-boofcv-cpp/
     └── nlohmann_json/
 ```
 
+Each algorithmic source file under `src/galois/`, `src/reed_solomon/`, `src/decoder/`, `src/sampler/`, `src/binary/`, `src/polygon/`, `src/finder/`, `src/alignment/`, and `src/detector/` ships with a companion `<file>.md` algorithm doc — see "Algorithm documentation requirement" below.
+
+## Algorithm documentation requirement
+
+For every ported file in steps 1–9 of the porting order — **including the top-level orchestrator (step 9)** — produce a companion `<file>.md` alongside the source documenting **what the algorithm does and why it works** — not what the code is. The audience is a future engineer (likely us) considering writing a new QR decoder from scratch and wanting to borrow BoofCV's good ideas without re-reading 800 lines of Java. The orchestrator's doc covers different ground (stage wiring, runtime order, failure-mode propagation, the public-API contract for stage-isolation use), but it is required for the same reason: the wiring decisions are exactly what a downstream consumer needs to understand before composing stages differently.
+
+Each algorithm doc must cover:
+
+- **One-paragraph summary.** What this stage takes in, what it produces, in plain English.
+- **Algorithm description.** The actual approach. E.g., "local threshold computes a per-pixel mean over a 21×21 window; pixels below `mean + bias` become black." Math where it matters. Cite the BoofCV class and method names being described.
+- **Why this approach over alternatives.** E.g., why BoofCV uses its own local threshold rather than `cv::adaptiveThreshold`; why finder-pattern detection uses a graph search over square contours rather than the classical 1:1:3:1:1 raster scan; why Berlekamp–Massey vs. Peterson–Gorenstein–Zierler. If BoofCV explicitly chose a non-obvious approach, capture *why* — that is the load-bearing part.
+- **Failure modes and known limits.** What inputs make this stage fail. How downstream stages cope (or don't) when this stage's output is wrong or absent.
+- **Tunable parameters.** Which constants in the code are knobs, what range is reasonable, what happens at the extremes. Useful when downstream consumers want to tune for their specific inputs (low-res shelf video, motion blur, partial occlusion, etc.).
+- **Integration points for downstream recovery.** If this stage is one of the strategy-injection points or has output consumers will want to subclass / replace, name those hooks and what invariants alternative implementations must preserve.
+- **Cross-references.** Upstream BoofCV file path, the git tag pinned in `UPSTREAM_VERSION`, any papers or specs cited in BoofCV comments (e.g. ISO/IEC 18004 section numbers), and related stages this one depends on or feeds.
+
+Write the doc **while reading the Java source**, not after — if you can't describe the algorithm in prose, you do not understand it well enough to port it correctly. The doc is part of the port; an algorithmic file without its `.md` is incomplete and the commit is not ready.
+
+These docs are the durable artifact of this project. The C++ source is replaceable; "BoofCV does X for reason Y, with these failure modes and these knobs" is what future-us consults before deciding to fork the algorithm vs. accept a parity bug, or before lifting one of BoofCV's stages into a from-scratch decoder.
+
 ## Workflow per file
 
 1. Identify the Java file in upstream BoofCV. Note the package path.
 2. Read it end-to-end before writing any C++.
-3. Read the corresponding JUnit test file. That defines correctness.
-4. Port the JUnit test first, into `tests/unit/`, with assertions intact even if the implementation isn't there yet.
-5. Port the implementation: verbatim where algorithmic, idiomatic where plumbing.
-6. Make the unit test pass. Do not move on with failing or skipped tests.
-7. Run the regression harness. Per-category numbers should not regress.
-8. Commit with message: `port: <java.package.ClassName> → <cpp/path/file.hpp>`.
+3. Draft the companion algorithm doc (`<file>.md`) while the Java source is fresh — see "Algorithm documentation requirement". If you cannot draft the doc, you do not understand the code well enough to port it. Iterate on the doc as you port; ship it in the same commit as the source.
+4. Read the corresponding JUnit test file. That defines correctness.
+5. Port the JUnit test first, into `tests/unit/`, with assertions intact even if the implementation isn't there yet.
+6. Port the implementation: verbatim where algorithmic, idiomatic where plumbing.
+7. Make the unit test pass. Do not move on with failing or skipped tests.
+8. Run the regression harness. Per-category numbers should not regress.
+9. Finalize the algorithm doc — fill in failure modes / tunables that only became clear during porting.
+10. Commit (source + test + `.md` together) with message: `port: <java.package.ClassName> → <cpp/path/file.hpp>`.
 
 ## When you get stuck
 
