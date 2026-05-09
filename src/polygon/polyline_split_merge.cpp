@@ -84,6 +84,13 @@ double lineSegmentDistanceSq(double ax, double ay, double bx, double by,
 }
 
 // Mirror of `georegression.geometry.UtilPolygons2D_I32.isPositiveZ`.
+//
+// FIXME(parity): Java's UtilPolygons2D_I32.isPositiveZ computes this cross
+// product in 32-bit `int` and relies on defined signed overflow; C++ signed
+// overflow is UB so we widen to int64_t. For contour-pixel deltas under
+// ~46k the result is identical; QR images in our regression set never come
+// close. If a future input is large enough to matter, mirror Java's wrap
+// deterministically with `static_cast<int32_t>(int64_product)`.
 bool isPositiveZ(const cv::Point2i& a, const cv::Point2i& b, const cv::Point2i& c) {
     int32_t dx0 = a.x - b.x;
     int32_t dy0 = a.y - b.y;
@@ -230,31 +237,33 @@ bool PolylineSplitMerge::process(const std::vector<cv::Point2i>& contour) {
                       : static_cast<int32_t>(cap64);
     int32_t limit = std::min(cap, static_cast<int32_t>(polylines_.size()));
     for (int32_t i = 0; i < limit; i++) {
-        if (polylines_[static_cast<std::size_t>(i)]->score < bestScore) {
-            bestPolyline_ = polylines_[static_cast<std::size_t>(i)].get();
-            bestScore = bestPolyline_->score;
+        if (polylines_[static_cast<std::size_t>(i)].score < bestScore) {
+            bestPolylineIndex_ = i;
+            bestScore = polylines_[static_cast<std::size_t>(i)].score;
             bestSize = i + MIN_SIZE;
         }
     }
 
     // There was no good match within the min/max size requirement
-    if (bestSize < minSides_ || bestPolyline_ == nullptr) {
+    if (bestSize < minSides_ || bestPolylineIndex_ < 0) {
         return false;
     }
 
     // make sure all the sides are within error tolerance
+    const CandidatePolyline& best =
+        polylines_[static_cast<std::size_t>(bestPolylineIndex_)];
     for (int32_t i = 0, j = bestSize - 1; i < bestSize; j = i, i++) {
         const cv::Point2i& a = contour[static_cast<std::size_t>(
-            bestPolyline_->splits[static_cast<std::size_t>(i)])];
+            best.splits[static_cast<std::size_t>(i)])];
         const cv::Point2i& b = contour[static_cast<std::size_t>(
-            bestPolyline_->splits[static_cast<std::size_t>(j)])];
+            best.splits[static_cast<std::size_t>(j)])];
 
         double dx = a.x - b.x, dy = a.y - b.y;
         double length = std::sqrt(dx * dx + dy * dy);
         double thresholdSideError = this->maxSideError_.compute(length);
-        if (bestPolyline_->sideErrors[static_cast<std::size_t>(i)] >=
+        if (best.sideErrors[static_cast<std::size_t>(i)] >=
             thresholdSideError * thresholdSideError) {
-            bestPolyline_ = nullptr;
+            bestPolylineIndex_ = -1;
             return false;
         }
     }
@@ -297,7 +306,7 @@ void PolylineSplitMerge::reset() {
     list_.reset();
     corners_.reset();
     polylines_.clear();
-    bestPolyline_ = nullptr;
+    bestPolylineIndex_ = -1;
     fatalError_ = false;
 }
 
@@ -308,16 +317,16 @@ bool PolylineSplitMerge::savePolyline() {
     CandidatePolyline* c;
     if (static_cast<int32_t>(list_.size()) <=
         static_cast<int32_t>(polylines_.size()) + N - 1) {
-        c = polylines_[static_cast<std::size_t>(
-            static_cast<int32_t>(list_.size()) - N)].get();
+        c = &polylines_[static_cast<std::size_t>(
+            static_cast<int32_t>(list_.size()) - N)];
         // sanity check
         if (static_cast<int32_t>(c->splits.size()) !=
             static_cast<int32_t>(list_.size()))
             throw std::runtime_error(
                 "Egads saved polylines aren't in the expected order");
     } else {
-        polylines_.push_back(std::make_unique<CandidatePolyline>());
-        c = polylines_.back().get();
+        polylines_.emplace_back();
+        c = &polylines_.back();
         c->reset();
         c->score = std::numeric_limits<double>::max();
     }

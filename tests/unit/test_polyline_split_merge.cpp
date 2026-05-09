@@ -80,8 +80,8 @@ TEST(PolylineSplitMerge, process_line) {
     // by the saving stage regardless of whether the final `bestSize<minSides`
     // gate trips (default minSides=3, this is a 2-corner result).
     alg.process(contour);
-    const CandidatePolyline* result = alg.getBestPolyline();
-    ASSERT_NE(result, nullptr);
+    auto result = alg.getBestPolyline();
+    ASSERT_TRUE(result.has_value());
 
     EXPECT_EQ(2u, result->splits.size());
     EXPECT_EQ(0, result->splits[0]);
@@ -92,7 +92,7 @@ TEST(PolylineSplitMerge, process_line) {
     contour = flip_contour(contour);
     alg.process(contour);
     result = alg.getBestPolyline();
-    ASSERT_NE(result, nullptr);
+    ASSERT_TRUE(result.has_value());
     EXPECT_EQ(2u, result->splits.size());
     EXPECT_EQ(0, result->splits[0]);
     EXPECT_NEAR(0.1 * 1, result->score, 1e-8);
@@ -111,8 +111,8 @@ TEST(PolylineSplitMerge, process_twoSegments) {
     contour.insert(contour.end(), seg2.begin(), seg2.end());
 
     EXPECT_TRUE(alg.process(contour));
-    const CandidatePolyline* result = alg.getBestPolyline();
-    ASSERT_NE(result, nullptr);
+    auto result = alg.getBestPolyline();
+    ASSERT_TRUE(result.has_value());
 
     EXPECT_EQ(3u, result->splits.size());
     EXPECT_EQ(0, result->splits[0]);
@@ -123,7 +123,7 @@ TEST(PolylineSplitMerge, process_twoSegments) {
     contour = flip_contour(contour);
     EXPECT_TRUE(alg.process(contour));
     result = alg.getBestPolyline();
-    ASSERT_NE(result, nullptr);
+    ASSERT_TRUE(result.has_value());
     EXPECT_EQ(3u, result->splits.size());
     EXPECT_EQ(0, result->splits[0]);
     EXPECT_EQ(static_cast<int32_t>(contour.size()) - 1, result->splits[2]);
@@ -140,8 +140,8 @@ TEST(PolylineSplitMerge, process_perfectSquare) {
     std::vector<cv::Point2i> contour = make_rect(10, 12, 20, 24);
 
     EXPECT_TRUE(alg.process(contour));
-    const CandidatePolyline* result = alg.getBestPolyline();
-    ASSERT_NE(result, nullptr);
+    auto result = alg.getBestPolyline();
+    ASSERT_TRUE(result.has_value());
 
     EXPECT_EQ(4u, result->splits.size());
     EXPECT_NEAR(0.1 * 4, result->score, 1e-8);
@@ -151,7 +151,7 @@ TEST(PolylineSplitMerge, process_perfectSquare) {
     alg.setExtraConsider(ConfigLength::fixed(2));
     EXPECT_TRUE(alg.process(contour));
     result = alg.getBestPolyline();
-    ASSERT_NE(result, nullptr);
+    ASSERT_TRUE(result.has_value());
 
     EXPECT_EQ(4u, result->splits.size());
     EXPECT_NEAR(0.1 * 4, result->score, 1e-8);
@@ -170,14 +170,14 @@ TEST(PolylineSplitMerge, process_perfectSquare_forcedTriangle) {
     std::vector<cv::Point2i> contour = make_rect(10, 12, 20, 24);
 
     EXPECT_TRUE(alg.process(contour));
-    const CandidatePolyline* result = alg.getBestPolyline();
-    ASSERT_NE(result, nullptr);
+    auto result = alg.getBestPolyline();
+    ASSERT_TRUE(result.has_value());
     EXPECT_EQ(3u, result->splits.size());
 
     // make it have a stricter error test and it should fail
     alg.setMaxSideError(ConfigLength::fixed(1));
     EXPECT_FALSE(alg.process(contour));
-    EXPECT_EQ(alg.getBestPolyline(), nullptr);
+    EXPECT_FALSE(alg.getBestPolyline().has_value());
 }
 
 TEST(PolylineSplitMerge, savePolyline) {
@@ -193,15 +193,15 @@ TEST(PolylineSplitMerge, savePolyline) {
     alg.addCorner(0);
     EXPECT_TRUE(alg.savePolyline());
 
-    EXPECT_GT(alg.getPolylines()[1]->score, 2);
-    EXPECT_EQ(4u, alg.getPolylines()[1]->splits.size());
+    EXPECT_GT(alg.getPolylines()[1].score, 2);
+    EXPECT_EQ(4u, alg.getPolylines()[1].splits.size());
 
     // remove the bad corner and save again. The new polyline should be saved on top of the old one
     alg.list().remove(alg.list().getElement(3, true));
     EXPECT_TRUE(alg.savePolyline());
 
-    EXPECT_LT(alg.getPolylines()[1]->score, 2);
-    EXPECT_EQ(4u, alg.getPolylines()[1]->splits.size());
+    EXPECT_LT(alg.getPolylines()[1].score, 2);
+    EXPECT_EQ(4u, alg.getPolylines()[1].splits.size());
 
     // there should be no change now
     EXPECT_FALSE(alg.savePolyline());
@@ -471,14 +471,14 @@ TEST(PolylineSplitMerge, removeAndSaveCorner_positive) {
     EXPECT_TRUE(alg.savePolyline());
 
     // sanity check
-    const CandidatePolyline* c = alg.getPolylines()[1].get();
+    const CandidatePolyline* c = &alg.getPolylines()[1];
     EXPECT_EQ(4u, c->splits.size());
     EXPECT_EQ(14, c->splits[2]);
 
     // remove the useless corner
     EXPECT_TRUE(alg.removeCornerAndSavePolyline(useless, 0));
 
-    c = alg.getPolylines()[1].get();
+    c = &alg.getPolylines()[1];
     EXPECT_EQ(4u, c->splits.size());
     EXPECT_EQ(16, c->splits[2]);
 }
@@ -497,7 +497,7 @@ TEST(PolylineSplitMerge, removeAndSaveCorner_negative) {
     auto selected = alg.list().getElement(1, true);
     EXPECT_FALSE(alg.removeCornerAndSavePolyline(selected, 5));
 
-    const CandidatePolyline* c = alg.getPolylines()[0].get();
+    const CandidatePolyline* c = &alg.getPolylines()[0];
     EXPECT_EQ(3u, c->splits.size());
     EXPECT_EQ(10, c->splits[1]);  // should still be there
 }

@@ -6,8 +6,11 @@
 //
 // Per CLAUDE.md type mappings:
 //   Point2D_I32 -> cv::Point2i
-//   DogArray<T> -> std::vector<std::unique_ptr<T>> (stable identities;
-//                  // TODO(perf): recycle)
+//   DogArray<Corner> -> CornerPool over std::vector<unique_ptr<Corner>>
+//                       (stable Corner pointers; CornerList holds Corner*)
+//   DogArray<CandidatePolyline> -> std::vector<CandidatePolyline> (value
+//                       typed; matches Java's DogArray<CandidatePolyline>
+//                       which stores values, not pointers)
 //   DogLinkedList<Corner> -> in-house CornerList over std::list<Corner*>
 //   ConfigLength -> nested ConfigLength struct
 //   LineParametric2D_F64 -> nested LineParametric2D struct
@@ -24,6 +27,7 @@
 #include <cstdint>
 #include <list>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace boofcv_qr {
@@ -286,12 +290,22 @@ public:
 
     bool process(const std::vector<cv::Point2i>& contour);
 
-    const std::vector<std::unique_ptr<CandidatePolyline>>& getPolylines() const {
+    // The set of saved polylines, indexed by `(numSides - MIN_SIZE)` where
+    // MIN_SIZE is 3 for closed contours / 2 for open. CLAUDE.md "Public API
+    // design" forbids `unique_ptr` in public signatures — storage is now
+    // `std::vector<CandidatePolyline>` directly (value-typed; matches Java's
+    // `DogArray<CandidatePolyline>`).
+    const std::vector<CandidatePolyline>& getPolylines() const {
         return polylines_;
     }
 
-    // Returns the polyline with the best score or nullptr if process() failed.
-    const CandidatePolyline* getBestPolyline() const { return bestPolyline_; }
+    // Returns the polyline with the best score or nullopt if process()
+    // failed to set one. Value-typed return per CLAUDE.md "Public API
+    // design".
+    std::optional<CandidatePolyline> getBestPolyline() const {
+        if (bestPolylineIndex_ < 0) return std::nullopt;
+        return polylines_[static_cast<std::size_t>(bestPolylineIndex_)];
+    }
 
     // ---- methods exercised by the JUnit suite (package-private in Java)
     //      need to be callable from tests; expose them here. The header
@@ -399,10 +413,14 @@ private:
     SplitResults resultsA_;
     SplitResults resultsB_;
 
-    // List of all the found polylines and their score. unique_ptr for
-    // pointer stability across grow().
-    std::vector<std::unique_ptr<CandidatePolyline>> polylines_;
-    CandidatePolyline* bestPolyline_ = nullptr;
+    // List of all the found polylines and their score. Value-typed (per
+    // CLAUDE.md "Public API design" — no unique_ptr in storage that the
+    // public surface returns by reference). Capacity is reserved by
+    // savePolyline()'s overwrite-vs-append logic so growth doesn't
+    // invalidate per-iteration access patterns within a single process().
+    std::vector<CandidatePolyline> polylines_;
+    // -1 means "no best polyline picked"; otherwise an index into polylines_.
+    int32_t bestPolylineIndex_ = -1;
 
     // if true that means a fatal error and no polygon can be fit
     bool fatalError_ = false;

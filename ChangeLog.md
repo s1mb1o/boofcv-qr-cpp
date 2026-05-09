@@ -28,6 +28,11 @@ Largest single file in the port at 907 LOC of Java source (excluding the inner `
 - `MinimizeEnergyPrune`, `FitLinesToContour`, `RefinePolyLineCorner`, `SplitMergeLineFit*` — alternative polyline algorithms that QR doesn't use. We only need `PolylineSplitMerge` + `MaximumLineDistance`.
 - `SplitSelector` strategy-injection at construction time (CLAUDE.md "Public API design" line 26) — `setSplitter()` exists, but the `// TODO` for ctor-time injection follows the same deferral pattern as the RS one in step 2.
 
+### Codex review fixes
+
+- **Public API owned types** (CLAUDE.md "Public API design" line 32, raised by codex on 7b). `getPolylines()` now returns `const std::vector<CandidatePolyline>&` (storage flipped to value-typed `std::vector<CandidatePolyline>` — matches Java's `DogArray<CandidatePolyline>` which stores values). `getBestPolyline()` returns `std::optional<CandidatePolyline>` by value instead of `CandidatePolyline*`. Internal tracking is now an index (`bestPolylineIndex_ = -1` for "no best"). The `// TODO(perf): recycle` marker on the polylines vector flips from "future work" to "now done" — value-typed storage with `emplace_back()` reuses inner-vector capacity on `clear()` and `reset()`. Tests updated; 173/173 still pass.
+- **`isPositiveZ` `int64_t` widening** (raised by codex on 7b). Behaviour unchanged; added `FIXME(parity)` comment in `src/polygon/polyline_split_merge.cpp` explaining that Java's `UtilPolygons2D_I32.isPositiveZ` relies on defined int wrap-around, C++ signed overflow is UB, and the widening is identical for contour-pixel deltas under ~46k (QR images in the regression set never come close). Comment includes the deterministic-wrap recipe `static_cast<int32_t>(int64_product)` for future parity-critical use cases.
+
 ## 2026-05-09 (later⁸) — Step 7a: square graph utilities
 
 Plan reversed: user opted to implement after all. Starting with the

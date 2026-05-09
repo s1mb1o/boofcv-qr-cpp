@@ -84,7 +84,7 @@ QR finder-pattern detection sets `loops=true`, `convex=true`, `maxSides=4`, `min
 
 - **`DogLinkedList<Corner>`** → a small in-house `CornerList` wrapping `std::list<Corner*>`. Iterators provide pointer-stable element handles; `Element<Corner>` becomes `CornerList::Iter`. The Java field-access style `e.object`/`e.next`/`e.prev` becomes the helper methods `objectAt(it)`, `iterNext(it)`, `iterPrev(it)` to keep the algorithmic core readable. The wrap-around `next()`/`previous()` methods are unchanged.
 - **`DogArray<Corner>`** → a small `CornerPool` that owns `std::unique_ptr<Corner>`. Stable identities across pool resizes. Marked `// TODO(perf): recycle` to revisit.
-- **`DogArray<CandidatePolyline>`** → `std::vector<std::unique_ptr<CandidatePolyline>>`. Same stability rationale.
+- **`DogArray<CandidatePolyline>`** → `std::vector<CandidatePolyline>` (value-typed; matches Java's `DogArray<CandidatePolyline>` which stores values, not pointers). Public surface is `const std::vector<CandidatePolyline>&` for `getPolylines()` and `std::optional<CandidatePolyline>` by value for `getBestPolyline()` per CLAUDE.md "Public API design".
 - **`ConfigLength`** is ported to a tiny local struct (`ConfigLength`) with `compute(double)` and `computeI(double)`. The full BoofCV `ConfigLength` lives in a different module we don't pull in.
 - **Inlined geometric helpers**: `lineParametricDistanceSq`, `lineSegmentDistanceSq`, `isPositiveZ`, `circularIndexDistanceP`, `circularIndexPlusPOffset`, `circularIndexMinusPOffset`. Each cites its georegression / boofcv-ip origin and is byte-for-byte the same formula.
 - **`SplitSelector`** is a small abstract base with `MaximumLineDistance` as the only concrete implementation (matches BoofCV's only QR-relevant subclass).
