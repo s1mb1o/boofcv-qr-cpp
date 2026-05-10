@@ -85,6 +85,27 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
 endif()
 
 # ---------------------------------------------------------------------------
+# CLI binary — `qr_scan` runs the full detection pipeline on either a
+# single image (stdout) or a directory of images (mirrors the
+# `tools/java_reference/Baseline.java` output for `tests/regression/score.py`).
+# Per CLAUDE.md the CLI may use <filesystem>; the core lib must not.
+# ---------------------------------------------------------------------------
+option(BOOFCV_QR_BUILD_CLI "Build the qr_scan CLI binary" ON)
+if(BOOFCV_QR_BUILD_CLI)
+    add_executable(qr_scan tools/cli/qr_scan.cpp)
+    target_link_libraries(qr_scan PRIVATE
+        boofcv_qr
+        opencv_imgcodecs
+    )
+    target_compile_features(qr_scan PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(qr_scan PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+        )
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 if(BOOFCV_QR_BUILD_TESTS)

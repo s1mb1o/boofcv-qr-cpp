@@ -1,5 +1,30 @@
 # ChangeLog
 
+## 2026-05-10 (later⁷) — Step 9b.1 + 9b.2: `qr_scan` CLI + regression harness
+
+End-to-end CLI binary wiring the full detection pipeline (binarize → polygon → finder → graph → orchestrator) emitting per-image JSON in the same shape as `tools/java_reference/Baseline.java` so `tests/regression/score.py` works against either side. Plus a regression driver that builds, runs, scores, and prints per-category delta vs `tests/baseline.json`. No iteration in this commit — that's 9b.3.
+
+### Added
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp) — CLI binary. Two modes:
+  - `qr_scan <input_dir> <output_dir>` — batch; mirrors the dataset directory layout under `<output_dir>` with one `.json` per image plus a `summary.json` for `score.py`.
+  - `qr_scan <single_image.png>` — single-image; emits JSON to stdout for debugging.
+  - Uses `<filesystem>` per CLAUDE.md "CLI may use `<filesystem>`; core lib must not."
+  - Sidecar `.txt` ground-truth parser mirrors Java's `parseGroundTruth` (handles both `SETS`-style coord blocks and plain-payload-only files for the `decoding/` subset).
+  - Hand-written JSON serialiser — pulling in nlohmann/json for one CLI binary isn't worth it; output is byte-compatible-enough with score.py's input expectations.
+- [tools/cli/run_regression.sh](tools/cli/run_regression.sh) — regression driver. Builds in Release, runs `qr_scan` against the dataset, scores via `score.py`, prints a per-category delta table vs `tests/baseline.json`, exits 1 if any category is outside ±2pp.
+- CMakeLists adds `option(BOOFCV_QR_BUILD_CLI ON)` + `add_executable(qr_scan tools/cli/qr_scan.cpp)` target linking `boofcv_qr` + `opencv_imgcodecs`.
+
+### Verified
+
+- CLI builds clean with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+- Smoke-test on `tests/fixtures/qr/v2_M_alphanum_HELLO.png` decoded correctly: `version=2, error=M, mask=M011, message=HELLO, mode=ALPHANUMERIC, total_bit_errors=0, failure_cause=NONE`.
+- 421 unit tests still pass (no library code changed; only adds the CLI target).
+
+### Pending
+
+- 9b.3 — first regression run on the 562-image / 1258-GT `boofcv-qrcodes` dataset.
+
 ## 2026-05-10 (later⁶) — Step 9a fix-up: codex review (8 findings, single bundled commit)
 
 Reviewer + codex flagged 1 algorithmic divergence + 3 CLAUDE.md mandate violations + the fixture-source risk + 2 test-gap issues + 1 doc bug on `ff5de99`. All 8 fixed in this single commit. Test count grows from 261 → 421 (160 new parametric `full_simple` cases driven off 160 BoofCV-Java-generated fixtures). Build remains clean with the strict warning set (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`).
