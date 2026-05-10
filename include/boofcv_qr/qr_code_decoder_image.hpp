@@ -105,6 +105,11 @@ public:
         // Mirrors Java's public field — when true, decode() retries
         // with a transposed bit pattern if the first pass fails.
         bool considerTransposed = true;
+        // Mirrors `ConfigQrCode.ignorePaddingBytes`. When true,
+        // decode-time padding-byte verification is skipped (bug-
+        // tolerant against encoders that emit non-spec padding). Java
+        // QR profile defaults this to `true`.
+        bool ignorePaddingBytes = false;
         // Default-constructed std::function = use the built-in
         // ReedSolomonCodes_U8 path.
         RsCorrectFn rs_decoder;

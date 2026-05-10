@@ -214,18 +214,51 @@ GroundTruth parseGroundTruth(const fs::path& imagePath) {
 // + the orchestrator. Default-constructed.
 // ---------------------------------------------------------------------
 
+// Build the QR-profile orchestrator config — mirrors Java's
+// `ConfigQrCode` decoder-side defaults (lines 62, 75 of upstream
+// ConfigQrCode.java).
+boofcv_qr::QrCodeDecoderImage::Config makeQrConfig() {
+    boofcv_qr::QrCodeDecoderImage::Config cfg;
+    // ConfigQrCode.java:62: `defaultEncoding = EciEncoding.ISO8859_1`.
+    // The general decoder default is "UTF-8"; QR profile uses
+    // ISO-8859-1 so byte-mode payloads with raw 0x80–0xFF bytes
+    // (legitimate per ISO 18004 §7.4.5) don't fail UTF-8 validation.
+    cfg.defaultEncoding = "ISO-8859-1";
+    // ConfigQrCode.java:75: `ignorePaddingBytes = true`. Encoders
+    // commonly emit non-spec padding patterns; relax the check.
+    cfg.ignorePaddingBytes = true;
+    return cfg;
+}
+
 struct Pipeline {
     boofcv_qr::ThresholdBlockOtsu binarizer;
     std::unique_ptr<boofcv_qr::QrCodePositionPatternDetector> finder;
     boofcv_qr::QrCodePositionPatternGraphGenerator graphGen{40};
-    boofcv_qr::QrCodeDecoderImage orchestrator;
+    boofcv_qr::QrCodeDecoderImage orchestrator{makeQrConfig()};
 
     cv::Mat binary;  // reused buffer
 
     Pipeline() {
-        auto adapter = std::make_unique<boofcv_qr::PolylineSplitMergeAdapter>();
-        adapter->setMinimumSides(4);
-        adapter->setMaximumSides(4);
+        // Mirror Java's `ConfigQrCode` polygon-detector tunings (lines
+        // 95–96 of upstream ConfigQrCode.java). The general
+        // ConfigPolylineSplitMerge defaults give cornerScorePenalty=0.025
+        // and maxSideError=relative(0.05,3); QR overrides to 0.4 and
+        // relative(0.12,3) respectively. The 16× cornerScorePenalty
+        // bump is the prime mover for the polygon-cluster residuals
+        // (blurred / pathological): it makes 5+ corner candidates
+        // collapse to 4-corner finder polygons, where the more lenient
+        // default lets too many over-cornered candidates through and
+        // they get filtered later → false negatives.
+        boofcv_qr::ConfigPolylineSplitMerge polyCfg;
+        polyCfg.minimumSides = 4;
+        polyCfg.maximumSides = 4;
+        polyCfg.cornerScorePenalty = 0.4;
+        polyCfg.maxSideError = boofcv_qr::ConfigLength::relative(0.12, 3.0);
+        // minimumSideLength = 2 already matches our ConfigPolylineSplitMerge
+        // default (and Java's ConfigPolylineSplitMerge default), but
+        // ConfigQrCode.java:97 sets it explicitly so we mirror.
+        polyCfg.minimumSideLength = 2;
+        auto adapter = std::make_unique<boofcv_qr::PolylineSplitMergeAdapter>(polyCfg);
 
         auto contour = std::make_unique<boofcv_qr::DetectPolygonFromContour>(
             std::move(adapter), /*outputClockwiseUpY=*/true,

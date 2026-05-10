@@ -1,5 +1,73 @@
 # ChangeLog
 
+## 2026-05-10 (later¹⁰) — Step 9b.3 cycle (b): mirror 4 missing `ConfigQrCode` settings (polygon tuning + decode-side)
+
+Codex re-review on `a2d06c3` flagged 4 settings still using class defaults instead of QR-specific values. All 4 mirrored at the CLI Pipeline ctor + `QrCodeDecoderImage::Config` extended with `ignorePaddingBytes`. Aggregate moves **73.21% → 74.32%** — within **-0.08pp of Java's 74.40% baseline** (target was ±1pp aggregate). 11 of 16 categories now in band (was 8). The 5 residual categories include `monitor -11.76pp` (binarization cluster — next cycle) plus 4 small-N "+" deltas (likely noise on 20-37 GT categories where ±1 image swings 2-4pp).
+
+### Fix
+
+[tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp) `Pipeline()` ctor + new `makeQrConfig()` helper, mirroring 4 `ConfigQrCode.java` settings:
+
+| # | Java line | C++ class default | Java QR profile | Effect |
+|---|---|---|---|---|
+| 1 | `ConfigQrCode.java:95` | `maxSideError = relative(0.05, 3)` | `relative(0.12, 3)` | 12% chord-length tolerance vs 5% — accepts edge-noise in `blurred`/`pathological`. |
+| 2 | `ConfigQrCode.java:96` | `cornerScorePenalty = 0.025` | `0.4` | **16× bump** — penalises 5+ corner candidates more aggressively, collapses to 4-corner finder polygons. Prime mover for the polygon-cluster residuals. |
+| 3 | `ConfigQrCode.java:75` | `QrCodeDecoderBits.ignorePaddingBytes = false` (strict) | `true` (lenient) | Accepts non-spec padding patterns (encoder bug tolerance). |
+| 4 | `ConfigQrCode.java:62` | `QrCodeDecoderImage::Config::defaultEncoding = "UTF-8"` | `"ISO-8859-1"` | Byte-mode payloads with raw 0x80–0xFF don't fail UTF-8 validation. |
+
+Plus a redundant `polyCfg.minimumSideLength = 2` set explicitly (already the C++ default; Java's `ConfigQrCode.java:97` sets it explicitly so we mirror).
+
+[include/boofcv_qr/qr_code_decoder_image.hpp](include/boofcv_qr/qr_code_decoder_image.hpp): added `bool ignorePaddingBytes = false;` field to `QrCodeDecoderImage::Config`. The orchestrator ctor plumbs `cfg.ignorePaddingBytes` into the bits decoder. Mirrors the existing pattern for `forceEncoding` / `defaultEncoding` / `considerTransposed` — value-typed Config injected at ctor time per CLAUDE.md "Public API design" line 31.
+
+### Per-category numbers vs Java baseline
+
+| category | baseline | cpp | delta | within ±2pp |
+|---|---:|---:|---:|:-:|
+| blurred       |   38.46% |   38.46% | **+0.00pp** | ✓ |
+| bright_spots  |   27.84% |   29.90% | +2.06pp |   |
+| brightness    |   78.82% |   77.65% | -1.18pp | ✓ |
+| close         |  100.00% |  100.00% | +0.00pp | ✓ |
+| curved        |   56.67% |   55.00% | -1.67pp | ✓ |
+| damaged       |   16.28% |   16.28% | +0.00pp | ✓ |
+| decoding      |   65.38% |   65.38% | +0.00pp | ✓ |
+| glare         |   32.08% |   28.30% | -3.77pp |   |
+| high_version  |   40.54% |   43.24% | +2.70pp |   |
+| lots          |   99.76% |   99.76% | +0.00pp | ✓ |
+| monitor       |   82.35% |   70.59% | **-11.76pp** |   |
+| nominal       |   89.74% |   89.74% | +0.00pp | ✓ |
+| noncompliant  |    3.85% |    7.69% | +3.85pp |   |
+| pathological  |   43.48% |   43.48% | **+0.00pp** | ✓ |
+| perspective   |   80.00% |   82.86% | +2.86pp |   |
+| rotations     |   96.24% |   96.24% | +0.00pp | ✓ |
+| shadows       |   85.00% |   85.00% | +0.00pp | ✓ |
+| **AGGREGATE** | **74.40%** | **74.32%** | **-0.08pp** | |
+
+### Recovery vs prior commit (73.21% aggregate)
+
+- **aggregate: +1.11pp** (now -0.08pp from Java baseline; target was ±1pp).
+- `blurred`: -3.08pp → **+0.00pp** (Java parity)
+- `brightness`: -4.71pp → **-1.18pp** (now in band)
+- `pathological`: -4.35pp → **+0.00pp** (Java parity)
+- `bright_spots`: -6.19pp → +2.06pp (overshoot — barely outside band, +2 of 97 GT)
+- 11 of 16 categories now in ±2pp band (was 8).
+
+### Predictions vs reality
+
+Per team-lead's predictions:
+- `blurred` -3.08pp → likely closes — **closed to 0.00pp ✓**
+- `pathological` -4.35pp → partial recovery, may stay outside — **fully closed to 0.00pp ✓ (better than predicted)**
+- Binarization cluster (`monitor`, `bright_spots`, `brightness`, `glare`) → "should not move" — **moved! brightness recovered ~3.5pp, bright_spots +8pp, glare unchanged, monitor unchanged**. The polygon-tuning settings rippled into binarization-sensitive categories too — likely because tighter polygon filtering (cornerScorePenalty=0.4) accepts more legitimate finder polygons in low-contrast images that were previously rejected by the lenient over-corner threshold.
+
+### Residual >±2pp (5 categories)
+
+- `monitor` -11.76pp — true binarization-cluster outlier; next cycle.
+- `bright_spots` +2.06pp, `high_version` +2.70pp, `perspective` +2.86pp, `noncompliant` +3.85pp — all positive deltas in small-N categories (97, 37, 35, 26 GT). Likely regression noise.
+
+### Regression
+
+- 421/421 unit tests still pass.
+- Build clean with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+
 ## 2026-05-10 (later⁹) — Step 9b.3 fix #2: align Pipeline ctor with `ConfigQrCode` polygon-detector defaults (`minimumContour=fixed(40)`, `minimumRefineEdgeIntensity=6`)
 
 `lots` zero-detection root-causal fix per cycle (a) of the residual-triage. Java reference dump (`tools/java_reference/DumpStages`) on `lots/image005.jpg` produced 841 polygons, 60 detections; C++ at `736435f` produced **1 polygon, 0 detections** despite the binarised image being byte-equivalent (1.08% per-pixel disagreement; both ~21% foreground). Earliest divergence stage: `DetectPolygonFromContour::findCandidateShapes` minimum-area filter.

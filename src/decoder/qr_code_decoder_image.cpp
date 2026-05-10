@@ -89,7 +89,13 @@ QrCodeDecoderImage::QrCodeDecoderImage(Config cfg)
     : decoder_(std::move(cfg.forceEncoding), std::move(cfg.defaultEncoding)),
       considerTransposed_(cfg.considerTransposed),
       rsHook_(std::move(cfg.rs_decoder)),
-      alignmentHook_(std::move(cfg.alignment_locator)) {}
+      alignmentHook_(std::move(cfg.alignment_locator)) {
+    // Plumb ignorePaddingBytes through to the bits decoder. Mirrors
+    // Java's ConfigQrCode.ignorePaddingBytes (default true) being
+    // propagated into QrCodeDecoderBits.ignorePaddingBytes by the
+    // FactoryFiducial.qrcode wiring.
+    decoder_.ignorePaddingBytes = cfg.ignorePaddingBytes;
+}
 
 bool QrCodeDecoderImage::runAlignmentLocator(const cv::Mat& gray, QrCode& qr) {
     if (alignmentHook_) {
