@@ -21,6 +21,7 @@
 #ifndef BOOFCV_QR_POLYGON_DETECT_POLYGON_FROM_CONTOUR_HPP
 #define BOOFCV_QR_POLYGON_DETECT_POLYGON_FROM_CONTOUR_HPP
 
+#include "boofcv_qr/binary/linear_contour_label_chang2004.hpp"
 #include "boofcv_qr/polyline/polyline_split_merge.hpp"
 
 #include <opencv2/core.hpp>
@@ -401,10 +402,13 @@ private:
     void configure(int32_t width, int32_t height);
     void findCandidateShapes(const cv::Mat& gray);
 
-    // Convert OpenCV's findContours output (RETR_CCOMP) to BoofCV's
-    // external+internal Contour grouping.
-    void buildContoursFromOpenCV(const std::vector<std::vector<cv::Point>>& cvContours,
-                                  const std::vector<cv::Vec4i>& hierarchy);
+    // Convert the LinearContourLabelChang2004 output (ContourPacked +
+    // PackedSetsPoint2D_I32) into our per-blob external+internal
+    // `Contour` shape consumed by `findCandidateShapes`. Skips
+    // contours whose external set was wiped (size 0) — the labeller
+    // wipes a set to empty when its pixel count violates the min/max
+    // bounds.
+    void buildContoursFromPort();
 
     // Configuration.
     std::unique_ptr<PointsToPolyline> contourToPolyline_;
@@ -450,8 +454,18 @@ private:
     // Detection results.
     std::vector<DetectedInfo> foundInfo_;
 
-    // Working store for the per-blob contours derived from OpenCV.
+    // Working store for the per-blob contours produced by the
+    // `LinearContourLabelChang2004` port.
     std::vector<Contour> contours_;
+
+    // The Chang2004 contour-extractor port (replaces the prior
+    // `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` call site —
+    // see `src/binary/linear_contour_label_chang2004.md` and ADR 01).
+    // Connect rule EIGHT matches `ConfigQrCode.polygon.detector.contourRule`.
+    LinearContourLabelChang2004 contourLabeller_{ConnectRule::EIGHT};
+    // Scratch label image — `CV_32SC1`, same dims as the input binary,
+    // re-allocated lazily by `LinearContourLabelChang2004::process`.
+    cv::Mat labeled_;
 
     // Profiling.
     double milliContour_ = 0.0;

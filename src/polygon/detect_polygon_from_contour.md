@@ -12,7 +12,7 @@ Downstream stages — `RefinePolygonToGray` (subpixel corner refinement, next fi
 
 `process(gray, binary)` runs five stages per blob:
 
-1. **Contour extraction.** Use `cv::findContours(binary, contours, hierarchy, cv::RETR_CCOMP, cv::CHAIN_APPROX_NONE)` per CLAUDE.md "OpenCV substitution policy". `RETR_CCOMP` gives a 2-level hierarchy: top-level entries are external blob boundaries, their children are internal hole boundaries. We re-bundle these into a `Contour` struct (`std::vector<cv::Point2i> external` + `std::vector<std::vector<cv::Point2i>> internal`) — same shape as BoofCV's `boofcv.alg.filter.binary.Contour`. The connectivity rule is 8-connected (matches `ConfigQrCode.polygon.detector.contourRule = ConnectRule.EIGHT` and OpenCV's `findContours` default — they align).
+1. **Contour extraction.** Use `LinearContourLabelChang2004::process(binary, labeled)` (verbatim port of `boofcv.alg.filter.binary.LinearContourLabelChang2004` — see `src/binary/linear_contour_label_chang2004.md`). The port emits per-blob `ContourPacked` headers indexing into a shared `PackedSetsPoint2D_I32`. We re-bundle each blob into a `Contour` struct (`std::vector<cv::Point2i> external` + `std::vector<std::vector<cv::Point2i>> internal`) — same shape as BoofCV's `boofcv.alg.filter.binary.Contour`. Connectivity rule is 8-connected (`ConfigQrCode.polygon.detector.contourRule = ConnectRule.EIGHT`). The upper cap (`maximumContour_`) is pushed into the labeller; the lower cap stays as a downstream filter in `findCandidateShapes`, matching Java's `BinaryContourFinder` configuration in `SquareLocatorPatternDetectorBase`. Wiped (over-cap) externals come back as size-0 sets and are skipped in `buildContoursFromPort`.
 
 2. **Per-blob pre-filtering** (drops cheaply-detected non-polygons before the expensive corner-finder runs):
    - **Length cut:** contour pixel-count below `minimumContourPixels` is rejected. The threshold comes from `ConfigLength.computeNegMaxI(sqrt(W*H))` on the configured `minimumContour`, clamped to ≥ 4. (For QR `ConfigQrCode` overrides this to `fixed(40)`.)
@@ -28,26 +28,23 @@ Downstream stages — `RefinePolygonToGray` (subpixel corner refinement, next fi
 
 ## OpenCV substitution policy
 
-Per CLAUDE.md "OpenCV substitution policy" line 145:
+Cycle B of the LinearContour port retired the prior `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` substitution. The polygon path now consumes the verbatim BoofCV port `LinearContourLabelChang2004` (see `src/binary/linear_contour_label_chang2004.md`). The port emits BoofCV-native winding (external CW in image, internal CCW) and start pixel (topmost-leftmost foreground) directly, so the `770f210` per-contour reversal + topmost-leftmost rotation workaround has been removed.
 
-| Stage | OpenCV | BoofCV equivalent | Why this is OK |
-|---|---|---|---|
-| Contour extraction | `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` | `LinearContourLabelChang2004` + `Contour` | Both produce the same external + internal blob topology with full per-pixel ordering. `RETR_CCOMP` matches BoofCV's connect-rule-8 default since OpenCV's `findContours` is 8-connected. |
-| (none) | (none) | `boofcv.alg.shapes.polyline.splitmerge.PolylineSplitMerge` | This is *forbidden* to substitute. Used verbatim from part 1. |
+Historical note: the `cv::findContours` substitution was the project's original choice at step 7b (commit `770f210`). It was retired because:
 
-`cv::findContours` mutates the input image. The port clones internally (one allocation per `process()`), so callers can pass a binary mat without surprise.
+- ADR 01 documented a ~0.4pp aggregate parity cost (`monitor` -11.76pp, `glare` -3.77pp) that the per-pixel encoding cascade was contributing to.
+- ADR 04 (perf cycle 5 close-out) recorded ~95% of CPU on `bright_spots` / `brightness` / `curved` was inside `cv::findContours` — the dominant non-cycle-3-banked hot spot.
 
-A previously-investigated edge case: BoofCV's contours and OpenCV's contours can differ slightly in the offset they assign to the first pixel of a vertical edge (BoofCV walks 8-connected with a specific tracer; OpenCV uses Suzuki's algorithm). For QR detection rates the difference is empirically below the parity floor, but if the regression baseline regresses by more than ~0.5 percentage points in a category dominated by tiny QRs, this is the first place to look.
+Cycle B's measured impact:
 
-**Winding direction:** OpenCV's `findContours` emits *external* contours **CCW in image coords** (CW in math) and *internal* contours **CW in image** (CCW in math). BoofCV's `LinearContourLabelChang2004` emits the OPPOSITE windings. The polyline corner finder's convex check (`PolylineSplitMerge::setSplitVariables`'s `isPositiveZ(a, b, c)`) is hard-coded for BoofCV's convention — under the OpenCV winding, the check rejects splits that would form a CONVEX corner instead of concave. So `buildContoursFromOpenCV` reverses each contour in place. Without the reversal, a perfect black square never gets a 4-corner fit (only the initial 3-corner triangle survives), which surfaced as the original failing JUnit-equivalent rectangle tests.
-
-**Contour start-pixel rotation:** Reversing alone is not enough. `PolylineSplitMerge` seeds its initial-triangle search from `contour[0]` (`findCornerSeed`), so corner indices are sensitive to the start pixel. After reversal the start becomes BoofCV's *last* scanned pixel — corner indices come out rotated relative to BoofCV. After reversing we therefore rotate the contour so that the **topmost row's leftmost pixel** sits at index 0, matching `LinearContourLabelChang2004`'s row-major scan order which always starts at the topmost-then-leftmost foreground pixel. Same fixup applied to internal contours. Without this rotation, `findCornerSeed` picks the wrong "diametrically opposite" point and the resulting corner indices don't line up with BoofCV's, even though the polygons themselves are equivalent up to cyclic rotation.
+- **Parity:** byte-identical to the pre-cycle-B state across all 17 categories. Monitor / glare residuals did NOT close (re-attributed to upstream binarizer divergence — see `src/binary/linear_contour_label_chang2004.md` "Integration points for downstream recovery"). Aggregate held at +0.00pp byte-identical to Java baseline.
+- **Perf:** ~2× total-wallclock speed-up across `qrcodes_v3` (36.9s → 18.6s). Per-category mean-ms drops on the cv::findContours-dominated categories: `bright_spots` 394.10 → 73.39 ms (-81%); `brightness` 186.99 → 64.06 ms (-66%); `curved` 81.90 → 29.25 ms (-64%).
 
 ## Failure modes
 
 - **Empty blob list** — clean image, no foreground. Returns empty result. Not an error.
 - **Convex flag mismatch** — `ConfigQrCode` sets `convex=true`. A non-convex shape (e.g. the connected outer ring of a finder pattern when binarisation noise bridges the outer black to the white interior) is silently dropped; expected behaviour.
-- **Contour clones** — `cv::findContours` modifies its input. We clone. Don't pass a const reference and expect aliased behaviour.
+- **Input is not mutated.** `LinearContourLabelChang2004` copies the input binary into an internal 1-pixel-bordered scratch buffer (then writes its `0xFF` sentinel only into that scratch). The caller's `binary` `cv::Mat` is read-only from this stage's perspective.
 - **Lens distortion** — deferred; `setLensDistortion` is a no-op stub. The corner output is in raw image coordinates. Document this in the public header.
 
 ## Tunable parameters (with QR defaults from `ConfigQrCode`)
@@ -61,7 +58,7 @@ A previously-investigated edge case: BoofCV's contours and OpenCV's contours can
 | `tangentEdgeIntensity` | `1.5` (QR) | Pixels off the contour to sample. |
 | `convex` | `true` (forwarded to PolylineSplitMerge) | Reject concave shapes early. |
 | `minimumContour` | `fixed(40)` (QR) | Pixel-count cut on contour length. |
-| `maximumContour` | `fixed(-1)` = unlimited | (Same.) Not gated in this port; only the min is enforced. |
+| `maximumContour` | `fixed(-1)` = unlimited; QR's `SquareLocatorPatternDetectorBase` sets a per-image cap | Pushed into the labeller — contours exceeding the cap come back as empty sets and are skipped in `buildContoursFromPort`. The lower cap (`minimumContour`) is enforced downstream in `findCandidateShapes` to match Java's `BinaryContourFinder` configuration. |
 
 ## Public API design
 
@@ -79,15 +76,15 @@ Per CLAUDE.md "Public API design":
   - `boofcv-feature/src/main/java/boofcv/alg/shapes/polygon/PolygonHelper.java` (interface; ported as a header-only abstract base)
   - `boofcv-feature/src/main/java/boofcv/abst/shapes/polyline/PointsToPolyline.java` (interface; ported as a header-only abstract base + a `PolylineSplitMergeAdapter` concrete impl in this file)
   - `boofcv-ip/src/main/java/boofcv/alg/filter/binary/Contour.java` (data struct; ported inline)
-  - `boofcv-ip/src/main/java/boofcv/alg/filter/binary/LinearContourLabelChang2004.java` (replaced by `cv::findContours`)
+  - `boofcv-ip/src/main/java/boofcv/alg/filter/binary/LinearContourLabelChang2004.java` (ported in `src/binary/linear_contour_label_chang2004.cpp`; consumed here as of cycle B of the LinearContour port)
   - `georegression-0.28.2.jar` `Area2D_F64.polygonSimple` and `UtilPolygons2D_I32.isCCW` (both inlined)
 - Tests: `tests/unit/test_detect_polygon_from_contour.cpp` (Java parity for `touchesBorder`, `determineCornersOnBorder`, `flip`, plus synthetic end-to-end rectangle and triangle detection cases that don't depend on the BoofCV factory infrastructure).
 - Used by: step 7c (`QrCodePositionPatternDetector` runs this with QR-tuned config and consumes the resulting `DetectedInfo` list); step 9 (orchestrator).
 
 ## What changed vs Java
 
-- **`BinaryContourFinder`** dependency replaced by `cv::findContours` per CLAUDE.md "OpenCV substitution policy". The Java `process()` method's `contourFinder.process(binary)` becomes our internal `findContours(...)` call; `contourFinder.getContours()` becomes iteration over our local `std::vector<Contour>`. Profiling timers (`milliContour` / `milliShapes`) preserved as `MovingAverage`-equivalent doubles.
-- **`ContourPacked` + packed-set indirection** dropped. OpenCV gives us full point arrays per contour, so we store points directly inside `Contour`. `loadContour(externalIndex, ...)` → `contour.external` directly.
+- **`BinaryContourFinder`** dependency is collapsed: instead of going through Java's `BinaryContourFinder` wrapper around `LinearContourLabelChang2004`, the polygon detector owns a `LinearContourLabelChang2004` directly and configures `maxContour` + `saveInternalContours` on it per call. Profiling timers (`milliContour` / `milliShapes`) preserved as `MovingAverage`-equivalent doubles.
+- **`ContourPacked` + packed-set indirection — re-introduced on the labeller side, materialised on the consumer side.** The labeller stores points in a `PackedSetsPoint2D_I32` per BoofCV; `buildContoursFromPort` walks that and materialises into per-blob `Contour { external, internal[] }` so that downstream stages (`PolylineSplitMerge`, `ContourEdgeIntensity`) keep their existing flat-vector consumption pattern. The cycle-A port was the introduction; the cycle-B materialisation step is the bridge.
 - **Template `<T extends ImageGray<T>>`** dropped. We commit to `cv::Mat CV_8UC1` for both gray and binary, per CLAUDE.md "Type mappings".
 - **`VerbosePrint`** dropped (we don't have a `boofcv.misc.VerbosePrint` infrastructure ported).
 - **Lens distortion** (`setLensDistortion`, `removeDistortionFromContour`, `distToUndist` / `undistToDist`) deferred — same deferral pattern as in step 5's grid reader. The undistorted/distorted polygon fields are still populated, with both holding the same coordinates.

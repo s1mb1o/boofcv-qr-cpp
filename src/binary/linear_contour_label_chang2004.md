@@ -112,6 +112,10 @@ The team-lead's checklist specifically flagged the `-1`-vs-`0xFF` sentinel. Audi
 
 ## Integration points for downstream recovery
 
+**Cycle B (wired in).** `DetectPolygonFromContour` now consumes this stage in place of `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` + the `770f210` reversal + topmost-leftmost rotation fix-up. The port emits BoofCV-native winding (external CW in image, internal CCW) and start pixel directly. Aggregate parity on `qrcodes_v3` held at +0.00pp byte-identical to Java; per-category parity is unchanged from the prior cv::findContours path on every category. Total dataset wallclock dropped ~2× (36.9s → 18.6s) — biggest wins on cv::findContours-dominated categories (`bright_spots` -81%, `brightness` -66%, `curved` -64%).
+
+**Note on the `monitor` / `glare` residuals.** ADR 01 (pre-cycle-B) attributed those residuals to the per-pixel encoding cascade out of `cv::findContours`. Cycle B did *not* close them — they remain at exactly -11.76pp / -3.77pp, byte-identical to the pre-cycle-B state. The cycle-A JUnit suite proves the new port emits Java-identical contours on the same binary input, so the actual root cause must be upstream: the binarizer (`ThresholdBlockOtsu`) produces a binary image that differs from Java's by ~0.6%–1.9% per pixel (ADR 01 reports this number too), and those pixel differences propagate into the contour pixel sequence regardless of which extractor processes them. Cycle C will update ADR 01 to record the re-attribution.
+
 Per CLAUDE.md "Public API design", stages must be reachable in isolation. This stage is exposed via the public header `boofcv_qr/binary/linear_contour_label_chang2004.hpp`. Concrete uses by downstream recovery pipelines:
 
 - **Custom blob-filtering.** Call `process(binary, labeled)`, walk `getContours()` manually, ignore the polygon-fitting downstream. Useful for pricetag-vision's "is this region a price tag at all?" pre-filter.

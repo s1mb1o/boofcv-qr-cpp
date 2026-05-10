@@ -1,5 +1,62 @@
 # ChangeLog
 
+## 2026-05-11 (later) — port: wire LinearContourLabelChang2004 into DetectPolygonFromContour, retire cv::findContours from polygon path (cycle B)
+
+Cycle B of the LinearContour port. The polygon detector now consumes the verbatim BoofCV port `LinearContourLabelChang2004` (cycle A, commit `d3ef6cf`) in place of the prior `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` + per-contour reversal + topmost-leftmost rotation workaround that landed at `770f210` (step 7b/2).
+
+This is the load-bearing change that closes the long-deferred ADR 01 — `cv::findContours` is retired from the polygon path.
+
+### Measured impact
+
+**Parity (qrcodes_v3, 562 images, 1258 GT):**
+
+| state | aggregate vs Java | aggregate decode rate |
+|---|---|---|
+| pre cycle B (`9c0278e`) | +0.00pp byte-identical | 74.40% |
+| **post cycle B (this commit)** | **+0.00pp byte-identical** | **74.40%** |
+
+Every per-category decode rate is **byte-identical** to the pre-cycle-B state. Notable: `monitor` -11.76pp and `glare` -3.77pp **did not close**. ADR 01 pre-cycle-B attributed those residuals to the per-pixel encoding cascade out of `cv::findContours`; cycle A's JUnit suite proves the new port emits Java-identical contours on the same binary input, so the residuals are now correctly attributed to upstream binarizer divergence (`ThresholdBlockOtsu` produces a binary image that differs from Java's by ~0.6%–1.9% per pixel, ADR 01 figure). Cycle C will update ADR 01 to record the re-attribution.
+
+**Perf (mean ms per image, decoder-only):**
+
+| category | pre | post | delta | note |
+|---|---:|---:|---:|---|
+| bright_spots | 394.10 | 73.39 | **-81%** | cv::findContours was 95% on this cluster (ADR 04) |
+| brightness   | 186.99 |  64.06 | **-66%** | same |
+| curved       |  81.90 |  29.25 | **-64%** | same |
+| lots         | 150.43 | 134.24 |  -11% |     |
+| blurred      |  41.33 |  26.38 |  -36% |     |
+| close        |  46.47 |  38.04 |  -18% |     |
+| monitor      |  52.16 |  41.90 |  -20% |     |
+| shadows      |  23.36 |  20.91 |  -10% |     |
+| nominal      |  15.88 |  12.00 |  -24% |     |
+| rotations    |  12.00 |  11.83 |   -1% | near-noise; not contour-bound |
+| (others)     |   ≈    |   ≈    |   ±   | small or no movement |
+
+Aggregate mean-ms 57.06 → 24.55 (**-57%**). Total dataset wallclock 36.9s → 18.6s (**1.99× speedup**).
+
+### Changed
+
+- [src/polygon/detect_polygon_from_contour.cpp](src/polygon/detect_polygon_from_contour.cpp): the `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` call site is replaced with `contourLabeller_.process(binary, labeled_)`. The 770f210 `fixup` (per-contour `std::reverse` + topmost-leftmost `std::rotate`) and the `cv::Mat work = binary.clone()` defensive copy are removed — the port emits BoofCV-native winding + start pixel directly and copies the input internally. `buildContoursFromOpenCV` is replaced by `buildContoursFromPort` which walks `ContourPacked` headers + iterates `PackedSetsPoint2D_I32` sets into the per-blob `Contour { external, internal[] }` shape the downstream consumer expects.
+- [include/boofcv_qr/polygon/detect_polygon_from_contour.hpp](include/boofcv_qr/polygon/detect_polygon_from_contour.hpp): adds the `LinearContourLabelChang2004 contourLabeller_` and scratch `cv::Mat labeled_` private members; renames the helper.
+- [src/polygon/detect_polygon_from_contour.md](src/polygon/detect_polygon_from_contour.md): "OpenCV substitution policy" section rewritten to record the retirement, with the measured parity + perf deltas inlined.
+- [src/binary/linear_contour_label_chang2004.md](src/binary/linear_contour_label_chang2004.md): "Integration points for downstream recovery" updated to mark cycle B wired-in and to record the re-attribution of monitor / glare to the binarizer.
+
+### Test results
+
+- Build clean Release `-O3 -DNDEBUG` under `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+- 428/428 unit tests pass.
+- `tools/cli/run_regression.sh` PASS — aggregate +0.00pp, every category in-band or matching its accepted-residual band.
+
+### Cross-reference
+
+- Cycle A (port + tests, NOT WIRED): commit `d3ef6cf`.
+- ADR 01 ([docs/decisions/01_cv_findcontours_substitution.md](docs/decisions/01_cv_findcontours_substitution.md)): superseded by this cycle. Cycle C will update the status.
+- ADR 04 ([docs/decisions/04_perf_cycle5_gridToImage_inline.md](docs/decisions/04_perf_cycle5_gridToImage_inline.md)): the surgical-fix-floor close-out documented the cv::findContours cost; this cycle removes that cost.
+- Upstream Java: `boofcv.alg.filter.binary.LinearContourLabelChang2004` (228 LOC). Pinned tag: see [UPSTREAM_VERSION](UPSTREAM_VERSION) (v1.3.0).
+
+---
+
 ## 2026-05-11 — port: boofcv.alg.filter.binary.LinearContourLabelChang2004 → src/binary/ (cycle A)
 
 Cycle A of the LinearContour port. Verbatim port of `LinearContourLabelChang2004` + `ContourTracer` + supporting types (`PackedSetsPoint2D_I32`, `ContourPacked`, `ConnectRule`) from upstream `boofcv-ip/src/main/java/boofcv/alg/filter/binary/`. JUnit suite mirrored verbatim into `tests/unit/`. Algorithm doc shipped alongside the source.

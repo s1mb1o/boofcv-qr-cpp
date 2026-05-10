@@ -11,9 +11,6 @@
 
 #include "boofcv_qr/polygon/detect_polygon_from_contour.hpp"
 
-#include <opencv2/imgproc.hpp>
-
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
@@ -259,19 +256,24 @@ void DetectPolygonFromContour::process(const cv::Mat& gray, const cv::Mat& binar
 
     // find all the contours.
     //
-    // OpenCV substitution per CLAUDE.md "OpenCV substitution policy":
-    // RETR_CCOMP gives a 2-level hierarchy of external + internal
-    // contours, matching BoofCV's `Contour { external; internal[]; }`.
-    // CHAIN_APPROX_NONE keeps every pixel — the polyline corner finder
-    // wants per-pixel ordering, not the simplified version.
+    // Cycle B of the LinearContour port (closes ADR 01). Pre-port we
+    // ran `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` and
+    // post-processed each contour with a reversal + a topmost-leftmost
+    // start-pixel rotation to recover BoofCV's winding + scan order.
+    // The new `LinearContourLabelChang2004` emits BoofCV-native pixel
+    // ordering directly — no fix-up needed.
     //
-    // findContours mutates its input; clone defensively.
-    cv::Mat work = binary.clone();
-    std::vector<std::vector<cv::Point>> cvContours;
-    std::vector<cv::Vec4i> hierarchy;
-    cv::findContours(work, cvContours, hierarchy, cv::RETR_CCOMP,
-                      cv::CHAIN_APPROX_NONE);
-    buildContoursFromOpenCV(cvContours, hierarchy);
+    // Push only `maxContour` into the labeller — mirrors Java's
+    // `BinaryContourFinder.setMaxContour` from
+    // `SquareLocatorPatternDetectorBase.configureContourDetector`.
+    // The `minContour` filter stays downstream in
+    // `findCandidateShapes` to match Java's flow exactly (Java's
+    // `LinearContourLabelChang2004.minContourLength` defaults to
+    // `fixed(0)` = no floor, and BoofCV doesn't override it).
+    contourLabeller_.setMaxContourLength(maximumContour_);
+    contourLabeller_.setSaveInternalContours(saveInternalContours_);
+    contourLabeller_.process(binary, labeled_);
+    buildContoursFromPort();
 
     auto time1 = std::chrono::steady_clock::now();
 
@@ -321,69 +323,49 @@ void DetectPolygonFromContour::configure(int32_t width, int32_t height) {
         helper_->setImageShape(width, height);
 }
 
-void DetectPolygonFromContour::buildContoursFromOpenCV(
-    const std::vector<std::vector<cv::Point>>& cvContours,
-    const std::vector<cv::Vec4i>& hierarchy) {
+void DetectPolygonFromContour::buildContoursFromPort() {
     contours_.clear();
-    if (cvContours.empty()) return;
 
-    // RETR_CCOMP convention: each cv contour's hierarchy entry is
-    // [next, prev, child, parent]. Top-level contours have parent == -1
-    // (these are external boundaries). Their children, walked via
-    // hierarchy[child][0] (next sibling at the same level), are
-    // internal-hole boundaries.
+    // The labeller stores its output in two parallel structures: per-
+    // blob `ContourPacked` headers (`getContours()`) carrying the
+    // blob id + set indices, and a global `PackedSetsPoint2D_I32` that
+    // holds the actual (x,y) coordinates one set per contour.
     //
-    // Winding direction note: OpenCV's findContours emits external
-    // contours CCW in image coords (CW in math), and internal contours
-    // CW in image (CCW in math). BoofCV's LinearContourLabelChang2004
-    // emits the OPPOSITE windings (external CW in image, internal CCW
-    // in image). The polyline corner finder's convex check is tuned for
-    // BoofCV's convention — concretely, the `isPositiveZ(a, b, c)`
-    // call in `setSplitVariables` rejects splits whose new corner b
-    // would form a convex turn under the OpenCV winding, which is
-    // exactly the wrong half. Reversing per-contour fixes it.
+    // Winding + start pixel are BoofCV-native by construction (see
+    // `src/binary/linear_contour_label_chang2004.md` "Why CW external
+    // / CCW internal" and "Why this approach over alternatives"). No
+    // reversal or rotation is required, in contrast to the prior
+    // `cv::findContours`-based path that landed at commit `770f210`.
     //
-    // Reversing alone isn't enough. PolylineSplitMerge seeds its
-    // initial-triangle search from `contour[0]` (`findCornerSeed`),
-    // so the corner indices it produces are sensitive to where the
-    // contour starts. After reversal the start pixel becomes
-    // BoofCV's *last* scanned pixel, which rotates the corner indices
-    // relative to BoofCV. To restore parity we rotate the contour so
-    // that the topmost row's leftmost pixel sits at index 0 — this
-    // matches BoofCV's `LinearContourLabelChang2004` row-major scan
-    // order, which always starts a contour at the topmost-then-leftmost
-    // foreground pixel.
-    auto rotate_to_canonical_start = [](std::vector<cv::Point2i>& v) {
-        if (v.empty()) return;
-        auto canonical = std::min_element(
-            v.begin(), v.end(),
-            [](const cv::Point2i& a, const cv::Point2i& b) {
-                return a.y < b.y || (a.y == b.y && a.x < b.x);
-            });
-        std::rotate(v.begin(), canonical, v.end());
-    };
-    auto fixup = [&rotate_to_canonical_start](std::vector<cv::Point2i>& v) {
-        std::reverse(v.begin(), v.end());
-        rotate_to_canonical_start(v);
-    };
+    // Wiped externals: the labeller replaces a set with an empty one
+    // when its pixel count violates min/max. Skip those entries so
+    // downstream stages don't see phantom 0-point contours.
+    const auto& cps = contourLabeller_.getContours();
+    const auto& packed = contourLabeller_.getPackedPoints();
+    auto iter = packed.createIterator();
 
-    for (std::size_t i = 0; i < cvContours.size(); i++) {
-        if (hierarchy[i][3] != -1) continue;  // not a top-level external
+    contours_.reserve(cps.size());
+    for (std::size_t i = 0; i < cps.size(); i++) {
+        const ContourPacked& cp = cps[i];
 
         Contour c;
-        const auto& src = cvContours[i];
-        c.external.reserve(src.size());
-        for (const auto& p : src) c.external.emplace_back(p.x, p.y);
-        fixup(c.external);
+
+        int32_t extSize = packed.sizeOfSet(cp.externalIndex);
+        if (extSize == 0) continue;  // wiped: too long or too short
+
+        c.external.reserve(static_cast<std::size_t>(extSize));
+        iter.setup(cp.externalIndex);
+        while (iter.hasNext()) c.external.push_back(iter.next());
 
         if (saveInternalContours_) {
-            for (int32_t child = hierarchy[i][2]; child != -1;
-                 child = hierarchy[static_cast<std::size_t>(child)][0]) {
-                const auto& csrc = cvContours[static_cast<std::size_t>(child)];
+            c.internal.reserve(cp.internalIndexes.size());
+            for (std::size_t j = 0; j < cp.internalIndexes.size(); j++) {
+                int32_t innerIdx = cp.internalIndexes[j];
+                int32_t innerSize = packed.sizeOfSet(innerIdx);
                 std::vector<cv::Point2i> inner;
-                inner.reserve(csrc.size());
-                for (const auto& p : csrc) inner.emplace_back(p.x, p.y);
-                fixup(inner);
+                inner.reserve(static_cast<std::size_t>(innerSize));
+                iter.setup(innerIdx);
+                while (iter.hasNext()) inner.push_back(iter.next());
                 c.internal.push_back(std::move(inner));
             }
         }
