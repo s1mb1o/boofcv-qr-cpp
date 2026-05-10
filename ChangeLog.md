@@ -1,5 +1,59 @@
 # ChangeLog
 
+## 2026-05-10 (later⁸) — Step 9b.3 fix #1: align `cv::imread` EXIF handling with BoofCV's `UtilImageIO.loadImage`
+
+First regression run after 9b.1+9b.2 (commit `50369db`) showed -36.25pp aggregate vs Java baseline. Triage isolated a single one-line CLI bug: `cv::imread` applies the EXIF Orientation tag by default (auto-rotates camera JPEGs 90°/180°/270°), while BoofCV's `UtilImageIO.loadImage` returns the raw pixel buffer ignoring EXIF. The detector worked on either orientation, but reported corner coordinates in the rotated frame disagreed with ground-truth (and Java) coordinates → IoU matching failed on every camera-shot image.
+
+24 of 562 images had width/height transposed vs Java. All 7 `lots/` images (which alone account for 420 of 1258 total GTs) plus a few `shadows/` and `nominal/` images.
+
+### Fix
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): replace 3 raw `cv::imread(path, cv::IMREAD_GRAYSCALE)` call sites with a centralised `loadGray(imagePath)` helper that adds `cv::IMREAD_IGNORE_ORIENTATION`. CLI-layer change only; zero core-library impact (image I/O is CLI-layer responsibility per CLAUDE.md "Replace with OpenCV").
+
+### Per-category numbers vs Java baseline
+
+| category      | baseline |    cpp |   delta_pp |   gt | cpp_dec |
+|---------------|---------:|-------:|-----------:|-----:|--------:|
+| blurred       |   38.46% | 33.85% |   -4.62pp  |   65 |      22 |
+| bright_spots  |   27.84% | 19.59% |   -8.25pp  |   97 |      19 |
+| brightness    |   78.82% | 55.29% |  -23.53pp  |   85 |      47 |
+| close         |  100.00% |100.00% |   +0.00pp  |   40 |      40 |
+| curved        |   56.67% | 51.67% |   -5.00pp  |   60 |      31 |
+| damaged       |   16.28% | 16.28% |   +0.00pp  |   43 |       7 |
+| decoding      |   65.38% | 65.38% |   +0.00pp  |   26 |      17 |
+| glare         |   32.08% | 28.30% |   -3.77pp  |   53 |      15 |
+| high_version  |   40.54% | 43.24% |   +2.70pp  |   37 |      16 |
+| **lots**      |   99.76% | 50.71% |  **-49.05pp** |  420 |     213 |
+| monitor       |   82.35% | 70.59% |  -11.76pp  |   17 |      12 |
+| nominal       |   89.74% | 89.74% |   +0.00pp  |   78 |      70 |
+| noncompliant  |    3.85% |  7.69% |   +3.85pp  |   26 |       2 |
+| pathological  |   43.48% | 39.13% |   -4.35pp  |   23 |       9 |
+| perspective   |   80.00% | 82.86% |   +2.86pp  |   35 |      29 |
+| rotations     |   96.24% | 96.24% |   +0.00pp  |  133 |     128 |
+| shadows       |   85.00% | 85.00% |   +0.00pp  |   20 |      17 |
+| **AGGREGATE** |   74.40% | 55.17% |  **-19.24pp** |1258 |     694 |
+
+Aggregate moved 38.16% → 55.17% (+17.01pp). `shadows` and `nominal` cleared. `lots` recovered from 0.95% → 50.71% but still -49.05pp; partial breakdown:
+
+- `lots/image001.jpg`: 60/60 matched ✓
+- `lots/image002.jpg`: 60/60 ✓
+- `lots/image003.jpg`: 49/60 (C++ detected 49)
+- `lots/image004.jpg`: 44/60 (C++ detected 44)
+- `lots/image005.jpg`: **0/60** (pipeline returned zero detections AND zero failures)
+- `lots/image006.jpg`: **0/60**
+- `lots/image007.jpg`: **0/60**
+
+Java decodes 60 on every image. Images 005-007 returning *zero candidates* (not zero successful decodes — zero candidates) suggests a finder-stage threshold or contour cap that's filtering out all small finder polygons in those specific images. Likely `setMaximumContour` cutoff or `ThresholdBlockOtsu` requestedBlockWidth tuning on dense small-QR layouts. Triage in next cycle.
+
+### Residual >±2pp categories (11)
+
+`blurred -4.62`, `bright_spots -8.25`, `brightness -23.53`, `curved -5.00`, `glare -3.77`, `high_version +2.70`, `lots -49.05`, `monitor -11.76`, `noncompliant +3.85`, `pathological -4.35`, `perspective +2.86`. The "+" deltas are within margin of regression noise on small-N categories; the "-" deltas are real parity work for subsequent cycles.
+
+### Regression
+
+- 421/421 unit tests still pass.
+- Build clean with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+
 ## 2026-05-10 (later⁷) — Step 9b.1 + 9b.2: `qr_scan` CLI + regression harness
 
 End-to-end CLI binary wiring the full detection pipeline (binarize → polygon → finder → graph → orchestrator) emitting per-image JSON in the same shape as `tools/java_reference/Baseline.java` so `tests/regression/score.py` works against either side. Plus a regression driver that builds, runs, scores, and prints per-category delta vs `tests/baseline.json`. No iteration in this commit — that's 9b.3.

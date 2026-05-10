@@ -442,6 +442,28 @@ std::string recordJson(const Record& rec) {
 }
 
 // ---------------------------------------------------------------------
+// Greyscale image loader. Mirrors BoofCV's `UtilImageIO.loadImage(path,
+// GrayU8.class)` which uses Java's ImageIO directly without applying
+// EXIF orientation metadata — i.e. the loaded buffer matches the
+// raw-pixel orientation of the file, NOT the EXIF "display" rotation.
+//
+// `cv::imread` defaults to applying the EXIF Orientation tag, which on
+// camera JPEGs auto-rotates the buffer 90°/180°/270° relative to what
+// BoofCV sees. The QR detector works on either orientation, but the
+// reported corner coordinates then disagree with the ground truth (and
+// with Java's detection coords) — IoU matching fails on every camera-
+// shot image in the qrcodes_v3 dataset (24 images including all 7
+// `lots/` images, ~33pp aggregate impact).
+//
+// `cv::IMREAD_IGNORE_ORIENTATION` disables the auto-rotation so we see
+// the same pixel buffer Java does. Per CLAUDE.md "Replace with OpenCV"
+// policy, image I/O remains `cv::imread`; only the flag changes.
+cv::Mat loadGray(const fs::path& imagePath) {
+    return cv::imread(imagePath.string(),
+                       cv::IMREAD_GRAYSCALE | cv::IMREAD_IGNORE_ORIENTATION);
+}
+
+// ---------------------------------------------------------------------
 // Filesystem walk: collect all .jpg/.jpeg/.png images under root,
 // sorted lexicographically (matches Java's Files.walk + sorted()).
 // ---------------------------------------------------------------------
@@ -488,7 +510,7 @@ void processOne(Pipeline& pipe, const fs::path& imagePath,
 
     rec.gt = parseGroundTruth(imagePath);
 
-    cv::Mat gray = cv::imread(imagePath.string(), cv::IMREAD_GRAYSCALE);
+    cv::Mat gray = loadGray(imagePath);
     if (gray.empty()) {
         rec.loadFailed = true;
         return;
@@ -531,8 +553,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
     // Warm up on up to 5 images (matches Java's Baseline.java warmup).
     int32_t warmupN = std::min(static_cast<int32_t>(images.size()), 5);
     for (int32_t i = 0; i < warmupN; i++) {
-        cv::Mat gray = cv::imread(images[static_cast<std::size_t>(i)].string(),
-                                   cv::IMREAD_GRAYSCALE);
+        cv::Mat gray = loadGray(images[static_cast<std::size_t>(i)]);
         if (!gray.empty()) {
             try { pipe.run(gray); } catch (...) {}
         }
@@ -607,7 +628,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
 
 int runSingle(const fs::path& imagePath) {
     Pipeline pipe;
-    cv::Mat gray = cv::imread(imagePath.string(), cv::IMREAD_GRAYSCALE);
+    cv::Mat gray = loadGray(imagePath);
     if (gray.empty()) {
         std::fprintf(stderr, "Cannot load %s\n", imagePath.string().c_str());
         return 1;
