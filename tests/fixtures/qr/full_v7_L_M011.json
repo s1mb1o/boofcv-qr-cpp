@@ -1,0 +1,17 @@
+{
+  "name" : "full_v7_L_M011",
+  "version" : 7,
+  "error" : "L",
+  "mode" : "NUMERIC",
+  "message" : "01234567",
+  "payload" : "01234567",
+  "module_pixels" : 4,
+  "border_modules" : 2,
+  "image_size" : 196,
+  "num_modules" : 45,
+  "maskBits" : 3,
+  "maskName" : "M011",
+  "ppCorner" : [ [ 8.0, 8.0 ], [ 36.0, 8.0 ], [ 36.0, 36.0 ], [ 8.0, 36.0 ] ],
+  "ppRight" : [ [ 160.0, 8.0 ], [ 188.0, 8.0 ], [ 188.0, 36.0 ], [ 160.0, 36.0 ] ],
+  "ppDown" : [ [ 8.0, 160.0 ], [ 36.0, 160.0 ], [ 36.0, 188.0 ], [ 8.0, 188.0 ] ]
+}

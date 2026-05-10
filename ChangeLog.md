@@ -1,5 +1,72 @@
 # ChangeLog
 
+## 2026-05-10 (later⁶) — Step 9a fix-up: codex review (8 findings, single bundled commit)
+
+Reviewer + codex flagged 1 algorithmic divergence + 3 CLAUDE.md mandate violations + the fixture-source risk + 2 test-gap issues + 1 doc bug on `ff5de99`. All 8 fixed in this single commit. Test count grows from 261 → 421 (160 new parametric `full_simple` cases driven off 160 BoofCV-Java-generated fixtures). Build remains clean with the strict warning set (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`).
+
+### #1 — Re-port `setTransformFromLinesSquare` verbatim (HIGH algorithmic)
+
+The prior implementation contributed 1 row per line correspondence. Java's `boofcv-geo HomographyDirectLinearTransform` contributes **2 rows per line** via the cross-product null-space construction (`hat(s) * H * f = 0` reformatted to `A * vec(H) = 0`). The 1-row form was an over-determined-only-on-(h6,h7) pseudo-fit that happened to pass the affine round-trip but didn't fully constrain the homography under projective layouts.
+
+- [src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp) — re-ported verbatim from `boofcv.alg.geo.h.HomographyDirectLinearTransform.{addPoints2D, addPoints3D}`. Each 2D point pair contributes 2 rows; each 3D direction-line pair (z=0 on both sides) contributes 2 rows. Design-matrix shape changed from 14×9 (3*2 + 4*1 + zeros) to 14×9 (3*2 + 4*2) with the correct row construction.
+- New tests in [tests/unit/test_qr_code_binary_grid_to_pixel.cpp](tests/unit/test_qr_code_binary_grid_to_pixel.cpp):
+  - `setTransformFromLinesSquare_roundTrip` — mirrors Java's `TestQrCodeBinaryGridToPixel.setTransformFromLinesSquare` (axis-aligned v=2 layout, 1e-4 tolerance matches `assertEquals(..., 1e-4f)` upstream).
+  - `setTransformFromLinesSquare_rotated` — discriminating test under a 30° rotation about an off-center pivot (machine-precision 1e-9 tolerance). A buggy 1-row-per-line construction would still pass the affine `_roundTrip` but fail this rotated case, so it pins the row construction.
+
+### #2 — Strategy injection moves to ctor-time `Config` struct (HIGH mandate)
+
+Prior commit exposed `setRsCorrectStrategy()` / `setAlignmentStrategy()` post-construction setters. CLAUDE.md "Public API design" line 26 mandates "**at construction time**", line 31 mandates "Config passed by value at construction. No singletons, no thread-locals, no `init()` calls."
+
+- [include/boofcv_qr/qr_code_decoder_image.hpp](include/boofcv_qr/qr_code_decoder_image.hpp) introduces `QrCodeDecoderImage::Config`: `forceEncoding`, `defaultEncoding`, `considerTransposed`, `rs_decoder` (`std::function`), `alignment_locator` (`std::function`). Default-constructed `std::function` = use built-in implementation. Two ctors: `QrCodeDecoderImage()` (default Config) and `explicit QrCodeDecoderImage(Config cfg)` (move-in).
+- Setters / clearers dropped entirely. Tests that swap strategies construct a new detector — that's the CLAUDE.md "reentrant, value-semantic config" contract.
+
+### #3 — Const-only result accessors; sub-modules friend-only (HIGH mandate)
+
+- Dropped non-const overloads of `getSuccesses()` / `getFailures()`. Callers wanting to mutate copy.
+- `getAlignmentLocator()` / `getGridReader()` / `getDecoder()` removed from the public API. Mutable access is granted to the test peer only via `friend class QrCodeDecoderImagePeer;`. The peer is defined in [tests/unit/test_qr_code_decoder_image.cpp](tests/unit/test_qr_code_decoder_image.cpp) — same pattern as step 7c / step 8.
+- The public field `bool considerTransposed` becomes a Config setting; `getConsiderTransposed() const` exposes the active value for read-only inspection.
+
+### #4 — `detect_polygons_only` routes through alignment hook (HIGH mandate)
+
+Prior commit called `alignmentLocator_.process(...)` directly inside `detect_polygons_only`, bypassing the injected hook. Downstream consumers using a clipped-QR fallback alignment locator expect both `process()` and `detect_polygons_only` to honour their hook (CLAUDE.md "clipped-QR fallback" use case).
+
+- [src/decoder/qr_code_decoder_image.cpp](src/decoder/qr_code_decoder_image.cpp) introduces private `runAlignmentLocator(gray, qr)` and `runRsCorrect(qr)` helpers that consult the injected hook (or call the built-in). Both `decode()` and `detect_polygons_only()` route through these helpers; `rs_correct(qr)` public entry also goes through `runRsCorrect`.
+- New test `Strategy_AlignmentInjection_polygonOnly`: injects a stub alignment function that returns false + counts invocations; asserts `detect_polygons_only` invokes it.
+
+### #6 — `detect_polygons_only` header doc rewritten (HIGH contract)
+
+The prior header comment said "version is left empty" but the implementation populates `qr.version` via `estimateVersionBySize()` so the alignment locator can run. Docs now correctly describe the actual behaviour.
+
+### #5 — Replace Python `qrcode` fixtures with BoofCV-Java-generated (HIGH parity)
+
+Python's `qrcode` library and BoofCV's `QrCodeGeneratorImage` are independent ISO/IEC 18004 implementations. They differ on mask-selection tie-breaking, mode segmentation choices, and default border modules (Python: 4; BoofCV: 2). Round-tripping "Python-encoded → C++ decoded → assert payload" passes if our decoder agrees with Python's encoding choices, not BoofCV's — masking real Java-vs-C++ parity bugs.
+
+- New Gradle project at [tools/java_fixture_gen/](tools/java_fixture_gen/) (mirrors the existing `tools/java_reference/` pattern). Single `GenerateFixtures.java` main class uses `QrCodeEncoder` + `QrCodeGeneratorImage(4)` with default `borderModule=2` to emit PNG + JSON + flat key=value text per fixture. Build/run: `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ./gradlew run --args="<outDir>"`.
+- Old [tools/fixture_gen/](tools/fixture_gen/) Python script deleted entirely.
+- 172 fixtures regenerated under [tests/fixtures/qr/](tests/fixtures/qr/): 12 base fixtures (named to match the existing test references) + 160 `full_simple` matrix fixtures (5 versions × 4 ECC × 8 masks). Ground-truth JSON now includes the encoded `maskBits` (0..7) so the parametric matrix test can assert mask parity.
+- All existing fixture-driven tests pass against the new fixtures unchanged — the prior C++ decoder was already byte-parity with BoofCV's encoder choices on the relevant code paths.
+
+### #7 — Tightened transposed-retry test (MEDIUM test gap)
+
+Prior `BitsTransposed_RetryPath` accepted either decode-success or decode-failure. New strict assertions mirror Java's `TestQrCodeDecoderImage.transposed`:
+- With `Config.considerTransposed = true` (default): decode succeeds AND `qr.bitsTransposed == true`.
+- With `Config.considerTransposed = false`: decode fails (`successes_.empty()`).
+
+Test setup feeds the orchestrator un-transposed pps coords against a `cv::transpose`d image — the role/coord mismatch forces the retry path through `transposePositionPatterns` to fix the geometry.
+
+### #8 — Parametric `full_simple` 5×4×8=160-case matrix (MEDIUM parity coverage)
+
+Java's `TestQrCodeDecoderImage.full_simple` covers `(version ∈ {1,2,7,20,40}) × (errorLevel ∈ {L,M,Q,H}) × (mask ∈ {M000..M111})` = 160 cases. The prior C++ test covered only 5 hand-picked cases. New parametric `FullSimpleTest.decode_matches_encoded_attributes` (`INSTANTIATE_TEST_SUITE_P` with 160 cases) loads each BoofCV-generated fixture and asserts `version + error + message + mask` (pointer-identity comparison against the `QrCodeMaskPattern::lookupMask(maskBits)` singleton). All 160 cases pass.
+
+### Other items reviewer + team-lead positioned on (no action required)
+
+- `computeBoundingBox` parallel-line guard kept as `bounds[2] = (0, 0)` fallback — Java NPE's on degenerate input; we degrade gracefully (already has `// FIXME(parity)` comment in the source).
+- Decode order, retry loop, RS stride math, bitsTransposed implementation, "Forbidden moves" sweep — all clean per codex; no fix needed.
+
+### Regression
+
+- C++ unit tests: **421/421 pass** (was 261/261; +160 parametric cases). Clean build with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+
 ## 2026-05-10 (later⁵) — Step 9a: `QrCodeDecoderImage` orchestrator + step-9 public API mandates
 
 The top-level QR-decode orchestrator. Wires the previously-shipped stages (binarize → polygon → finder → alignment → sampler → format/version + mask XOR → RS → mode dispatch) into a single `process(pps, gray) → vector<QrCode>` entry point. Lands the seven CLAUDE.md "Public API design — for downstream recovery pipelines" mandates that have been deferred since step 4: stage-isolation entry points, strategy injection, polygon-only mode, raw codewords + erasure positions, line-correspondence DLT for unknown-version sampling, and the `bitsTransposed` retry path.

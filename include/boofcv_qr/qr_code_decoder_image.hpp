@@ -71,6 +71,12 @@ struct PolygonOnlyResult {
     std::vector<QrCode> qrCodes;
 };
 
+// Forward-declare the test-only access shim so the friend grant in
+// `QrCodeDecoderImage` compiles without test code in the public include
+// path. The shim is defined alongside the test fixture in
+// `tests/unit/test_qr_code_decoder_image.cpp`.
+class QrCodeDecoderImagePeer;
+
 class QrCodeDecoderImage {
 public:
     // Strategy-injection hook for RS error correction. Returns true
@@ -84,13 +90,37 @@ public:
     // Default = use the built-in `QrCodeAlignmentPatternLocator`.
     using AlignmentLocatorFn = std::function<bool(const cv::Mat& gray, QrCode& qr)>;
 
-    // forceEncoding mirrors Java's `forceEncoding` arg — when set,
-    // overrides the byte-mode encoding auto-detection.
-    // defaultEncoding mirrors Java's `defaultEncoding` arg — used when
-    // auto-detection finds no ECI and the byte mode produces invalid
-    // UTF-8 / Latin-1.
-    explicit QrCodeDecoderImage(std::optional<std::string> forceEncoding,
-                                std::string defaultEncoding = "UTF-8");
+    // Construction-time configuration — value-typed, reentrant per
+    // CLAUDE.md "Public API design" line 31. Default-constructed Config
+    // = use built-in RS + alignment locator. Once the detector is
+    // constructed, configuration is immutable; tests that need to
+    // swap strategies construct a new detector.
+    struct Config {
+        // Java's `forceEncoding` — when set, overrides byte-mode
+        // encoding auto-detection.
+        std::optional<std::string> forceEncoding;
+        // Java's `defaultEncoding` — used when auto-detection finds no
+        // ECI and the byte mode produces invalid UTF-8 / Latin-1.
+        std::string defaultEncoding = "UTF-8";
+        // Mirrors Java's public field — when true, decode() retries
+        // with a transposed bit pattern if the first pass fails.
+        bool considerTransposed = true;
+        // Default-constructed std::function = use the built-in
+        // ReedSolomonCodes_U8 path.
+        RsCorrectFn rs_decoder;
+        // Default-constructed std::function = use the built-in
+        // QrCodeAlignmentPatternLocator path.
+        AlignmentLocatorFn alignment_locator;
+    };
+
+    // Default Config: built-in RS + alignment locator + UTF-8 default
+    // encoding + considerTransposed=true.
+    QrCodeDecoderImage();
+
+    // Construct with a value-typed Config. Strategy injection sites
+    // are honoured once at construction; the orchestrator stores the
+    // hooks and the runtime no longer re-reads Config.
+    explicit QrCodeDecoderImage(Config cfg);
 
     // ---- End-to-end entry — Java's `process()`. ----
     //
@@ -107,10 +137,16 @@ public:
     static std::vector<PositionPatternTriplet> find_finders(
         const std::vector<PositionPatternNode>& pps);
 
-    // `detect_polygons_only` — runs `find_finders` + alignment locator
-    // (with the default or injected hook) + `setPositionPatterns` /
-    // `computeBoundingBox`, then stops. Returns a vector of QrCode
-    // shells with geometry + alignment fields populated.
+    // `detect_polygons_only` — runs binarize → polygon → finder →
+    // version-estimation → alignment, then stops. `qr.version` IS
+    // populated by `estimateVersionBySize` so the alignment locator
+    // can run with the right number of expected patterns; format/RS/
+    // mode-decode are NOT run. Alignment honours the injected
+    // `alignment_locator` hook (so a clipped-QR fallback substitutes
+    // here just as it does in `process()`). Returns a vector of QrCode
+    // shells with `ppCorner`/`ppRight`/`ppDown`/`bounds`/`version`/
+    // `alignment[]` populated and the message/rawbits/corrected fields
+    // empty.
     PolygonOnlyResult detect_polygons_only(
         const std::vector<PositionPatternNode>& pps, const cv::Mat& gray);
 
@@ -137,31 +173,17 @@ public:
     // `qr.failureCause` set).
     bool decode_message(QrCode& qr);
 
-    // ---- Strategy injection (CLAUDE.md mandate). ----
-    void setRsCorrectStrategy(RsCorrectFn fn) { rsHook_ = std::move(fn); }
-    void setAlignmentStrategy(AlignmentLocatorFn fn) {
-        alignmentHook_ = std::move(fn);
-    }
-    void clearRsCorrectStrategy() { rsHook_ = nullptr; }
-    void clearAlignmentStrategy() { alignmentHook_ = nullptr; }
-
-    // ---- Result accessors (mirror Java's getSuccesses/getFailures). ----
+    // ---- Result accessors (const-only — CLAUDE.md "Public API design"
+    // line 31: detector instances are reentrant; results are read-only
+    // by external consumers). Callers that want to mutate the result
+    // vector should copy.
     const std::vector<QrCode>& getSuccesses() const { return successes_; }
     const std::vector<QrCode>& getFailures() const { return failures_; }
-    std::vector<QrCode>& getSuccesses() { return successes_; }
-    std::vector<QrCode>& getFailures() { return failures_; }
 
-    // Internal sub-modules — exposed for tests + parity diagnostics.
-    QrCodeAlignmentPatternLocator& getAlignmentLocator() {
-        return alignmentLocator_;
-    }
-    QrCodeBinaryGridReader& getGridReader() { return gridReader_; }
-    QrCodeDecoderBits& getDecoder() { return decoder_; }
-
-    // Mirrors Java's public field — when true, decode() retries with
-    // a transposed bit pattern if the first pass fails (mis-encoded
-    // QR codes).
-    bool considerTransposed = true;
+    // Read-only flag mirroring the Config setting that's currently
+    // active. (Set at ctor time via Config; runtime mutation is not
+    // supported per the reentrant-Config contract.)
+    bool getConsiderTransposed() const { return considerTransposed_; }
 
     // ---- TEST-VISIBLE static helpers (Java JUnit pokes these directly). ----
     static void setPositionPatterns(const PositionPatternNode& ppn,
@@ -187,6 +209,13 @@ public:
     bool readVersionRegion0(QrCode& qr);
     bool readVersionRegion1(QrCode& qr);
 
+    // Internal sub-module access is granted to the test peer only
+    // (CLAUDE.md "Public API design" — owned types in public surface,
+    // friend grant for test-only mutable access). The orchestrator
+    // does not expose `getGridReader` / `getAlignmentLocator` /
+    // `getDecoder` to general consumers.
+    friend class QrCodeDecoderImagePeer;
+
 private:
     bool decode(const cv::Mat& gray, QrCode& qr);
     bool readRawData(QrCode& qr);
@@ -195,6 +224,13 @@ private:
     void bitIntensityToBitValue(QrCode& qr,
                                 const std::vector<Point2I>& locationBits);
     void read(int32_t bit, int32_t row, int32_t col);
+
+    // Run the alignment-locator step honouring the optional injected
+    // hook (CLAUDE.md mandate — strategy injection at ctor time).
+    bool runAlignmentLocator(const cv::Mat& gray, QrCode& qr);
+
+    // Run the RS step honouring the optional injected hook.
+    bool runRsCorrect(QrCode& qr);
 
     // ---- Sub-modules. ----
     QrCodeDecoderBits decoder_;
@@ -212,7 +248,8 @@ private:
     std::array<cv::Point2d, 4> tempTranspose_{};
     std::vector<float> intensityBits_;
 
-    // ---- Strategy-injection hooks. ----
+    // ---- Configuration captured at construction time. ----
+    bool considerTransposed_ = true;
     RsCorrectFn rsHook_;
     AlignmentLocatorFn alignmentHook_;
 };

@@ -1,0 +1,17 @@
+{
+  "name" : "full_v1_L_M100",
+  "version" : 1,
+  "error" : "L",
+  "mode" : "NUMERIC",
+  "message" : "01234567",
+  "payload" : "01234567",
+  "module_pixels" : 4,
+  "border_modules" : 2,
+  "image_size" : 100,
+  "num_modules" : 21,
+  "maskBits" : 4,
+  "maskName" : "M100",
+  "ppCorner" : [ [ 8.0, 8.0 ], [ 36.0, 8.0 ], [ 36.0, 36.0 ], [ 8.0, 36.0 ] ],
+  "ppRight" : [ [ 64.0, 8.0 ], [ 92.0, 8.0 ], [ 92.0, 36.0 ], [ 64.0, 36.0 ] ],
+  "ppDown" : [ [ 8.0, 64.0 ], [ 36.0, 64.0 ], [ 36.0, 92.0 ], [ 8.0, 92.0 ] ]
+}

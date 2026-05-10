@@ -22,6 +22,25 @@
 #include <vector>
 
 namespace boofcv_qr {
+
+// Test-only friend grant. Provides controlled mutable access to the
+// orchestrator's internal sub-modules for the JUnit-mirrored tests
+// that poke at internal state (`extractFormatInfo` etc.). Public API
+// consumers go through `QrCodeDecoderImage::process` and the
+// stage-isolation entry points.
+class QrCodeDecoderImagePeer {
+public:
+    static QrCodeBinaryGridReader& gridReader(QrCodeDecoderImage& alg) {
+        return alg.gridReader_;
+    }
+    static QrCodeAlignmentPatternLocator& alignmentLocator(QrCodeDecoderImage& alg) {
+        return alg.alignmentLocator_;
+    }
+    static QrCodeDecoderBits& decoder(QrCodeDecoderImage& alg) {
+        return alg.decoder_;
+    }
+};
+
 namespace {
 
 // ---------------------------------------------------------------------
@@ -40,6 +59,7 @@ struct Fixture {
     std::array<cv::Point2d, 4> ppCorner;
     std::array<cv::Point2d, 4> ppRight;
     std::array<cv::Point2d, 4> ppDown;
+    int32_t maskBits = -1;  // 0..7; -1 if unset (older fixtures).
 };
 
 ErrorLevel parseError(const std::string& s) {
@@ -106,6 +126,10 @@ Fixture loadFixture(const std::string& name) {
     fx.ppCorner = parsePolygon(kv["ppCorner"]);
     fx.ppRight = parsePolygon(kv["ppRight"]);
     fx.ppDown = parsePolygon(kv["ppDown"]);
+    auto maskIt = kv.find("maskBits");
+    if (maskIt != kv.end()) {
+        fx.maskBits = std::stoi(maskIt->second);
+    }
     return fx;
 }
 
@@ -176,7 +200,7 @@ TEST(QrCodeDecoderImageTest, TransposePositionPatterns) {
     qr.ppDown = {cv::Point2d(0, 2), cv::Point2d(1, 2), cv::Point2d(1, 3),
                  cv::Point2d(0, 3)};
 
-    QrCodeDecoderImage alg(std::nullopt);
+    QrCodeDecoderImage alg;
     alg.transposePositionPatterns(qr);
 
     EXPECT_NEAR(qr.ppCorner[1].x, 0.0, 1e-9);
@@ -285,7 +309,7 @@ TEST(QrCodeDecoderImageTest, SetPositionPatterns) {
 // estimateVersionBySize. This test instead exercises the explicit
 // guard that `extractVersionInfo` enforces the v >= 1 constraint.
 TEST(QrCodeDecoderImageTest, ExtractVersionInfo_VersionOutOfRange) {
-    QrCodeDecoderImage alg(std::nullopt);
+    QrCodeDecoderImage alg;
     QrCode qr;
     // Craft a degenerate qr.ppCorner/Right/Down such that
     // estimateVersionBySize returns -1: collinear / overlapping
@@ -323,7 +347,7 @@ TEST(QrCodeDecoderImageTest, FullSimple_v1_v2_v7) {
         ASSERT_EQ(gray.type(), CV_8UC1) << "Fixture: " << name;
 
         PpsAndEdges pps = buildPps(fx);
-        QrCodeDecoderImage alg(std::nullopt);
+        QrCodeDecoderImage alg;
         alg.process(pps.pps, gray);
 
         ASSERT_EQ(alg.getSuccesses().size(), 1u)
@@ -343,7 +367,7 @@ TEST(QrCodeDecoderImageTest, Message_numeric) {
         Fixture fx = loadFixture(name);
         cv::Mat gray = loadFixtureImage(name);
         PpsAndEdges pps = buildPps(fx);
-        QrCodeDecoderImage alg(std::nullopt);
+        QrCodeDecoderImage alg;
         alg.process(pps.pps, gray);
 
         ASSERT_EQ(alg.getSuccesses().size(), 1u) << "Fixture: " << name;
@@ -362,7 +386,7 @@ TEST(QrCodeDecoderImageTest, Message_alphanumeric) {
         Fixture fx = loadFixture(name);
         cv::Mat gray = loadFixtureImage(name);
         PpsAndEdges pps = buildPps(fx);
-        QrCodeDecoderImage alg(std::nullopt);
+        QrCodeDecoderImage alg;
         alg.process(pps.pps, gray);
 
         ASSERT_EQ(alg.getSuccesses().size(), 1u) << "Fixture: " << name;
@@ -376,7 +400,7 @@ TEST(QrCodeDecoderImageTest, Message_byte) {
     Fixture fx = loadFixture("v2_M_byte_short");
     cv::Mat gray = loadFixtureImage("v2_M_byte_short");
     PpsAndEdges pps = buildPps(fx);
-    QrCodeDecoderImage alg(std::nullopt);
+    QrCodeDecoderImage alg;
     alg.process(pps.pps, gray);
 
     ASSERT_EQ(alg.getSuccesses().size(), 1u);
@@ -392,7 +416,7 @@ TEST(QrCodeDecoderImageTest, FullSimple_v20_v40) {
         Fixture fx = loadFixture(name);
         cv::Mat gray = loadFixtureImage(name);
         PpsAndEdges pps = buildPps(fx);
-        QrCodeDecoderImage alg(std::nullopt);
+        QrCodeDecoderImage alg;
         alg.process(pps.pps, gray);
 
         ASSERT_EQ(alg.getSuccesses().size(), 1u)
@@ -424,7 +448,7 @@ TEST(QrCodeDecoderImageTest, StageIsolation_SampleBitMatrix) {
     Fixture fx = loadFixture("v1_M_numeric_8");
     cv::Mat gray = loadFixtureImage("v1_M_numeric_8");
 
-    QrCodeDecoderImage alg(std::nullopt);
+    QrCodeDecoderImage alg;
     QrCode qr;
     qr.ppCorner = fx.ppCorner;
     qr.ppRight = fx.ppRight;
@@ -435,8 +459,8 @@ TEST(QrCodeDecoderImageTest, StageIsolation_SampleBitMatrix) {
     // Mask must be set — pick a default; readRawData will XOR it out
     // but we don't get correctness without the right mask. Instead,
     // pre-decode the format info to populate the mask.
-    QrCodeDecoderImage prep(std::nullopt);
-    prep.getGridReader().setImage(gray);
+    QrCodeDecoderImage prep;
+    QrCodeDecoderImagePeer::gridReader(prep).setImage(gray);
     prep.extractFormatInfo(qr);
 
     bool ok = alg.sample_bit_matrix(gray, qr);
@@ -452,15 +476,16 @@ TEST(QrCodeDecoderImageTest, Strategy_RsInjection) {
     cv::Mat gray = loadFixtureImage("v1_M_numeric_8");
     PpsAndEdges pps = buildPps(fx);
 
-    QrCodeDecoderImage alg(std::nullopt);
     bool injectedCalled = false;
-    alg.setRsCorrectStrategy([&](QrCode& q) {
+    QrCodeDecoderImage::Config cfg;
+    cfg.rs_decoder = [&](QrCode& q) {
         injectedCalled = true;
         // Run real RS so message decode still works (and the test
         // confirms the orchestrator continues through to mode dispatch).
         QrCodeDecoderBits inner(std::nullopt, "UTF-8");
         return inner.applyErrorCorrection(q);
-    });
+    };
+    QrCodeDecoderImage alg(std::move(cfg));
     alg.process(pps.pps, gray);
     EXPECT_TRUE(injectedCalled);
     ASSERT_EQ(alg.getSuccesses().size(), 1u);
@@ -473,12 +498,13 @@ TEST(QrCodeDecoderImageTest, Strategy_AlignmentInjection) {
     cv::Mat gray = loadFixtureImage("v2_M_alphanum_HELLO");
     PpsAndEdges pps = buildPps(fx);
 
-    QrCodeDecoderImage alg(std::nullopt);
     bool injectedCalled = false;
-    alg.setAlignmentStrategy([&](const cv::Mat&, QrCode&) {
+    QrCodeDecoderImage::Config cfg;
+    cfg.alignment_locator = [&](const cv::Mat&, QrCode&) {
         injectedCalled = true;
         return false;  // simulate alignment failure
-    });
+    };
+    QrCodeDecoderImage alg(std::move(cfg));
     alg.process(pps.pps, gray);
 
     EXPECT_TRUE(injectedCalled);
@@ -489,13 +515,42 @@ TEST(QrCodeDecoderImageTest, Strategy_AlignmentInjection) {
     EXPECT_EQ(alg.getFailures()[0].failureCause, Failure::ALIGNMENT);
 }
 
+// (b)+(c) Strategy injection — alignment hook MUST also be honoured
+// in `detect_polygons_only`. Codex review fix-up #4: prior commit
+// called `alignmentLocator_.process(...)` directly, ignoring the
+// injected hook. Downstream consumers using a clipped-QR fallback
+// alignment locator expect both `process()` and `detect_polygons_only`
+// to honour their hook.
+TEST(QrCodeDecoderImageTest, Strategy_AlignmentInjection_polygonOnly) {
+    Fixture fx = loadFixture("v2_M_alphanum_HELLO");
+    cv::Mat gray = loadFixtureImage("v2_M_alphanum_HELLO");
+    PpsAndEdges pps = buildPps(fx);
+
+    int32_t injectedCallCount = 0;
+    QrCodeDecoderImage::Config cfg;
+    cfg.alignment_locator = [&](const cv::Mat&, QrCode&) {
+        injectedCallCount++;
+        return false;  // simulate alignment failure but still let the
+                       // orchestrator continue to the next candidate.
+    };
+    QrCodeDecoderImage alg(std::move(cfg));
+    PolygonOnlyResult out = alg.detect_polygons_only(pps.pps, gray);
+
+    // Non-empty pps + version-estimable QR → at least one candidate
+    // was processed → hook was invoked.
+    EXPECT_GT(injectedCallCount, 0);
+    // The QrCodes are still emitted (polygon-only doesn't filter by
+    // alignment success).
+    EXPECT_FALSE(out.qrCodes.empty());
+}
+
 // (c) Polygon-only mode.
 TEST(QrCodeDecoderImageTest, PolygonOnlyMode) {
     Fixture fx = loadFixture("v2_M_alphanum_HELLO");
     cv::Mat gray = loadFixtureImage("v2_M_alphanum_HELLO");
     PpsAndEdges pps = buildPps(fx);
 
-    QrCodeDecoderImage alg(std::nullopt);
+    QrCodeDecoderImage alg;
     PolygonOnlyResult out = alg.detect_polygons_only(pps.pps, gray);
 
     ASSERT_EQ(out.qrCodes.size(), 1u);
@@ -514,7 +569,7 @@ TEST(QrCodeDecoderImageTest, MandateFields_PopulatedAfterDecode) {
     cv::Mat gray = loadFixtureImage("v1_M_numeric_8");
     PpsAndEdges pps = buildPps(fx);
 
-    QrCodeDecoderImage alg(std::nullopt);
+    QrCodeDecoderImage alg;
     alg.process(pps.pps, gray);
     ASSERT_EQ(alg.getSuccesses().size(), 1u);
     const QrCode& qr = alg.getSuccesses()[0];
@@ -543,7 +598,7 @@ TEST(QrCodeDecoderImageTest, RsErrorLocations_PopulatedOnCorruption) {
     gray.at<std::uint8_t>(cy, cx) = (gray.at<std::uint8_t>(cy, cx) > 127) ? 0 : 255;
 
     PpsAndEdges pps = buildPps(fx);
-    QrCodeDecoderImage alg(std::nullopt);
+    QrCodeDecoderImage alg;
     alg.process(pps.pps, gray);
     if (alg.getSuccesses().empty()) {
         // The corruption may have been outside the data area for some
@@ -562,54 +617,50 @@ TEST(QrCodeDecoderImageTest, RsErrorLocations_PopulatedOnCorruption) {
     }
 }
 
-// (g) bitsTransposed retry path. Transposing a QR's image swaps the
-// finder positions; the orchestrator's retry path with
-// `considerTransposed=true` flips the polygons and retries.
+// (g) bitsTransposed retry path — strict assertions mirroring Java's
+// `TestQrCodeDecoderImage.transposed`. Render a normal QR, transpose
+// the image, feed the orchestrator the *original* (un-transposed) pps
+// coords. The first decode pass fails because the finder polygons
+// reference pixel coords in the original image that don't contain
+// finders in the transposed image. The retry path
+// (`transposePositionPatterns`) swaps the right↔down roles AND
+// transposes corner indices, which happens to map polygons to the
+// correct finder positions in the transposed image. With
+// `considerTransposed=true` the retry succeeds; with `=false` the
+// decode fails.
 TEST(QrCodeDecoderImageTest, BitsTransposed_RetryPath) {
     Fixture fx = loadFixture("v2_M_alphanum_HELLO");
     cv::Mat grayOrig = loadFixtureImage("v2_M_alphanum_HELLO");
     cv::Mat gray;
     cv::transpose(grayOrig, gray);
 
-    // Build a pps graph using TRANSPOSED corners (image was transposed
-    // so finder positions swap (x, y)). Simplest: build the pps from
-    // the transposed corner coords manually.
-    Fixture fxT = fx;
-    auto swapxy = [](std::array<cv::Point2d, 4>& p) {
-        for (int32_t i = 0; i < 4; i++) {
-            std::swap(p[static_cast<std::size_t>(i)].x,
-                      p[static_cast<std::size_t>(i)].y);
-        }
-    };
-    swapxy(fxT.ppCorner);
-    swapxy(fxT.ppRight);
-    swapxy(fxT.ppDown);
-    // After image transpose, the *roles* of right and down swap. The
-    // PositionPatternNode graph the JUnit helper builds expects
-    // pps[1] = right, pps[2] = down based on a NON-transposed image.
-    // To exercise the retry path without re-deriving the geometry,
-    // hand the orchestrator the *original* pps (not transposed) — it
-    // will fail the first pass, then retry with transposed PPs, then
-    // succeed because the bit pattern in the image is also transposed.
-    //
-    // Simpler test: build pps from `fx` (untransposed), feed
-    // transposed image. First pass fails; retry succeeds.
-    PpsAndEdges pps = buildPps(fxT);
-    // The pps geometry above tells the orchestrator "the finders are
-    // at swapped (x, y) coords" — which is true for the transposed
-    // image. So the FIRST decode should succeed, just with the bits
-    // sampled via the transposed homography. Therefore we observe
-    // bitsTransposed = false on this path. To force the retry, build
-    // pps from the ORIGINAL fx (untransposed) — but then bounds and
-    // homography won't match. Skipping the exact-Java behaviour
-    // here; the smoke we actually want is "considerTransposed = true
-    // by default and the orchestrator doesn't crash on transposed
-    // images".
-    QrCodeDecoderImage alg(std::nullopt);
-    EXPECT_TRUE(alg.considerTransposed);  // default
-    alg.process(pps.pps, gray);
-    // Either path is acceptable — succeeded directly or via retry.
-    EXPECT_GE(alg.getSuccesses().size() + alg.getFailures().size(), 1u);
+    // pps points at the ORIGINAL-image finder coords (not transposed).
+    // The orchestrator's retry path is what makes them work against
+    // the transposed image.
+    {
+        QrCodeDecoderImage alg;  // default Config has considerTransposed=true
+        EXPECT_TRUE(alg.getConsiderTransposed());
+        PpsAndEdges pps = buildPps(fx);
+        alg.process(pps.pps, gray);
+        ASSERT_EQ(alg.getSuccesses().size(), 1u)
+            << "transposed retry should have succeeded; failures="
+            << alg.getFailures().size();
+        EXPECT_EQ(alg.getSuccesses()[0].message, fx.message);
+        EXPECT_TRUE(alg.getSuccesses()[0].bitsTransposed);
+    }
+
+    // With considerTransposed=false the retry path is disabled and
+    // decode fails.
+    {
+        QrCodeDecoderImage::Config cfg;
+        cfg.considerTransposed = false;
+        QrCodeDecoderImage alg(std::move(cfg));
+        EXPECT_FALSE(alg.getConsiderTransposed());
+        PpsAndEdges pps = buildPps(fx);
+        alg.process(pps.pps, gray);
+        EXPECT_EQ(alg.getSuccesses().size(), 0u)
+            << "with considerTransposed=false the decode must fail";
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -642,6 +693,86 @@ TEST(QrCodeDecoderImageTest, SetTransformFromLinesSquare_RoundTrip) {
     EXPECT_NEAR(g.x, 7.0, 1e-3);
     EXPECT_NEAR(g.y, 7.0, 1e-3);
 }
+
+// ---------------------------------------------------------------------
+// Codex review fix-up #8: Java's `full_simple` covers
+// (version ∈ {1, 2, 7, 20, 40}) × (errorLevel ∈ {L, M, Q, H}) ×
+// (mask ∈ {M000..M111}) = 160 cases. Each fixture is a
+// BoofCV-Java-generated QR with a known payload, version, error level,
+// and mask. We assert all four match after decode — the highest-coverage
+// parity test in upstream and the difference between "compiles" and
+// "ports correctly" for the orchestrator.
+// ---------------------------------------------------------------------
+
+struct FullSimpleCase {
+    int32_t version;
+    ErrorLevel error;
+    int32_t maskBits;
+};
+
+class FullSimpleTest : public ::testing::TestWithParam<FullSimpleCase> {};
+
+TEST_P(FullSimpleTest, decode_matches_encoded_attributes) {
+    const FullSimpleCase& c = GetParam();
+    const char* errorChar = (c.error == ErrorLevel::L)   ? "L"
+                            : (c.error == ErrorLevel::M) ? "M"
+                            : (c.error == ErrorLevel::Q) ? "Q"
+                                                         : "H";
+    char maskBuf[4];
+    std::snprintf(maskBuf, sizeof(maskBuf), "%d%d%d",
+                  (c.maskBits >> 2) & 1, (c.maskBits >> 1) & 1,
+                  c.maskBits & 1);
+    std::string name =
+        std::string("full_v") + std::to_string(c.version) + "_" +
+        errorChar + "_M" + maskBuf;
+
+    Fixture fx = loadFixture(name);
+    cv::Mat gray = loadFixtureImage(name);
+    PpsAndEdges pps = buildPps(fx);
+
+    QrCodeDecoderImage alg;
+    alg.process(pps.pps, gray);
+
+    ASSERT_EQ(alg.getSuccesses().size(), 1u)
+        << "Fixture: " << name
+        << "; failures=" << alg.getFailures().size();
+    const QrCode& found = alg.getSuccesses()[0];
+
+    EXPECT_EQ(found.version, c.version) << name;
+    EXPECT_EQ(found.error, c.error) << name;
+    EXPECT_EQ(found.message, "01234567") << name;
+    // Mask: pointer-identity comparison against the singleton.
+    EXPECT_EQ(found.mask, &QrCodeMaskPattern::lookupMask(c.maskBits))
+        << name << " expected mask " << c.maskBits;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FullSimpleMatrix, FullSimpleTest,
+    ::testing::ValuesIn([] {
+        std::vector<FullSimpleCase> cases;
+        for (int32_t v : {1, 2, 7, 20, 40}) {
+            for (ErrorLevel e : {ErrorLevel::L, ErrorLevel::M, ErrorLevel::Q,
+                                  ErrorLevel::H}) {
+                for (int32_t m = 0; m < 8; m++) {
+                    cases.push_back({v, e, m});
+                }
+            }
+        }
+        return cases;
+    }()),
+    [](const ::testing::TestParamInfo<FullSimpleCase>& info) {
+        const FullSimpleCase& c = info.param;
+        const char* err = (c.error == ErrorLevel::L)   ? "L"
+                          : (c.error == ErrorLevel::M) ? "M"
+                          : (c.error == ErrorLevel::Q) ? "Q"
+                                                       : "H";
+        char mask[4];
+        std::snprintf(mask, sizeof(mask), "%d%d%d",
+                      (c.maskBits >> 2) & 1, (c.maskBits >> 1) & 1,
+                      c.maskBits & 1);
+        return std::string("v") + std::to_string(c.version) + "_" + err +
+               "_M" + mask;
+    });
 
 }  // namespace
 }  // namespace boofcv_qr

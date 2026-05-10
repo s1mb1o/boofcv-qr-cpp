@@ -1,0 +1,17 @@
+{
+  "name" : "full_v2_H_M011",
+  "version" : 2,
+  "error" : "H",
+  "mode" : "NUMERIC",
+  "message" : "01234567",
+  "payload" : "01234567",
+  "module_pixels" : 4,
+  "border_modules" : 2,
+  "image_size" : 116,
+  "num_modules" : 25,
+  "maskBits" : 3,
+  "maskName" : "M011",
+  "ppCorner" : [ [ 8.0, 8.0 ], [ 36.0, 8.0 ], [ 36.0, 36.0 ], [ 8.0, 36.0 ] ],
+  "ppRight" : [ [ 80.0, 8.0 ], [ 108.0, 8.0 ], [ 108.0, 36.0 ], [ 80.0, 36.0 ] ],
+  "ppDown" : [ [ 8.0, 80.0 ], [ 36.0, 80.0 ], [ 36.0, 108.0 ], [ 8.0, 108.0 ] ]
+}

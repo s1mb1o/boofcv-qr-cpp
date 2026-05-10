@@ -1,64 +1,17 @@
 {
-  "name": "v20_M_alphanum",
-  "version": 20,
-  "error": "M",
-  "message": "VERSIONTWENTYTEST",
-  "module_pixels": 4,
-  "border_modules": 4,
-  "image_size": 420,
-  "num_modules": 97,
-  "ppCorner": [
-    [
-      16,
-      16
-    ],
-    [
-      44,
-      16
-    ],
-    [
-      44,
-      44
-    ],
-    [
-      16,
-      44
-    ]
-  ],
-  "ppRight": [
-    [
-      376,
-      16
-    ],
-    [
-      404,
-      16
-    ],
-    [
-      404,
-      44
-    ],
-    [
-      376,
-      44
-    ]
-  ],
-  "ppDown": [
-    [
-      16,
-      376
-    ],
-    [
-      44,
-      376
-    ],
-    [
-      44,
-      404
-    ],
-    [
-      16,
-      404
-    ]
-  ]
+  "name" : "v20_M_alphanum",
+  "version" : 20,
+  "error" : "M",
+  "mode" : "ALPHANUMERIC",
+  "message" : "VERSIONTWENTYTEST",
+  "payload" : "VERSIONTWENTYTEST",
+  "module_pixels" : 4,
+  "border_modules" : 2,
+  "image_size" : 404,
+  "num_modules" : 97,
+  "maskBits" : 3,
+  "maskName" : "M011",
+  "ppCorner" : [ [ 8.0, 8.0 ], [ 36.0, 8.0 ], [ 36.0, 36.0 ], [ 8.0, 36.0 ] ],
+  "ppRight" : [ [ 368.0, 8.0 ], [ 396.0, 8.0 ], [ 396.0, 36.0 ], [ 368.0, 36.0 ] ],
+  "ppDown" : [ [ 8.0, 368.0 ], [ 36.0, 368.0 ], [ 36.0, 396.0 ], [ 8.0, 396.0 ] ]
 }

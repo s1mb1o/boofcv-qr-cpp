@@ -82,9 +82,34 @@ void copyPolygon(std::array<cv::Point2d, 4>& dst,
 
 }  // namespace
 
-QrCodeDecoderImage::QrCodeDecoderImage(std::optional<std::string> forceEncoding,
-                                       std::string defaultEncoding)
-    : decoder_(std::move(forceEncoding), std::move(defaultEncoding)) {}
+QrCodeDecoderImage::QrCodeDecoderImage()
+    : QrCodeDecoderImage(Config{}) {}
+
+QrCodeDecoderImage::QrCodeDecoderImage(Config cfg)
+    : decoder_(std::move(cfg.forceEncoding), std::move(cfg.defaultEncoding)),
+      considerTransposed_(cfg.considerTransposed),
+      rsHook_(std::move(cfg.rs_decoder)),
+      alignmentHook_(std::move(cfg.alignment_locator)) {}
+
+bool QrCodeDecoderImage::runAlignmentLocator(const cv::Mat& gray, QrCode& qr) {
+    if (alignmentHook_) {
+        return alignmentHook_(gray, qr);
+    }
+    // The built-in `QrCodeAlignmentPatternLocator::process` predates
+    // QrCode's geometry growth and takes explicit polygon args; bridge
+    // to the explicit-polygon form. Empty alignment-prior vectors —
+    // same as Java's call site.
+    std::vector<cv::Point2d> emptyCenters, emptyGrid;
+    alignmentLocator_.getReader().setImage(gray);
+    return alignmentLocator_.process(gray, qr, qr.ppCorner, qr.ppRight,
+                                     qr.ppDown, emptyCenters, emptyGrid);
+}
+
+bool QrCodeDecoderImage::runRsCorrect(QrCode& qr) {
+    if (rsHook_)
+        return rsHook_(qr);
+    return decoder_.applyErrorCorrection(qr);
+}
 
 // ---- Java line ~88: process(List<PositionPatternNode> pps, T gray) ----
 void QrCodeDecoderImage::process(const std::vector<PositionPatternNode>& pps,
@@ -118,7 +143,7 @@ void QrCodeDecoderImage::process(const std::vector<PositionPatternNode>& pps,
                     // Consider the possibility that the QR code was encoded
                     // incorrectly with transposed bits
                     bool success = false;
-                    if (considerTransposed) {
+                    if (considerTransposed_) {
                         transposePositionPatterns(qr);
                         success = decode(gray, qr);
                     }
@@ -231,25 +256,7 @@ bool QrCodeDecoderImage::decode(const cv::Mat& gray, QrCode& qr) {
         return false;
     }
 
-    // Strategy-injection hook for alignment locator (default = built-in).
-    bool alignmentOk;
-    if (alignmentHook_) {
-        alignmentOk = alignmentHook_(gray, qr);
-    } else {
-        // The built-in `QrCodeAlignmentPatternLocator::process` takes
-        // explicit polygon args because its 6-arg API predates QrCode's
-        // geometry growth. Bridge to the explicit-polygon form here.
-        // Empty alignment-prior vectors — same as Java's call site.
-        std::vector<cv::Point2d> emptyCenters, emptyGrid;
-        // The locator's `process` needs the underlying grid reader to
-        // have its image set. We feed it our own gridReader_ via the
-        // friend-grant accessor (see qr_code_alignment_pattern_locator.hpp).
-        alignmentLocator_.getReader().setImage(gray);
-        alignmentOk = alignmentLocator_.process(gray, qr, qr.ppCorner,
-                                                qr.ppRight, qr.ppDown,
-                                                emptyCenters, emptyGrid);
-    }
-    if (!alignmentOk) {
+    if (!runAlignmentLocator(gray, qr)) {
         qr.failureCause = Failure::ALIGNMENT;
         return false;
     }
@@ -274,14 +281,7 @@ bool QrCodeDecoderImage::decode(const cv::Mat& gray, QrCode& qr) {
             qr.failureCause = Failure::READING_BITS;
             continue;
         }
-        // Strategy-injection hook for RS (default = built-in).
-        bool rsOk;
-        if (rsHook_) {
-            rsOk = rsHook_(qr);
-        } else {
-            rsOk = decoder_.applyErrorCorrection(qr);
-        }
-        if (!rsOk) {
+        if (!runRsCorrect(qr)) {
             qr.failureCause = Failure::ERROR_CORRECTION;
             continue;
         }
@@ -658,15 +658,17 @@ std::vector<PositionPatternTriplet> QrCodeDecoderImage::find_finders(
     return out;
 }
 
-// `detect_polygons_only` — runs binarize→polygon→finder→alignment but
-// stops before sampling. Format/version are NOT decoded (so this won't
-// know the right version for alignment); we use Java's
-// `estimateVersionBySize` heuristic to seed the alignment locator.
+// `detect_polygons_only` — runs binarize → polygon → finder →
+// version-estimation → alignment. The `version` field IS populated
+// via `estimateVersionBySize` so the alignment locator can run with
+// the right number of expected patterns; format/RS/mode-decode are
+// skipped. Alignment runs through `runAlignmentLocator` so the
+// injected alignment hook (CLAUDE.md mandate — clipped-QR fallback
+// case) is honoured here too.
 PolygonOnlyResult QrCodeDecoderImage::detect_polygons_only(
     const std::vector<PositionPatternNode>& pps, const cv::Mat& gray) {
     PolygonOnlyResult out;
     gridReader_.setImage(gray);
-    alignmentLocator_.getReader().setImage(gray);
 
     for (std::size_t i = 0; i < pps.size(); i++) {
         const PositionPatternNode& ppn = pps[i];
@@ -681,12 +683,11 @@ PolygonOnlyResult QrCodeDecoderImage::detect_polygons_only(
                 int32_t v = estimateVersionBySize(qr);
                 if (v >= 1 && v <= QrCode::MAX_VERSION) {
                     qr.version = v;
-                    // Try the alignment locator. Don't propagate failures
-                    // — polygon-only mode reports whatever it found.
-                    std::vector<cv::Point2d> emptyCenters, emptyGrid;
-                    alignmentLocator_.process(gray, qr, qr.ppCorner,
-                                              qr.ppRight, qr.ppDown,
-                                              emptyCenters, emptyGrid);
+                    // Try the alignment locator via the same hook-or-
+                    // default path that `decode()` uses. Don't propagate
+                    // failures — polygon-only mode reports whatever it
+                    // found.
+                    runAlignmentLocator(gray, qr);
                 }
                 out.qrCodes.push_back(std::move(qr));
             }
@@ -711,9 +712,7 @@ bool QrCodeDecoderImage::extract_raw_codewords(const cv::Mat& gray,
 }
 
 bool QrCodeDecoderImage::rs_correct(QrCode& qr) {
-    if (rsHook_)
-        return rsHook_(qr);
-    return decoder_.applyErrorCorrection(qr);
+    return runRsCorrect(qr);
 }
 
 bool QrCodeDecoderImage::decode_message(QrCode& qr) {

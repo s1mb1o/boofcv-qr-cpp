@@ -1,64 +1,17 @@
 {
-  "name": "v2_L_alphanum_long",
-  "version": 2,
-  "error": "L",
-  "message": "01234567ABCD",
-  "module_pixels": 4,
-  "border_modules": 4,
-  "image_size": 132,
-  "num_modules": 25,
-  "ppCorner": [
-    [
-      16,
-      16
-    ],
-    [
-      44,
-      16
-    ],
-    [
-      44,
-      44
-    ],
-    [
-      16,
-      44
-    ]
-  ],
-  "ppRight": [
-    [
-      88,
-      16
-    ],
-    [
-      116,
-      16
-    ],
-    [
-      116,
-      44
-    ],
-    [
-      88,
-      44
-    ]
-  ],
-  "ppDown": [
-    [
-      16,
-      88
-    ],
-    [
-      44,
-      88
-    ],
-    [
-      44,
-      116
-    ],
-    [
-      16,
-      116
-    ]
-  ]
+  "name" : "v2_L_alphanum_long",
+  "version" : 2,
+  "error" : "L",
+  "mode" : "ALPHANUMERIC",
+  "message" : "01234567ABCD",
+  "payload" : "01234567ABCD",
+  "module_pixels" : 4,
+  "border_modules" : 2,
+  "image_size" : 116,
+  "num_modules" : 25,
+  "maskBits" : 3,
+  "maskName" : "M011",
+  "ppCorner" : [ [ 8.0, 8.0 ], [ 36.0, 8.0 ], [ 36.0, 36.0 ], [ 8.0, 36.0 ] ],
+  "ppRight" : [ [ 80.0, 8.0 ], [ 108.0, 8.0 ], [ 108.0, 36.0 ], [ 80.0, 36.0 ] ],
+  "ppDown" : [ [ 8.0, 80.0 ], [ 36.0, 80.0 ], [ 36.0, 108.0 ], [ 8.0, 108.0 ] ]
 }

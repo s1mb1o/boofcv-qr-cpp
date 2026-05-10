@@ -1,0 +1,17 @@
+{
+  "name" : "full_v20_H_M001",
+  "version" : 20,
+  "error" : "H",
+  "mode" : "NUMERIC",
+  "message" : "01234567",
+  "payload" : "01234567",
+  "module_pixels" : 4,
+  "border_modules" : 2,
+  "image_size" : 404,
+  "num_modules" : 97,
+  "maskBits" : 1,
+  "maskName" : "M001",
+  "ppCorner" : [ [ 8.0, 8.0 ], [ 36.0, 8.0 ], [ 36.0, 36.0 ], [ 8.0, 36.0 ] ],
+  "ppRight" : [ [ 368.0, 8.0 ], [ 396.0, 8.0 ], [ 396.0, 36.0 ], [ 368.0, 36.0 ] ],
+  "ppDown" : [ [ 8.0, 368.0 ], [ 36.0, 368.0 ], [ 36.0, 396.0 ], [ 8.0, 396.0 ] ]
+}

@@ -118,169 +118,139 @@ void QrCodeBinaryGridToPixel::addAllFeatures(const QrCode& qr) {
 }
 
 void QrCodeBinaryGridToPixel::setTransformFromLinesSquare(const QrCode& qr) {
-    // Mirrors Java QrCodeBinaryGridToPixel.setTransformFromLinesSquare.
+    // Verbatim port of Java's
+    // `boofcv.alg.geo.h.HomographyDirectLinearTransform.process(points2D,
+    // points3D, conics=null, foundH)` for the QR setting where:
+    //   - points2D = the three reliable corners of ppCorner (corner [0],
+    //     the outside corner, is intentionally skipped — Java comment:
+    //     "prone to damage").
+    //   - points3D = four direction-line correspondences (z=0 on both
+    //     sides) connecting ppCorner to ppRight / ppDown.
     //
-    // Three of the four corners of `ppCorner` are used as point
-    // correspondences (the (0,0) outside corner is intentionally
-    // skipped — Java comment: "prone to damage"). Four direction
-    // lines connect those corners to corresponding corners on the
-    // other two finders, giving the DLT enough rank-3 information
-    // to fit the homography even without alignment patterns or the
-    // outside corners.
+    // The DLT solves `s × H f = 0` (cross product) reformatted to
+    // `A * vec(H) = 0` and finds the right null vector via SVD. For each
+    // 2D point pair (f, s) Java's `addPoints2D` writes 2 rows:
+    //   row1: cols 3..5 = (-f.x, -f.y, -1),  cols 6..8 = (s.y*f.x, s.y*f.y, s.y)
+    //   row2: cols 0..2 = ( f.x,  f.y,  1),  cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x)
     //
-    // BoofCV solves this via georegression's
-    // `HomographyDirectLinearTransform.process(points, lines, null, H)`
-    // which builds a 2*N_points + N_lines design matrix and SVDs it.
-    // We replicate the same construction here using cv::SVDecomp.
+    // For each 3D point (line direction with z=0) pair (f, s):
+    //   row1: cols 3..5 = (-s.z*f.x, -s.z*f.y, -s.z*f.z),  cols 6..8 = (s.y*f.x, s.y*f.y, s.y*f.z)
+    //   row2: cols 0..2 = ( s.z*f.x,  s.z*f.y,  s.z*f.z),  cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x*f.z)
     //
-    // Each *point* correspondence (image (x, y) ↔ grid (col, row))
-    // contributes 2 rows:
-    //   [-x, -y, -1,  0,  0,  0,  col*x, col*y, col]
-    //   [ 0,  0,  0, -x, -y, -1,  row*x, row*y, row]
-    //
-    // Each *line* correspondence (image direction (dx, dy) ↔ grid
-    // direction (dcol, drow)) contributes 1 row. The line constraint
-    // says that the homography H maps an image line ax+by+c=0 to a
-    // grid line a'x+b'y+c'=0; equivalently, image line vector
-    // l_img = (a_img, b_img, c_img) ↔ grid line vector
-    // l_grid = (a_grid, b_grid, c_grid) satisfy l_img = H^T * l_grid
-    // up to scale.
-    //
-    // For Java's `setLine`, the inputs are direction vectors
-    // (image dx, dy) and (grid dcol, drow). The corresponding line
-    // through the origin perpendicular to the direction has normal
-    // (-dy, dx) in image and (-drow, dcol) in grid (after
-    // normalising). The line constraint reduces to:
-    //   l_grid[0]*H[0] + l_grid[1]*H[1] + l_grid[2]*H[2] = (some_l_img[0])
-    // — but since we only know directions, the line through the origin
-    // approximation gives c=0 in both, leaving:
-    //   [-l_img.x * H[0] - l_img.y * H[1] = -l_grid.x * H[6,7,8] ... ]
-    // After normalisation the row inserted into the SVD design matrix is:
-    //   [ l_grid.y * (l_img.x * 0 + l_img.y * 0)  ...  ]
-    //
-    // Rather than re-derive the line term from first principles, the
-    // form below mirrors `HomographyDirectLinearTransform`'s line
-    // contribution row (cross-product of the line vectors):
-    //   l_img = (-dy_img,  dx_img, 0)   (line normal in image; c=0)
-    //   l_grid = (-drow_g,  dcol_g, 0)
-    // Each line contributes:
-    //   row = [a_g*0,        a_g*0,        a_g*0,
-    //          b_g*0,        b_g*0,        b_g*0,
-    //          a_g*l_img.x,  a_g*l_img.y,  a_g*0]
-    //   ... and similarly for the b_g column. This expands into 1 row
-    // per line direction (we use the simpler form: line direction
-    // ↔ direction, c=0, which produces a *row of differences in the
-    // direction-vector cross product*).
-    //
-    // Concretely we reproduce the matrix form georegression uses:
-    // for each line correspondence (l_img, l_grid):
-    //   A row = [ l_grid.x * 0,    l_grid.x * 0,    l_grid.x * (-1) * (-l_img.y / l_grid.y),
-    //              ... ]
-    // Since the algebra is the same as point correspondences but with
-    // (col, row, 1) replaced by (l_img.x, l_img.y, 0) and (x, y, 1)
-    // replaced by (l_grid.x, l_grid.y, 0), the contribution per line
-    // is exactly:
-    //   [ -l_img.x * l_grid.y,  -l_img.y * l_grid.y,  0,
-    //      l_img.x * l_grid.x,   l_img.y * l_grid.x,  0,
-    //      0,                    0,                    0 ]
-    // i.e. one row enforcing l_img × l_grid_homog = 0.
+    // CLAUDE.md mandates `cv::findHomography(method=0)` only for pure-
+    // 4-point DLTs. The mixed point/line DLT here is NOT a 4-point fit
+    // — line endpoints aren't point correspondences, they're co-linear
+    // direction vectors at infinity (z=0), so we build the design matrix
+    // explicitly and solve via cv::SVDecomp, mirroring Java's
+    // SolveNullSpaceSvd_DDRM. Convention everywhere in this file: H
+    // maps **image (x, y) → grid (col, row)**, i.e. p1=image, p2=grid.
 
-    // Three point correspondences from ppCorner (skip [0]).
-    struct Pt {
-        double x, y;     // image
-        double col, row; // grid
+    // ---- 2D point correspondences (3 of ppCorner — skip outside [0]). ----
+    // Java's setLine endpoints in the QR caller use grid coords (col, row)
+    // packed into Point3D_F64 as (col, row, 1) for points; mirror that.
+    struct Pt2 {
+        double f_x, f_y;       // image (p1)
+        double s_x, s_y;       // grid  (p2): s.x=col, s.y=row
     };
-    std::array<Pt, 3> pts{
-        Pt{qr.ppCorner[1].x, qr.ppCorner[1].y, 7.0, 0.0},
-        Pt{qr.ppCorner[2].x, qr.ppCorner[2].y, 7.0, 7.0},
-        Pt{qr.ppCorner[3].x, qr.ppCorner[3].y, 0.0, 7.0}};
+    std::array<Pt2, 3> points2D{
+        Pt2{qr.ppCorner[1].x, qr.ppCorner[1].y, 7.0, 0.0},  // grid (col, row) = (7, 0)
+        Pt2{qr.ppCorner[2].x, qr.ppCorner[2].y, 7.0, 7.0},
+        Pt2{qr.ppCorner[3].x, qr.ppCorner[3].y, 0.0, 7.0}};
 
-    // Four direction-line correspondences. Each is given by two
-    // grid-coord endpoints (giving the grid direction) and two
-    // image-pixel corners (giving the image direction). The Java
-    // code normalises both directions to unit length before SVD.
-    struct Ln {
-        double dxi, dyi;     // image direction (normalised)
-        double dcol, drow;   // grid direction (normalised)
+    // ---- 3D direction-line correspondences (4 lines). ----
+    // Each `setLine(row0, col0, row1, col1, polygon0, corner0, polygon1,
+    // corner1)` builds:
+    //   p1 = (image dx, image dy, 0) normalised        ← f
+    //   p2 = (grid dcol, grid drow, 0) normalised      ← s   (s.x=dcol, s.y=drow)
+    struct Pt3 {
+        double f_x, f_y, f_z;  // image direction (p1, z=0)
+        double s_x, s_y, s_z;  // grid direction  (p2, z=0): s.x=dcol, s.y=drow
     };
 
     auto makeLine = [](double row0, double col0, double row1, double col1,
-                       const cv::Point2d& c0, const cv::Point2d& c1) -> Ln {
-        double dxi = c1.x - c0.x;
-        double dyi = c1.y - c0.y;
-        double dcol = col1 - col0;
-        double drow = row1 - row0;
-        double ni = std::sqrt(dxi * dxi + dyi * dyi);
-        double ng = std::sqrt(dcol * dcol + drow * drow);
-        if (ni > 0.0) { dxi /= ni; dyi /= ni; }
-        if (ng > 0.0) { dcol /= ng; drow /= ng; }
-        return Ln{dxi, dyi, dcol, drow};
+                       const cv::Point2d& c0, const cv::Point2d& c1) -> Pt3 {
+        double p1x = c1.x - c0.x;
+        double p1y = c1.y - c0.y;
+        double p1z = 0.0;
+        double p2x = col1 - col0;
+        double p2y = row1 - row0;
+        double p2z = 0.0;
+        double n1 = std::sqrt(p1x * p1x + p1y * p1y + p1z * p1z);
+        double n2 = std::sqrt(p2x * p2x + p2y * p2y + p2z * p2z);
+        if (n1 > 0.0) { p1x /= n1; p1y /= n1; p1z /= n1; }
+        if (n2 > 0.0) { p2x /= n2; p2y /= n2; p2z /= n2; }
+        return Pt3{p1x, p1y, p1z, p2x, p2y, p2z};
     };
 
-    std::array<Ln, 4> lns{
-        makeLine(0, 7, 0, 14, qr.ppCorner[1], qr.ppRight[0]),
-        makeLine(7, 7, 7, 14, qr.ppCorner[2], qr.ppRight[3]),
-        makeLine(7, 7, 14, 7, qr.ppCorner[2], qr.ppDown[1]),
-        makeLine(7, 0, 14, 0, qr.ppCorner[3], qr.ppDown[0])};
+    std::array<Pt3, 4> points3D{
+        makeLine(0, 7,  0, 14, qr.ppCorner[1], qr.ppRight[0]),
+        makeLine(7, 7,  7, 14, qr.ppCorner[2], qr.ppRight[3]),
+        makeLine(7, 7, 14,  7, qr.ppCorner[2], qr.ppDown[1]),
+        makeLine(7, 0, 14,  0, qr.ppCorner[3], qr.ppDown[0])};
 
-    // Design matrix: 2 rows per point + 1 row per line direction.
-    // Java's `HomographyDirectLinearTransform` builds a 2*N+M × 9
-    // system; we follow the same row layout.
-    //
-    // Direction of mapping: image (x, y) → grid (col, row) — i.e.
-    // H * [x, y, 1]^T = lambda * [col, row, 1]^T. This matches the
-    // image→grid convention everywhere else in the file.
-    int32_t totalRows = static_cast<int32_t>(2 * pts.size() + lns.size());
-    cv::Mat A = cv::Mat::zeros(totalRows, 9, CV_64F);
-    int32_t r = 0;
-    for (std::size_t i = 0; i < pts.size(); i++) {
-        const Pt& p = pts[i];
-        // Row 1: -x, -y, -1, 0, 0, 0, col*x, col*y, col
-        A.at<double>(r, 0) = -p.x;
-        A.at<double>(r, 1) = -p.y;
-        A.at<double>(r, 2) = -1.0;
-        A.at<double>(r, 6) = p.col * p.x;
-        A.at<double>(r, 7) = p.col * p.y;
-        A.at<double>(r, 8) = p.col;
-        r++;
-        // Row 2: 0, 0, 0, -x, -y, -1, row*x, row*y, row
-        A.at<double>(r, 3) = -p.x;
-        A.at<double>(r, 4) = -p.y;
-        A.at<double>(r, 5) = -1.0;
-        A.at<double>(r, 6) = p.row * p.x;
-        A.at<double>(r, 7) = p.row * p.y;
-        A.at<double>(r, 8) = p.row;
-        r++;
-    }
-    for (std::size_t i = 0; i < lns.size(); i++) {
-        const Ln& l = lns[i];
-        // Direction-line constraint: image direction (dxi, dyi, 0)
-        // maps to grid direction (dcol, drow, 0). Same row form as
-        // a point but with the homogeneous w-component zero on both
-        // sides — only the col*x, col*y and row*x, row*y entries
-        // remain. Stack as one row enforcing the cross-product
-        // collinearity.
-        //
-        // Per georegression's `addLineConstraint`:
-        //   [ -dxi * drow,  -dyi * drow,  0,
-        //      dxi * dcol,   dyi * dcol,  0,
-        //      0,            0,            0 ]
-        A.at<double>(r, 0) = -l.dxi * l.drow;
-        A.at<double>(r, 1) = -l.dyi * l.drow;
-        A.at<double>(r, 3) =  l.dxi * l.dcol;
-        A.at<double>(r, 4) =  l.dyi * l.dcol;
-        r++;
+    // ---- Build design matrix A: 2*num2D + 2*num3D rows, 9 cols. ----
+    // Mirrors Java's HomographyDirectLinearTransform.computeTotalRows
+    // (with numConic=0): `2*num2D + 2*num3D + 9*numConic`.
+    int32_t num2D = static_cast<int32_t>(points2D.size());
+    int32_t num3D = static_cast<int32_t>(points3D.size());
+    int32_t numRows = 2 * num2D + 2 * num3D;
+    cv::Mat A = cv::Mat::zeros(numRows, 9, CV_64F);
+    int32_t rows = 0;
+
+    // ---- addPoints2D ----
+    for (std::size_t i = 0; i < points2D.size(); i++) {
+        const Pt2& p = points2D[i];
+        // Row 1: cols 3..5 = (-f.x, -f.y, -1), cols 6..8 = (s.y*f.x, s.y*f.y, s.y).
+        A.at<double>(rows, 3) = -p.f_x;
+        A.at<double>(rows, 4) = -p.f_y;
+        A.at<double>(rows, 5) = -1.0;
+        A.at<double>(rows, 6) = p.s_y * p.f_x;
+        A.at<double>(rows, 7) = p.s_y * p.f_y;
+        A.at<double>(rows, 8) = p.s_y;
+        rows++;
+        // Row 2: cols 0..2 = (f.x, f.y, 1), cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x).
+        A.at<double>(rows, 0) = p.f_x;
+        A.at<double>(rows, 1) = p.f_y;
+        A.at<double>(rows, 2) = 1.0;
+        A.at<double>(rows, 6) = -p.s_x * p.f_x;
+        A.at<double>(rows, 7) = -p.s_x * p.f_y;
+        A.at<double>(rows, 8) = -p.s_x;
+        rows++;
     }
 
-    // Solve for the right null vector via SVD; smallest singular value's
-    // right-singular vector is the homogeneous H solution.
+    // ---- addPoints3D ----
+    for (std::size_t i = 0; i < points3D.size(); i++) {
+        const Pt3& p = points3D[i];
+        // Row 1: cols 3..5 = (-s.z*f.x, -s.z*f.y, -s.z*f.z),
+        //        cols 6..8 = ( s.y*f.x,  s.y*f.y,  s.y*f.z).
+        A.at<double>(rows, 3) = -p.s_z * p.f_x;
+        A.at<double>(rows, 4) = -p.s_z * p.f_y;
+        A.at<double>(rows, 5) = -p.s_z * p.f_z;
+        A.at<double>(rows, 6) =  p.s_y * p.f_x;
+        A.at<double>(rows, 7) =  p.s_y * p.f_y;
+        A.at<double>(rows, 8) =  p.s_y * p.f_z;
+        rows++;
+        // Row 2: cols 0..2 = ( s.z*f.x,  s.z*f.y,  s.z*f.z),
+        //        cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x*f.z).
+        A.at<double>(rows, 0) =  p.s_z * p.f_x;
+        A.at<double>(rows, 1) =  p.s_z * p.f_y;
+        A.at<double>(rows, 2) =  p.s_z * p.f_z;
+        A.at<double>(rows, 6) = -p.s_x * p.f_x;
+        A.at<double>(rows, 7) = -p.s_x * p.f_y;
+        A.at<double>(rows, 8) = -p.s_x * p.f_z;
+        rows++;
+    }
+
+    // ---- Solve nullspace via SVD; H = right-singular vector at smallest σ. ----
+    // Java uses SolveNullSpaceSvd_DDRM which returns the right-singular
+    // vector of the smallest singular value reshaped to 3x3 row-major.
     cv::Mat w, u, vt;
     cv::SVDecomp(A, w, u, vt, cv::SVD::FULL_UV);
-    // vt is 9x9; last row is the smallest singular vector.
-    cv::Mat h = vt.row(8).t();  // 9x1
-    H = cv::Matx33d(h.at<double>(0, 0), h.at<double>(1, 0), h.at<double>(2, 0),
-                    h.at<double>(3, 0), h.at<double>(4, 0), h.at<double>(5, 0),
-                    h.at<double>(6, 0), h.at<double>(7, 0), h.at<double>(8, 0));
+    // vt is 9x9; row 8 is the smallest singular vector. Reshape row-major
+    // into the 3x3 H.
+    H = cv::Matx33d(vt.at<double>(8, 0), vt.at<double>(8, 1), vt.at<double>(8, 2),
+                    vt.at<double>(8, 3), vt.at<double>(8, 4), vt.at<double>(8, 5),
+                    vt.at<double>(8, 6), vt.at<double>(8, 7), vt.at<double>(8, 8));
     cv::invert(H, Hinv);
 }
 

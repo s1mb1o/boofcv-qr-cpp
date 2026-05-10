@@ -1,0 +1,17 @@
+{
+  "name" : "full_v40_M_M001",
+  "version" : 40,
+  "error" : "M",
+  "mode" : "NUMERIC",
+  "message" : "01234567",
+  "payload" : "01234567",
+  "module_pixels" : 4,
+  "border_modules" : 2,
+  "image_size" : 724,
+  "num_modules" : 177,
+  "maskBits" : 1,
+  "maskName" : "M001",
+  "ppCorner" : [ [ 8.0, 8.0 ], [ 36.0, 8.0 ], [ 36.0, 36.0 ], [ 8.0, 36.0 ] ],
+  "ppRight" : [ [ 688.0, 8.0 ], [ 716.0, 8.0 ], [ 716.0, 36.0 ], [ 688.0, 36.0 ] ],
+  "ppDown" : [ [ 8.0, 688.0 ], [ 36.0, 688.0 ], [ 36.0, 716.0 ], [ 8.0, 716.0 ] ]
+}
