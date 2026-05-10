@@ -18,6 +18,10 @@
 
 namespace boofcv_qr {
 
+// Forward-declare the step-9 orchestrator so the friend grant below
+// compiles before step 9 lands.
+class QrCodeDecoderImage;
+
 class QrCodeAlignmentPatternLocator {
 public:
     QrCodeAlignmentPatternLocator() = default;
@@ -50,7 +54,14 @@ public:
     bool getUseEdgeScan() const { return useEdgeScan_; }
     void setUseEdgeScan(bool v) { useEdgeScan_ = v; }
 
-    QrCodeBinaryGridReader& getReader() { return reader_; }
+    // Step 9's orchestrator (QrCodeDecoderImage) needs to bind the
+    // homography on our internal grid reader before invoking
+    // process(). Granted via friend so the mutable reader doesn't
+    // leak into the public API surface — same pattern as the
+    // friend-only mutable accessors on DetectPolygonBinaryGrayRefine
+    // and QrCodePositionPatternDetector. Forward-declared here so
+    // the friend grant compiles even before step 9 lands.
+    friend class QrCodeDecoderImage;
 
     // ---- TEST-VISIBLE — Java JUnit reaches into these directly.
 
@@ -78,12 +89,21 @@ public:
 private:
     bool localizePositionPatterns(const std::vector<int32_t>& alignmentLocations);
 
+    // Mutable accessor reachable via the friend grant above (step 9's
+    // orchestrator binds homography state on the reader before the
+    // locator's process() call). Not part of the public API.
+    QrCodeBinaryGridReader& getReader() { return reader_; }
+
     QrCodeBinaryGridReader reader_;
 
     // Workspace for `localize()` (the edge-scan path) — sized 12 in
-    // Java; same here. `samples_` is for `centerOnSquare`'s 3x3 grid.
-    std::vector<float> arrayX_{12, 0.0f};
-    std::vector<float> arrayY_{12, 0.0f};
+    // Java; same here. NOTE: `std::vector<float> v{12, 0.0f}` invokes
+    // the initializer_list ctor (yielding a 2-element vector), not
+    // `vector(count, value)`. Use `std::vector<float>(12, 0.0f)` so
+    // we get the count-and-value ctor; otherwise the edge-scan reads
+    // out-of-bounds samples.
+    std::vector<float> arrayX_ = std::vector<float>(12, 0.0f);
+    std::vector<float> arrayY_ = std::vector<float>(12, 0.0f);
     std::array<float, 9> samples_{};
 
     // Lookup grid for the 2-D index → Alignment* mapping. Slots that

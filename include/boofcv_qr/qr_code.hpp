@@ -107,14 +107,19 @@ public:
     // locator was able to find for this QR. `moduleX`/`moduleY` are
     // the expected grid coordinates from `VERSION_INFO[v].alignment`;
     // `moduleFound` is the refined sub-module grid coord; `pixel` is
-    // the corresponding image-pixel position; `threshold` is the local
-    // gray threshold the locator picked.
+    // the corresponding image-pixel position.
+    //
+    // `threshold` mirrors Java's `QrCode.Alignment.threshold` field,
+    // which is **declared but not populated by the locator** in
+    // upstream BoofCV. Left at default 0.0 here for parity. Downstream
+    // consumers may populate it themselves if they want per-alignment-
+    // pattern threshold telemetry.
     struct Alignment {
         cv::Point2d pixel{0.0, 0.0};
         int32_t moduleX = 0;
         int32_t moduleY = 0;
         cv::Point2d moduleFound{0.0, 0.0};
-        double threshold = 0.0;
+        double threshold = 0.0;  // see comment above — not populated by the locator
 
         void reset() {
             pixel = cv::Point2d(0.0, 0.0);

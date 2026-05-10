@@ -32,6 +32,18 @@ The Java JUnit's `simple` and `withLensDistortion` cases need `QrCodeEncoder` + 
 - **Encoder-side test cases** (`simple`, `withLensDistortion`, `centerOnSquare`/`localize` direct tests with `QrCodeGeneratorImage`) — depend on `QrCodeEncoder` which is out of scope. Synthetic equivalents using `cv::rectangle` cover the same code paths.
 - **Java's `setMarker(qr)` 1-arg form** — our `QrCodeBinaryGridReader::setMarker` takes the finder-corner coordinates as separate args (since `QrCode` doesn't have `ppCorner`/`ppRight`/`ppDown` geometry fields yet — those land at step 9). The locator's `process()` accepts them as parameters, mirroring the orchestrator's call flow.
 
+### Codex review fixes
+
+- **`Alignment::threshold` doc clarification** (raised by codex on 8, finding 1; doc-only). Reviewer traced the field against Java: upstream `QrCodeAlignmentPatternLocator` declares but never assigns `pattern.threshold`. Our port mirrors that. Updated the inline doc on `QrCode::Alignment::threshold` (lines 105-117 of `include/boofcv_qr/qr_code.hpp`) to note the field is **not populated by the locator** — left at default `0.0` for parity. Original commit message also claimed `threshold` was populated, which was inaccurate; corrected here.
+- **`getReader()` mutable accessor demoted to friend access** (finding 2). `QrCodeBinaryGridReader& getReader()` was public — same shape as the prior `getMutable*()` issues. Now private; access granted to `QrCodeDecoderImage` (step 9's orchestrator, forward-declared) via `friend class QrCodeDecoderImage;`. Same pattern as the friend grants on `DetectPolygonBinaryGrayRefine` and `QrCodePositionPatternDetector` from earlier commits.
+- **Edge-scan path end-to-end test + buffer-size bug fix** (finding 3). Added `useEdgeScan_findsCenter` test that constructs a v2 synthetic scene, configures `setUseEdgeScan(true)`, runs `process()`, asserts the alignment is found within ~1.5 modules of ground truth. **The new test caught a real bug**: `arrayX_` and `arrayY_` were declared as `std::vector<float>{12, 0.0f}` which invokes the `initializer_list<float>` ctor (yielding a 2-element vector `{12.0, 0.0}`), not the intended `vector(count, value)` ctor. The dormant edge-scan path was reading out-of-bounds and silently returning false. Fixed by using `std::vector<float>(12, 0.0f)` syntax with a comment warning future readers about the gotcha. Without this fix the entire 200+ LOC `localize()` port was unreachable.
+- **v7+ multi-pattern adjustment test** (finding 4). Added `localizePositionPatterns_v7_steersFromNeighbours` — synthesises a v7 scene with all 6 non-corner alignment patterns rendered at their canonical positions per `VERSION_INFO[7].alignment` × `alignment`, runs the full `process()`, asserts every alignment lands within 1 module of ground truth and `moduleFound` lands within 0.5 module of `(moduleX+0.5, moduleY+0.5)`. Exercises both `adjY` (across rows) and `adjX` (across columns) neighbour-steering paths. If the row/column adjustment chain were broken, only the first cell would land near truth and the rest would diverge.
+
+### Regression after fixes
+
+- C++ unit tests: **239/239 pass** (was 237/237; 2 new cases plus the buffer-size bug fix).
+- Java baseline re-run: zero quality drift on `tests/baseline.json`.
+
 ## 2026-05-10 (later³) — Step 7c: QR finder-pattern detector chain
 
 Three classes that turn the candidate-polygon list from `DetectPolygonBinaryGrayRefine` (step 7b/3) into a graph of QR finder patterns (the three "L"-corner squares with the 1:1:3:1:1 black/white ratio). Step 9's orchestrator (next) walks the graph to find triplets.

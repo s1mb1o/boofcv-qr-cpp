@@ -265,3 +265,200 @@ TEST(QrCodeAlignmentPatternLocator, centerOnSquare_synthetic) {
     EXPECT_NEAR(static_cast<double>(cy), a.pixel.y, scale * 1.0)
         << "alignment pixel.y off by more than one module";
 }
+
+// ---------------------------------------------------------------------------
+// Codex review fix #3 — edge-scan path end-to-end.
+// ---------------------------------------------------------------------------
+
+TEST(QrCodeAlignmentPatternLocator, useEdgeScan_findsCenter) {
+    // Same v2 synthetic scene as `centerOnSquare_synthetic`, but with
+    // `setUseEdgeScan(true)` so the locator's `localize()` edge-scan
+    // path runs *between* `centerOnSquare` and `meanshift`. Asserts
+    // the path executes without crashing and produces plausible
+    // coordinates. Without this test the 200+ LOC dormant `localize()`
+    // port is unreachable from any test (codex review fix #3).
+    //
+    // Use scale=8 (vs centerOnSquare_synthetic's scale=4) — the
+    // edge-scan's 12-sample sweep across 3 modules needs ≥ 1 pixel
+    // per sample, which means scale ≥ 4. Use 8 for headroom so the
+    // edge transitions are unambiguous.
+    int32_t scale = 8;
+    int32_t cx = 200, cy = 200;
+    int32_t W = 400, H = 400;
+
+    cv::Mat image = renderAlignmentPattern(W, H, cx, cy, scale);
+
+    QrCode qr;
+    qr.version = 2;
+
+    int32_t centerModule = 18;
+    double mod_to_px = scale;
+    double topLeftX = cx - (centerModule + 0.5) * mod_to_px;
+    double topLeftY = cy - (centerModule + 0.5) * mod_to_px;
+    auto modToImage = [&](double mx, double my) {
+        return cv::Point2d(topLeftX + mx * mod_to_px,
+                           topLeftY + my * mod_to_px);
+    };
+
+    std::array<cv::Point2d, 4> ppCorner = {
+        modToImage(0, 0),  modToImage(7, 0),
+        modToImage(7, 7),  modToImage(0, 7),
+    };
+    std::array<cv::Point2d, 4> ppRight = {
+        modToImage(18, 0),  modToImage(25, 0),
+        modToImage(25, 7),  modToImage(18, 7),
+    };
+    std::array<cv::Point2d, 4> ppDown = {
+        modToImage(0, 18),  modToImage(7, 18),
+        modToImage(7, 25),  modToImage(0, 25),
+    };
+
+    QrCodeAlignmentPatternLocator alg;
+    alg.setUseEdgeScan(true);  // exercise the dormant edge-scan path
+
+    EXPECT_TRUE(alg.process(image, qr, ppCorner, ppRight, ppDown,
+                              /*priorAlignmentCenters=*/{},
+                              /*priorAlignmentGridCoords=*/{}));
+
+    ASSERT_EQ(1u, qr.alignment.size());
+    const auto& a = qr.alignment[0];
+    // Generous tolerance — the edge-scan path is a Java-disabled
+    // diagnostic with known precision limits; we only assert that
+    // it produces plausible coordinates (within 1.5 modules).
+    EXPECT_NEAR(static_cast<double>(cx), a.pixel.x, scale * 1.5)
+        << "edge-scan path produced implausible pixel.x";
+    EXPECT_NEAR(static_cast<double>(cy), a.pixel.y, scale * 1.5)
+        << "edge-scan path produced implausible pixel.y";
+}
+
+// ---------------------------------------------------------------------------
+// Codex review fix #4 — v7+ multi-alignment-pattern adjustment.
+//
+// v2 has one non-corner alignment pattern; v7 has six in a partial
+// 3×3 grid that exercises both `adjY` (across rows) and `adjX`
+// (across columns) neighbour-steering paths. Without this test, the
+// row/column adjustment-seeding branch in `localizePositionPatterns`
+// has zero green-test guarantee.
+// ---------------------------------------------------------------------------
+
+TEST(QrCodeAlignmentPatternLocator, localizePositionPatterns_v7_steersFromNeighbours) {
+    // VERSION_INFO[7].alignment = {6, 22, 38}. v7 is 45 modules wide
+    // (4*7+17=45). Positions in the 3×3 grid:
+    //   (6,6) — corner, skip
+    //   (6,22) (6,38)
+    //   (22,6) (22,22) (22,38)
+    //   (38,6) (38,22) (38,38) — but (0,0) (0,2) (2,0) cells are
+    //                              corners. Per Java initializePatterns
+    //                              for v7 it skips (0,0), (0,2), (2,0):
+    //                              expected order: (1,0), (1,1), (1,2),
+    //                              (2,1), (2,2) — with the synthetic
+    //                              first row's (0,1) also kept.
+    //
+    // Lookup ordering from initializePatterns (row-major, skipping
+    // corners (0,0), (0,n-1), (n-1,0)) for v7's n=3:
+    //   (0,1) → moduleX=22, moduleY=6
+    //   (1,0) → 6, 22
+    //   (1,1) → 22, 22
+    //   (1,2) → 38, 22
+    //   (2,1) → 22, 38
+    //   (2,2) → 38, 38
+    int32_t version = 7;
+    int32_t totalModules = QrCode::totalModules(version);  // 45
+    int32_t scale = 4;
+    int32_t W = (totalModules + 4) * scale;  // 4-module border
+    int32_t H = W;
+    int32_t border = 2 * scale;
+
+    cv::Mat image(H, W, CV_8UC1, cv::Scalar(255));
+
+    auto modToImage = [&](double mx, double my) {
+        return cv::Point2d(border + mx * scale, border + my * scale);
+    };
+
+    // Render all 6 non-corner alignment patterns (5×5 black, 3×3 white,
+    // 1×1 black centre). Centred on (modX+0.5, modY+0.5) module coords.
+    auto renderAt = [&](int32_t modX, int32_t modY) {
+        cv::Point2d c = modToImage(modX + 0.5, modY + 0.5);
+        int32_t cx = static_cast<int32_t>(c.x);
+        int32_t cy = static_cast<int32_t>(c.y);
+        int32_t halfOuter = static_cast<int32_t>(2.5f * scale);
+        cv::rectangle(image,
+                       cv::Rect(cx - halfOuter, cy - halfOuter,
+                                5 * scale, 5 * scale),
+                       cv::Scalar(0), cv::FILLED);
+        int32_t halfMid = static_cast<int32_t>(1.5f * scale);
+        cv::rectangle(image,
+                       cv::Rect(cx - halfMid, cy - halfMid, 3 * scale,
+                                3 * scale),
+                       cv::Scalar(255), cv::FILLED);
+        int32_t halfIn = static_cast<int32_t>(0.5f * scale);
+        cv::rectangle(image,
+                       cv::Rect(cx - halfIn, cy - halfIn, scale, scale),
+                       cv::Scalar(0), cv::FILLED);
+    };
+    // VERSION_INFO[7].alignment = {6, 22, 38}; 3×3 grid minus corners.
+    std::vector<std::pair<int32_t, int32_t>> nonCorner = {
+        {22, 6},   // row 0, col 1
+        {6, 22},   // row 1, col 0
+        {22, 22},  // row 1, col 1
+        {38, 22},  // row 1, col 2
+        {22, 38},  // row 2, col 1
+        {38, 38},  // row 2, col 2
+    };
+    for (const auto& mp : nonCorner) renderAt(mp.first, mp.second);
+
+    QrCode qr;
+    qr.version = version;
+
+    // Finder corners at v7's expected positions. v7 finder corners:
+    //   ppCorner: modules (0..7, 0..7)
+    //   ppRight:  modules (38..45, 0..7) — but actually for v7 the
+    //                                       right finder is at (38..45, 0..7)
+    //   ppDown:   modules (0..7, 38..45)
+    int32_t s7End = totalModules;  // 45
+    int32_t pp = s7End - 7;        // 38
+
+    std::array<cv::Point2d, 4> ppCorner = {
+        modToImage(0, 0),  modToImage(7, 0),
+        modToImage(7, 7),  modToImage(0, 7),
+    };
+    std::array<cv::Point2d, 4> ppRight = {
+        modToImage(pp, 0),  modToImage(s7End, 0),
+        modToImage(s7End, 7),  modToImage(pp, 7),
+    };
+    std::array<cv::Point2d, 4> ppDown = {
+        modToImage(0, pp),  modToImage(7, pp),
+        modToImage(7, s7End),  modToImage(0, s7End),
+    };
+
+    QrCodeAlignmentPatternLocator alg;
+    bool ok = alg.process(image, qr, ppCorner, ppRight, ppDown,
+                            /*priorAlignmentCenters=*/{},
+                            /*priorAlignmentGridCoords=*/{});
+    EXPECT_TRUE(ok);
+
+    // All 6 non-corner alignment patterns located.
+    ASSERT_EQ(6u, qr.alignment.size());
+
+    // Verify each is found within ~1 module of its ground-truth
+    // centre. If the row/column adjustment chain were broken, only
+    // the first cell would land near truth and the rest would diverge.
+    for (std::size_t i = 0; i < nonCorner.size(); i++) {
+        cv::Point2d expected =
+            modToImage(nonCorner[i].first + 0.5, nonCorner[i].second + 0.5);
+        const auto& a = qr.alignment[i];
+        double dx = a.pixel.x - expected.x;
+        double dy = a.pixel.y - expected.y;
+        double d = std::sqrt(dx * dx + dy * dy);
+        EXPECT_LE(d, scale * 1.0)
+            << "alignment[" << i << "] (modX=" << a.moduleX
+            << ", modY=" << a.moduleY << ") was " << d
+            << " px from ground truth (" << expected.x << ", "
+            << expected.y << ")";
+        // moduleFound should be near the expected (modX+0.5, modY+0.5).
+        EXPECT_NEAR(a.moduleX + 0.5, a.moduleFound.x, 0.5)
+            << "alignment[" << i << "].moduleFound.x off by more than 0.5 modules";
+        EXPECT_NEAR(a.moduleY + 0.5, a.moduleFound.y, 0.5)
+            << "alignment[" << i << "].moduleFound.y off by more than 0.5 modules";
+    }
+}
