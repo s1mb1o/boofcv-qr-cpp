@@ -10,7 +10,7 @@ Holds two `cv::Matx33d` matrices: `H` maps **image pixel → grid (col, row)**, 
 - `addAllFeatures(...)` + `computeTransform()` — the full set of 12 finder corners (3 patterns × 4 corners) plus optional alignment patterns. With ≥ 5 points we use `cv::findHomography(..., 0)` (DLT, no RANSAC) — same algorithm BoofCV's `GenerateHomographyLinear` runs.
 - (Future, deferred to step 7) `setTransformFromLinesSquare` — direction-vector-constrained DLT for the case when only 3 finders + line directions are reliable.
 
-After the homography is in place, callers translate single points via `imageToGrid` / `gridToImage`, both implemented as `cv::perspectiveTransform` over a 1-element `cv::Mat`. Per CLAUDE.md, **no `cv::warpPerspective`** is used in the sampling path — interpolation, rounding, and border behaviour would change sampled bits versus BoofCV.
+After the homography is in place, callers translate single points via `imageToGrid` / `gridToImage`, both implemented as a hand-rolled 3×3 matrix-vector multiply with perspective divide (file-local `applyHomography`). Mathematically identical to `cv::perspectiveTransform` over a 1-element `cv::Mat` — the formula `(M00*x + M01*y + M02)/w, (M10*x + M11*y + M12)/w` with `w = M20*x + M21*y + M22` matches OpenCV's `perspectiveTransform_64f` arithmetic order, and operates entirely in `double`, so output is bit-identical at the IEEE-754 level. The reason for the hand-roll is profile-confirmed allocation overhead: `cv::perspectiveTransform` per single point allocates a `cv::Mat`, sets up an `NAryMatIterator`, and dispatches per-element — sample profiling on the `high_version` worst-case image showed `cv::Mat::create` / `cv::Mat::release` / allocator chains accounted for ~70% of CPU time, since `QrCodeBinaryGridReader::readBit` calls `gridToImage` 5× per module bit (≈ 156k calls per Version-40 QR scan). Per CLAUDE.md, **no `cv::warpPerspective`** is used in the sampling path — interpolation, rounding, and border behaviour would change sampled bits versus BoofCV.
 
 ## Algorithm description
 
@@ -20,7 +20,7 @@ The classes in BoofCV split responsibilities differently than we do:
 |---|---|
 | `GenerateHomographyLinear` | `cv::getPerspectiveTransform` (4-pt) / `cv::findHomography(..., 0)` (N-pt) |
 | `HomographyDirectLinearTransform` | (deferred to step 7) custom SVD-based DLT for line correspondences |
-| `HomographyPointOps_F64.transform(H, x, y, dst)` | `cv::perspectiveTransform` |
+| `HomographyPointOps_F64.transform(H, x, y, dst)` | inlined 3×3 mat-vec + perspective divide (was `cv::perspectiveTransform`; replaced post-9b for perf) |
 | `Homography2D_F64.invert(Hinv)` | `cv::invert(H, Hinv)` |
 
 `removeFeatureWithLargestError` is greedy outlier rejection: transform every grid coord through `Hinv`, find the pair with the largest reprojection-error (squared pixel distance), drop it if error > 4 (i.e., > 2 pixels). Used by the orchestrator to harden the homography against a single bad finder corner.
@@ -31,7 +31,7 @@ The classes in BoofCV split responsibilities differently than we do:
 
 - **`cv::getPerspectiveTransform`** is the OpenCV-native 4-point homography. Same DLT-based math as BoofCV's `GenerateHomographyLinear`. Numerical results agree to within float-precision noise.
 - **`cv::findHomography(..., 0)`** with method `0` is plain DLT — no RANSAC, no Lagrange optimisation. BoofCV's path is the same.
-- **`cv::perspectiveTransform` over a 1-point Mat** instead of writing the divide-by-w by hand keeps the maths in OpenCV; trade-off is some Mat construction overhead per call. Acceptable for the call frequency QR runs at.
+- **Inlined 3×3 mat-vec + perspective divide** for single-point `imageToGrid` / `gridToImage` calls. Earlier the implementation went through `cv::perspectiveTransform` over a 1-element `cv::Mat`, but profiling revealed the per-call `cv::Mat` allocation/free was the project's #1 hot spot — since the bit sampler hits `gridToImage` 5× per module (≈ 156k calls for a Version-40 QR), this dominated decode CPU on `high_version`. The inlined math is the same `(Mx + b) / (m20 x + m21 y + m22)` that OpenCV's `perspectiveTransform_64f` runs, just without the wrapping `cv::Mat`/iterator/dispatch infrastructure. Bit-identical output (same operations, same order, all `double`). `cv::perspectiveTransform` is still the right call when the caller has a `cv::Mat` of points already; we use it for nothing else, so the change is local.
 
 ## Deferred from upstream
 

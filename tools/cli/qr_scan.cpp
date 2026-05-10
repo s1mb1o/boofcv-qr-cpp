@@ -820,20 +820,54 @@ int runDumpStages(const fs::path& imagePath, const fs::path& outDir) {
     return 0;
 }
 
+// ---------------------------------------------------------------------
+// Profile mode — loops the pipeline N times on the same image so a
+// sampling profiler (e.g. macOS `sample`) can collect enough samples
+// for a meaningful function-level breakdown. Prints per-iter timings.
+// ---------------------------------------------------------------------
+
+int runProfile(const fs::path& imagePath, int iters) {
+    Pipeline pipe;
+    cv::Mat gray = loadGray(imagePath);
+    if (gray.empty()) {
+        std::fprintf(stderr, "Cannot load %s\n", imagePath.string().c_str());
+        return 1;
+    }
+    std::printf("Loaded %s (%dx%d), %d iterations\n",
+                imagePath.string().c_str(), gray.cols, gray.rows, iters);
+    // Warm up once.
+    pipe.run(gray);
+    auto t0 = std::chrono::steady_clock::now();
+    int totalDet = 0;
+    for (int i = 0; i < iters; ++i) {
+        pipe.run(gray);
+        totalDet += static_cast<int>(pipe.orchestrator.getSuccesses().size());
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double totalMs =
+        std::chrono::duration<double, std::milli>(t1 - t0).count();
+    std::printf("Total: %.1f ms, mean per-iter: %.2f ms (det sum %d)\n",
+                totalMs, totalMs / iters, totalDet);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc == 4 && std::string(argv[1]) == "--dump-stages") {
         return runDumpStages(argv[2], argv[3]);
+    } else if (argc == 4 && std::string(argv[1]) == "--profile") {
+        return runProfile(argv[2], std::atoi(argv[3]));
     } else if (argc == 2) {
         return runSingle(argv[1]);
     } else if (argc == 3) {
         return runBatch(argv[1], argv[2]);
     } else {
         std::fprintf(stderr, "Usage:\n");
-        std::fprintf(stderr, "  qr_scan <input_dir> <output_dir>   batch\n");
-        std::fprintf(stderr, "  qr_scan <single_image.png>         single image\n");
-        std::fprintf(stderr, "  qr_scan --dump-stages <image> <outDir>   stage dumps\n");
+        std::fprintf(stderr, "  qr_scan <input_dir> <output_dir>          batch\n");
+        std::fprintf(stderr, "  qr_scan <single_image.png>                single image\n");
+        std::fprintf(stderr, "  qr_scan --dump-stages <image> <outDir>    stage dumps\n");
+        std::fprintf(stderr, "  qr_scan --profile <image> <iters>         loop image for profiling\n");
         return 2;
     }
 }

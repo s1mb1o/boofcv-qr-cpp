@@ -1,5 +1,93 @@
 # ChangeLog
 
+## 2026-05-10 (later¹²) — perf(sampler): inline single-point homography in `QrCodeBinaryGridToPixel` — 1.62× decoder-only speedup, 19.6× on `high_version`
+
+First profile-driven perf cycle after step 9b parity close-out. `sample` on the canonical worst-case image (`detection/high_version/image029.jpg`, 3525×1317, prior C++ time 1304ms vs Java 30ms = **42.7×**) showed >70% of CPU time spent in `cv::Mat::create` / `cv::Mat::release` / `cv::StdMatAllocator::{allocate,deallocate}` chains, all reached from `boofcv_qr::QrCodeBinaryGridToPixel::gridToImage`. That function (and its sibling `imageToGrid`) was implemented as `cv::perspectiveTransform` on a freshly-constructed 1-element `cv::Mat<Point2d>` — heap-allocating per call. `QrCodeBinaryGridReader::readBit` calls `gridToImage` 5× per module bit, so for a Version-40 QR each speculative read costs ~156k mat allocations.
+
+### Fix
+
+[src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp): replaced four `cv::perspectiveTransform`-on-1-point sites with an inlined `applyHomography(M, x, y, out)` that does the projective transform directly:
+
+```
+xt = M00*x + M01*y + M02
+yt = M10*x + M11*y + M12
+w  = M20*x + M21*y + M22
+out = (xt/w, yt/w)
+```
+
+The arithmetic order matches OpenCV's `perspectiveTransform_64f` and operates entirely in `double`, so output is bit-identical. Sites: `imageToGrid`, `gridToImage`, `removeFeatureWithLargestError`, the `adjustWithFeatures` reprojection inside `computeTransform`. `cv::perspectiveTransform` remains the right tool when a caller already has a `cv::Mat` of points — that path is unchanged elsewhere.
+
+### Parity (must match `bda1650` exactly)
+
+Aggregate decode rate **74.32%** unchanged from `bda1650`. Per-category rates byte-identical to the step-9b close-out table. 421/421 unit tests pass. `tools/cli/run_regression.sh` ends `PASS: no new regressions`.
+
+### Timings — fresh same-machine pre/post comparison
+
+| category      | java_ms | pre_ms (bda1650) | post_ms | speedup | post / java |
+|---------------|--------:|-----------------:|--------:|--------:|------------:|
+| blurred       |   760.1 |          3595.3  |  2566.4 |   1.40× |       3.38× |
+| bright_spots  |  1458.5 |         19088.5  | 16991.6 |   1.12× |      11.65× |
+| brightness    |  1011.4 |          9633.6  |  7096.7 |   1.36× |       7.02× |
+| close         |   762.1 |          2624.4  |  2564.6 |   1.02× |       3.37× |
+| curved        |   803.0 |          5997.1  |  5811.2 |   1.03× |       7.24× |
+| damaged       |   207.4 |           957.7  |   818.3 |   1.17× |       3.94× |
+| decoding      |    69.0 |           244.2  |    46.6 |   5.24× |   **0.68×** (faster than Java) |
+| glare         |   443.1 |          1799.5  |  1745.4 |   1.03× |       3.94× |
+| **high_version** | 331.4 |       14704.9  |   750.9 | **19.58×** |   2.27× |
+| lots          |   744.6 |         10254.3  |  3332.2 |   3.08× |       4.48× |
+| monitor       |   436.4 |          1273.9  |  1234.8 |   1.03× |       2.83× |
+| nominal       |   382.2 |          1632.2  |  1442.5 |   1.13× |       3.77× |
+| noncompliant  |    62.6 |           149.7  |   143.3 |   1.04× |       2.29× |
+| pathological  |    10.9 |            38.4  |    17.5 |   2.19× |       1.60× |
+| perspective   |    53.7 |           178.7  |   137.3 |   1.30× |       2.56× |
+| rotations     |   299.6 |          1573.9  |   747.1 |   2.11× |       2.49× |
+| shadows       |   168.8 |           486.7  |   442.8 |   1.10× |       2.62× |
+| **SUM**       |  8004.8 |        **74233.2** | **45889.3** | **1.62×** | **5.73×** |
+
+Wall-clock for the full 562-image regression: **81.3s → 52.6s**. The decoder-only sum (5.73× slower than Java post-fix) is the new headline gap; the prior team-lead-quoted "5.84×" was a different snapshot of the pre-fix state, and on the same fresh-pre numbers we're at 9.27× → 5.73× (so the gap closed by ~38%).
+
+`high_version` (the worst-case category) collapses from 44.4× to 2.27× — i.e. the C++ port is now within a factor of 2 of Java on the high-module-count images that were dominating decoder runtime.
+
+### Profile snippet — top of the pre-fix `sample` output
+
+```
+403  cv::Mat::release()
+355  cv::Mat::~Mat()
+197  cv::Mat::create(int, int, int)
+180  cv::StdMatAllocator::allocate(...)
+177  cv::fastMalloc(unsigned long)
+170  cv::Mat::release()
+143  cv::StdMatAllocator::deallocate(cv::UMatData*) const
+137  cv::StdMatAllocator::allocate(...)
+135  cv::setSize(cv::Mat&, ...)
+115  cv::updateContinuityFlag(...)
+112  cv::Mat::create(...)
+101  boofcv_qr::QrCodeBinaryGridToPixel::gridToImage(...)  qr_code_binary_grid_to_pixel.cpp:347
+ 99  boofcv_qr::QrCodeBinaryGridToPixel::gridToImage(...)  qr_code_binary_grid_to_pixel.cpp:345
+ 98  cv::perspectiveTransform(...)
+```
+
+`gridToImage:347` is the `cv::perspectiveTransform` call line. Every line above it traces back into the cv::Mat construction at `gridToImage:345`.
+
+### Added
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): `--profile <image> <iters>` mode — loops the pipeline N times on a single image so a sampling profiler (`sample`, `samply`, Instruments) can collect enough stack samples to localise hotspots. Used to drive this cycle. Strictly additive; no impact on `runBatch` / `runSingle` / `runDumpStages`.
+
+### Changed
+
+- [src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp): four call sites switched from `cv::perspectiveTransform`-on-1-point to inlined `applyHomography`.
+- [src/sampler/qr_code_binary_grid_to_pixel.md](src/sampler/qr_code_binary_grid_to_pixel.md): updated the description of `imageToGrid` / `gridToImage` to document the inlined math + the bit-identity argument; added the perf rationale to the "Why this approach" section.
+
+### Regression
+
+- 421/421 unit tests pass.
+- `bash tools/cli/run_regression.sh` → `PASS: no new regressions; all out-of-band categories are documented residuals within their accepted-tolerance bands.`
+- Per-category numbers byte-identical to `bda1650` (74.32% aggregate, 11/17 categories within ±2pp).
+
+### Next perf cycle hints (not in this commit)
+
+The new top of the profile is likely `cv::findContours` / connected-components on the binarized image (called once per image, dominates `bright_spots` at 18s where individual decode attempts are cheap), and `ThresholdBlockOtsu::process` on large images (the binarizer tile sweep uses `cv::Mat::at<uchar>(y, x)` which CLAUDE.md now permits replacing with `ptr<uint8_t>(y)[x]`). `QrCodeBinaryGridReader::sampleNearest` is the next pixel-access hot path. None investigated this cycle — one fix per cycle per team-lead direction.
+
 ## 2026-05-10 (later¹¹) — Step 9b complete: cycle (c) + (d) diagnosed → accepted as documented `cv::findContours`-substitution residual
 
 Cycles (c) (`monitor` -11.76pp) and (d) (`glare` -3.77pp) ran their dump-diff diagnostics per CLAUDE.md "Intermediate-state dumps for debugging parity failures." Both residuals trace to the same root cause — the `cv::findContours` substitution mandated by CLAUDE.md "Replace with OpenCV" — manifesting at different stages of the pipeline. Per team-lead's bucket-1 classification + (Y)-acceptance directive: docs commit only, no code change.

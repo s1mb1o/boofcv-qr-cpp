@@ -14,6 +14,32 @@
 
 namespace boofcv_qr {
 
+namespace {
+
+// Apply a 3x3 projective transform to a single 2D point. Mathematically
+// identical to `cv::perspectiveTransform` over a 1-element CV_64FC2 Mat,
+// but skips the per-call cv::Mat allocation, NAryMatIterator setup, and
+// dispatch overhead which dominate when this is called millions of times
+// per QR scan from `QrCodeBinaryGridReader::readBit` (5 calls per module
+// bit) and `QrCodeAlignmentPatternLocator`. The arithmetic order matches
+// OpenCV's `perspectiveTransform_64f` so output is bit-identical.
+inline void applyHomography(const cv::Matx33d& M, double x, double y,
+                            cv::Point2d& out) {
+    const double xt = M(0, 0) * x + M(0, 1) * y + M(0, 2);
+    const double yt = M(1, 0) * x + M(1, 1) * y + M(1, 2);
+    const double w  = M(2, 0) * x + M(2, 1) * y + M(2, 2);
+    if (w != 0.0) {
+        const double iw = 1.0 / w;
+        out.x = xt * iw;
+        out.y = yt * iw;
+    } else {
+        out.x = xt;
+        out.y = yt;
+    }
+}
+
+}  // namespace
+
 QrCodeBinaryGridToPixel::QrCodeBinaryGridToPixel() = default;
 
 void QrCodeBinaryGridToPixel::recomputeInverse() {
@@ -272,12 +298,10 @@ bool QrCodeBinaryGridToPixel::removeFeatureWithLargestError() {
 
     // Java reference: transform p.p2 (grid coord) through Hinv to get
     // an image-pixel prediction; compare against p.p1 (observed pixel).
+    cv::Point2d predicted;
     for (std::size_t i = 0; i < pairs2D.size(); i++) {
         const auto& p = pairs2D[i];
-        cv::Mat src = (cv::Mat_<cv::Point2d>(1, 1) << p.p2);
-        cv::Mat dst;
-        cv::perspectiveTransform(src, dst, Hinv);
-        cv::Point2d predicted = dst.at<cv::Point2d>(0, 0);
+        applyHomography(Hinv, p.p2.x, p.p2.y, predicted);
         double dx = predicted.x - p.p1.x;
         double dy = predicted.y - p.p1.y;
         double error = dx * dx + dy * dy;
@@ -321,11 +345,9 @@ void QrCodeBinaryGridToPixel::computeTransform() {
     adjustments.clear();
     if (adjustWithFeatures) {
         adjustments.reserve(pairs2D.size());
+        cv::Point2d predicted;
         for (const auto& p : pairs2D) {
-            cv::Mat in = (cv::Mat_<cv::Point2d>(1, 1) << p.p2);
-            cv::Mat out;
-            cv::perspectiveTransform(in, out, Hinv);
-            cv::Point2d predicted = out.at<cv::Point2d>(0, 0);
+            applyHomography(Hinv, p.p2.x, p.p2.y, predicted);
             adjustments.push_back(
                 cv::Point2d(p.p1.x - predicted.x, p.p1.y - predicted.y));
         }
@@ -334,18 +356,12 @@ void QrCodeBinaryGridToPixel::computeTransform() {
 
 void QrCodeBinaryGridToPixel::imageToGrid(double x, double y,
                                           cv::Point2d& grid) const {
-    cv::Mat src = (cv::Mat_<cv::Point2d>(1, 1) << cv::Point2d(x, y));
-    cv::Mat dst;
-    cv::perspectiveTransform(src, dst, H);
-    grid = dst.at<cv::Point2d>(0, 0);
+    applyHomography(H, x, y, grid);
 }
 
 void QrCodeBinaryGridToPixel::gridToImage(double row, double col,
                                           cv::Point2d& pixel) const {
-    cv::Mat src = (cv::Mat_<cv::Point2d>(1, 1) << cv::Point2d(col, row));
-    cv::Mat dst;
-    cv::perspectiveTransform(src, dst, Hinv);
-    pixel = dst.at<cv::Point2d>(0, 0);
+    applyHomography(Hinv, col, row, pixel);
 
     if (adjustWithFeatures && !adjustments.empty()) {
         // Nearest-pair lookup; cheap, mirrors Java.
