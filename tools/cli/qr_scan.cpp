@@ -233,13 +233,25 @@ struct Pipeline {
             /*contourEdgeThreshold=*/3.0,
             /*tangentEdgeIntensity=*/1.5);
         contour->setNumberOfSides(4, 4);
+        // Mirror Java's `ConfigQrCode` defaults (line 100 of upstream
+        // ConfigQrCode.java): `polygon.detector.minimumContour =
+        // ConfigLength.fixed(40)`. The class default is
+        // `ConfigLength::relative(0.044, 4.0)` which on a 4032×3024
+        // image computes ~154 px → minimumArea ≈ 1482 sq px → all
+        // small finders rejected. The fixed-40 cap (Java's QR setting)
+        // gives minimumArea = (40/4)² = 100 sq px, accepting tiny
+        // finders. This is the load-bearing fix for the lots/image005-
+        // 007 zero-detection mode.
+        contour->setMinimumContour(boofcv_qr::ConfigLength::fixed(40.0));
 
         boofcv_qr::ConfigRefinePolygonLineToImage refineCfg;
         auto refine = std::make_shared<boofcv_qr::RefinePolygonToGrayLine>(refineCfg);
 
+        // Mirror Java's `ConfigQrCode` line 103 of upstream:
+        // `polygon.minimumRefineEdgeIntensity = 6`.
         auto wrapper = std::make_shared<boofcv_qr::DetectPolygonBinaryGrayRefine>(
             std::move(contour), std::move(refine),
-            /*minimumRefineEdgeIntensity=*/3.0,
+            /*minimumRefineEdgeIntensity=*/6.0,
             /*adjustForThresholdBias=*/true);
 
         finder = std::make_unique<boofcv_qr::QrCodePositionPatternDetector>(std::move(wrapper));
@@ -652,10 +664,135 @@ int runSingle(const fs::path& imagePath) {
     return 0;
 }
 
+// ---------------------------------------------------------------------
+// Stage-dump mode — emits the same intermediate-state files as
+// `tools/java_reference/DumpStages.java` for stage-by-stage parity diff
+// per CLAUDE.md "When you get stuck": "the bug is wherever the dumps
+// first disagree."
+// ---------------------------------------------------------------------
+
+int runDumpStages(const fs::path& imagePath, const fs::path& outDir) {
+    fs::create_directories(outDir);
+    cv::Mat gray = loadGray(imagePath);
+    if (gray.empty()) {
+        std::fprintf(stderr, "Cannot load %s\n", imagePath.string().c_str());
+        return 1;
+    }
+    std::printf("Loaded %s (%dx%d)\n", imagePath.string().c_str(),
+                gray.cols, gray.rows);
+
+    Pipeline pipe;
+    pipe.run(gray);
+
+    // Stage 1: binary (0/1 in memory; *255 for PNG per CLAUDE.md
+    // "Binary image convention").
+    cv::Mat bin255 = pipe.binary * 255;
+    cv::imwrite((outDir / "binary.png").string(), bin255);
+    std::printf("Wrote binary.png (%dx%d)\n", pipe.binary.cols, pipe.binary.rows);
+
+    // Stage 2: detected polygons (pre-finder filter).
+    const auto& polyInfo =
+        pipe.finder->getSquareDetector().getPolygonInfo();
+    {
+        std::ostringstream poly;
+        poly << "{\n  \"count\" : " << JsonWriter::num(static_cast<int32_t>(polyInfo.size())) << ",\n";
+        poly << "  \"polygons\" : [";
+        for (std::size_t i = 0; i < polyInfo.size(); i++) {
+            if (i > 0) poly << ", ";
+            poly << "\n    {\n";
+            poly << "      \"corners\" : [";
+            const auto& corners = polyInfo[i].polygon;
+            for (std::size_t k = 0; k < corners.size(); k++) {
+                if (k > 0) poly << ", ";
+                poly << "[ " << JsonWriter::num(corners[k].x) << ", "
+                     << JsonWriter::num(corners[k].y) << " ]";
+            }
+            poly << "],\n";
+            poly << "      \"edge_inside\" : " << JsonWriter::num(polyInfo[i].edgeInside) << ",\n";
+            poly << "      \"edge_outside\" : " << JsonWriter::num(polyInfo[i].edgeOutside) << ",\n";
+            poly << "      \"contour_touches_border\" : "
+                 << (polyInfo[i].contourTouchesBorder ? "true" : "false") << "\n    }";
+        }
+        if (!polyInfo.empty()) poly << "\n  ";
+        poly << "]\n}\n";
+        std::ofstream f(outDir / "polygons.json");
+        f << poly.str();
+    }
+    std::printf("Wrote polygons.json (%zu polygons)\n", polyInfo.size());
+
+    // Stage 3: finder-pattern position-pattern nodes (after 1:1:3:1:1
+    // appearance check). These are the polygons that survived the
+    // finder check and were eligible for graph wiring.
+    const auto& positionPatterns = pipe.finder->getPositionPatterns();
+    {
+        std::ostringstream pp;
+        pp << "{\n  \"count\" : " << JsonWriter::num(static_cast<int32_t>(positionPatterns.size())) << ",\n";
+        pp << "  \"position_patterns\" : [";
+        for (std::size_t i = 0; i < positionPatterns.size(); i++) {
+            if (i > 0) pp << ", ";
+            pp << "\n    {\n";
+            pp << "      \"corners\" : [";
+            const auto& sq = positionPatterns[i].square;
+            for (std::size_t k = 0; k < sq.size(); k++) {
+                if (k > 0) pp << ", ";
+                pp << "[ " << JsonWriter::num(sq[k].x) << ", "
+                   << JsonWriter::num(sq[k].y) << " ]";
+            }
+            pp << "],\n";
+            pp << "      \"gray_threshold\" : "
+               << JsonWriter::num(positionPatterns[i].grayThreshold) << ",\n";
+            pp << "      \"center\" : [ "
+               << JsonWriter::num(positionPatterns[i].center.x) << ", "
+               << JsonWriter::num(positionPatterns[i].center.y) << " ]\n    }";
+        }
+        if (!positionPatterns.empty()) pp << "\n  ";
+        pp << "]\n}\n";
+        std::ofstream f(outDir / "position_patterns.json");
+        f << pp.str();
+    }
+    std::printf("Wrote position_patterns.json (%zu patterns)\n",
+                positionPatterns.size());
+
+    // Stage 4: final detections + failures.
+    {
+        const auto& dets = pipe.orchestrator.getSuccesses();
+        const auto& fails = pipe.orchestrator.getFailures();
+        std::ostringstream det;
+        det << "{\n  \"detection_count\" : "
+            << JsonWriter::num(static_cast<int32_t>(dets.size())) << ",\n";
+        det << "  \"failure_count\" : "
+            << JsonWriter::num(static_cast<int32_t>(fails.size())) << ",\n";
+        det << "  \"detections\" : [";
+        for (std::size_t i = 0; i < dets.size(); i++) {
+            if (i > 0) det << ", ";
+            det << "\n    " << detectionJson(dets[i]);
+        }
+        if (!dets.empty()) det << "\n  ";
+        det << "],\n";
+        det << "  \"failures\" : [";
+        for (std::size_t i = 0; i < fails.size(); i++) {
+            if (i > 0) det << ", ";
+            det << "\n    " << detectionJson(fails[i]);
+        }
+        if (!fails.empty()) det << "\n  ";
+        det << "]\n}\n";
+        std::ofstream f(outDir / "detections.json");
+        f << det.str();
+    }
+    std::printf("Wrote detections.json (%zu successes / %zu failures)\n",
+                pipe.orchestrator.getSuccesses().size(),
+                pipe.orchestrator.getFailures().size());
+
+    std::printf("All stage dumps written to %s\n", outDir.string().c_str());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc == 2) {
+    if (argc == 4 && std::string(argv[1]) == "--dump-stages") {
+        return runDumpStages(argv[2], argv[3]);
+    } else if (argc == 2) {
         return runSingle(argv[1]);
     } else if (argc == 3) {
         return runBatch(argv[1], argv[2]);
@@ -663,6 +800,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "Usage:\n");
         std::fprintf(stderr, "  qr_scan <input_dir> <output_dir>   batch\n");
         std::fprintf(stderr, "  qr_scan <single_image.png>         single image\n");
+        std::fprintf(stderr, "  qr_scan --dump-stages <image> <outDir>   stage dumps\n");
         return 2;
     }
 }

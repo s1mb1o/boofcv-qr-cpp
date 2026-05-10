@@ -37,3 +37,13 @@ tasks.named('run') {
     // Forward CLI args. Invoke with: ./gradlew run --args="<datasetRoot> <outDir>"
     standardInput = System.in
 }
+
+// Stage-dump task per CLAUDE.md "Intermediate-state dumps for debugging
+// parity failures". Invoke with:
+//   ./gradlew dumpStages --args="<image.png> <outDir>"
+tasks.register('dumpStages', JavaExec) {
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'qrboofcv.DumpStages'
+    jvmArgs = ['-Djava.awt.headless=true', '-Xmx2g']
+}

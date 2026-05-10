@@ -1,5 +1,62 @@
 # ChangeLog
 
+## 2026-05-10 (later⁹) — Step 9b.3 fix #2: align Pipeline ctor with `ConfigQrCode` polygon-detector defaults (`minimumContour=fixed(40)`, `minimumRefineEdgeIntensity=6`)
+
+`lots` zero-detection root-causal fix per cycle (a) of the residual-triage. Java reference dump (`tools/java_reference/DumpStages`) on `lots/image005.jpg` produced 841 polygons, 60 detections; C++ at `736435f` produced **1 polygon, 0 detections** despite the binarised image being byte-equivalent (1.08% per-pixel disagreement; both ~21% foreground). Earliest divergence stage: `DetectPolygonFromContour::findCandidateShapes` minimum-area filter.
+
+### Root cause
+
+`ConfigQrCode.java:100` (BoofCV v1.3.0) sets `polygon.detector.minimumContour = ConfigLength.fixed(40)`. Our CLI's `Pipeline()` ctor in `tools/cli/qr_scan.cpp` constructed `DetectPolygonFromContour` with the **class default** `minimumContour = ConfigLength::relative(0.044, 4.0)`. On a 4032×3024 image this computes to 154-pixel min contour perimeter → `minimumArea = (154/4)² ≈ 1482 sq px`. Each finder pattern in `lots/image005-007` has area ≈ 28×28 = 784 sq px (4 px/module × 7 modules) → all small finders rejected at the area filter (line 504 of `detect_polygon_from_contour.cpp`).
+
+`ConfigQrCode.java:103` also sets `polygon.minimumRefineEdgeIntensity = 6`. Our Pipeline ctor used 3.0; nudged to 6.0 to match.
+
+### Fix
+
+[tools/cli/qr_scan.cpp:240-247](tools/cli/qr_scan.cpp): `Pipeline()` ctor now calls `contour->setMinimumContour(ConfigLength::fixed(40.0))` and constructs `DetectPolygonBinaryGrayRefine` with `minimumRefineEdgeIntensity=6.0`. CLI-layer change only; the library defaults remain at their class settings (which match the upstream `ConfigPolygonFromContour` defaults — Java's QR-specific tuning is in `ConfigQrCode`, not `ConfigPolygonFromContour`).
+
+### Per-category numbers vs Java baseline
+
+| category      | baseline |    cpp |   delta_pp |   gt | cpp_dec | within±2pp |
+|---------------|---------:|-------:|-----------:|-----:|--------:|:-:|
+| close         |  100.00% |100.00% |   +0.00pp  |   40 |      40 | ✓ |
+| curved        |   56.67% | 55.00% |   -1.67pp  |   60 |      33 | ✓ |
+| damaged       |   16.28% | 16.28% |   +0.00pp  |   43 |       7 | ✓ |
+| decoding      |   65.38% | 65.38% |   +0.00pp  |   26 |      17 | ✓ |
+| lots          |   99.76% | 99.76% |   +0.00pp  |  420 |     419 | ✓ |
+| nominal       |   89.74% | 89.74% |   +0.00pp  |   78 |      70 | ✓ |
+| rotations     |   96.24% | 96.24% |   +0.00pp  |  133 |     128 | ✓ |
+| shadows       |   85.00% | 85.00% |   +0.00pp  |   20 |      17 | ✓ |
+| high_version  |   40.54% | 43.24% |   +2.70pp  |   37 |      16 |   |
+| perspective   |   80.00% | 82.86% |   +2.86pp  |   35 |      29 |   |
+| blurred       |   38.46% | 35.38% |   -3.08pp  |   65 |      23 |   |
+| glare         |   32.08% | 28.30% |   -3.77pp  |   53 |      15 |   |
+| noncompliant  |    3.85% |  7.69% |   +3.85pp  |   26 |       2 |   |
+| pathological  |   43.48% | 39.13% |   -4.35pp  |   23 |       9 |   |
+| brightness    |   78.82% | 74.12% |   -4.71pp  |   85 |      63 |   |
+| bright_spots  |   27.84% | 21.65% |   -6.19pp  |   97 |      21 |   |
+| monitor       |   82.35% | 70.59% |  -11.76pp  |   17 |      12 |   |
+| **AGGREGATE** | **74.40%** | **73.21%** | **-1.19pp** | 1258 |     921 |   |
+
+### Recovery
+
+- Aggregate: 55.17% → **73.21%** (+18.04pp; **-1.19pp from Java baseline**, target was ±1pp aggregate)
+- `lots`: 50.71% → **99.76%** (full recovery — image005-007 went from 0 detections each to 60)
+- `brightness`: 55.29% → 74.12% (+18.83pp recovery)
+- `curved`: 51.67% → 55.00% (now within ±2pp band)
+
+8 of 16 categories now within ±2pp band (was 6). 9 residual; 3 of those (`high_version`, `perspective`, `noncompliant`) are positive deltas in small-N categories (~26-37 GT) where ±1 image swings 2.7-3.85pp — likely noise.
+
+### Diagnostic tooling added
+
+- [tools/java_reference/src/main/java/qrboofcv/DumpStages.java](tools/java_reference/src/main/java/qrboofcv/DumpStages.java) — single-image stage-dump tool emitting `binary.png`, `polygons.json`, `detections.json` per CLAUDE.md "Intermediate-state dumps for debugging parity failures." Gradle task `dumpStages`.
+- [tools/cli/qr_scan.cpp:`runDumpStages`](tools/cli/qr_scan.cpp) — C++ counterpart via `qr_scan --dump-stages <image> <outDir>`. Emits the same shape of files plus `position_patterns.json` (post-finder filter).
+- These are the diagnostic tools the team-lead's dispatch directs as the first step of any future cycle: "Don't tune until you have the Java intermediate-state dump." Both sides now usable interchangeably.
+
+### Regression
+
+- 421/421 unit tests still pass.
+- Build clean with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+
 ## 2026-05-10 (later⁸) — Step 9b.3 fix #1: align `cv::imread` EXIF handling with BoofCV's `UtilImageIO.loadImage`
 
 First regression run after 9b.1+9b.2 (commit `50369db`) showed -36.25pp aggregate vs Java baseline. Triage isolated a single one-line CLI bug: `cv::imread` applies the EXIF Orientation tag by default (auto-rotates camera JPEGs 90°/180°/270°), while BoofCV's `UtilImageIO.loadImage` returns the raw pixel buffer ignoring EXIF. The detector worked on either orientation, but reported corner coordinates in the rotated frame disagreed with ground-truth (and Java) coordinates → IoU matching failed on every camera-shot image.
