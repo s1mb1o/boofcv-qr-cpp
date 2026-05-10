@@ -423,16 +423,23 @@ also has a small cv::findContours-interaction component).
 
 ## Performance
 
-After parity close-out the C++ port ran a single profile-driven perf
-cycle. **One optimisation banked; cycle 2 escalated and stopped.**
-[ADR 02](../../docs/decisions/02_perf_stop_after_cycle1.md) has the
-full reasoning; this section captures the resulting state for
-engineers reading just the algorithm doc.
+After parity close-out the C++ port ran a profile-driven perf push.
+The push ran in two episodes — ADR 02 stopped at the cycle-1 win;
+ADR 03 resumed for two more profile-confirmed cycles before final
+close-out. This section captures the **as-shipped state** at the end
+of ADR 03, plus the four-state perf progression and the rationale for
+why each cycle landed where it did. The full per-cycle reasoning lives
+in the ADRs:
+[ADR 02](../../docs/decisions/02_perf_stop_after_cycle1.md) (cycle 1
+banked, cycle 2 stopped) and
+[ADR 03](../../docs/decisions/03_perf_findhomography_and_sampler_cycles.md)
+(cycles 3 + 4 banked).
 
-### The one banked optimisation — inlined single-point homography
+### The three banked optimisations
 
-`QrCodeBinaryGridToPixel::imageToGrid` / `gridToImage` (and the two
-internal callers in `removeFeatureWithLargestError` /
+**Cycle 1 — inlined single-point homography (commits `340d038` +
+`bfbc2e2`).** `QrCodeBinaryGridToPixel::imageToGrid` / `gridToImage`
+(and the two internal callers in `removeFeatureWithLargestError` /
 `computeTransform`) were originally implemented as
 `cv::perspectiveTransform` over a freshly-heap-allocated 1-element
 `cv::Mat<Point2d>`. Profile on the worst-case `high_version` image
@@ -440,71 +447,113 @@ showed >70% of CPU time in `cv::Mat::create` / `cv::Mat::release` /
 allocator chains, all reached from `gridToImage`. The bit sampler
 (`QrCodeBinaryGridReader::readBit`) calls `gridToImage` 5× per module
 bit, so a Version-40 QR speculative read burns ~156k mat allocations.
-
 Replaced with a hand-rolled 3×3 mat-vec + perspective divide that is
 bit-identical to OpenCV's `perspectiveTransform_64f` on the fast path
 (`|w| > FLT_EPSILON`) and matches OpenCV's `(0, 0)` zero-fill on the
-degenerate branch. See `src/sampler/qr_code_binary_grid_to_pixel.md`
-for the math + bit-identity argument. Commits `340d038` (initial
-inline) + `bfbc2e2` (degenerate-branch parity with OpenCV).
+degenerate branch. See `src/sampler/qr_code_binary_grid_to_pixel.md`.
 
-### Final per-category timing (post-`bfbc2e2`)
+**Cycle 3 — explicit DLT via `cv::SVD::solveZ` (`23c1327`).** Profile
+on `lots/image00X` showed `cv::findHomography(method=0)` doing ~14%
+of `lots` decode time inside an LM-refinement chain
+(`cv::LMSolverImpl::run` → `cv::solve` → `cv::JacobiImpl_<double>`).
+CLAUDE.md and the sampler doc claimed `method=0` was "pure DLT, no
+iterative refinement" — incorrect for OpenCV when `npoints > 4`.
+BoofCV's `GenerateHomographyLinear` → `HomographyDirectLinearTransform`
+runs **only** the DLT (and its `normalize` flag is dead-coded in
+`process()`). Replaced the `cv::findHomography` call with an explicit
+2N×9 design-matrix build + `cv::SVD::solveZ` — same algorithm
+BoofCV's `SolveNullSpaceSvd_DDRM` runs. **Closed the -0.08pp
+aggregate parity residual** ADR 02 had logged as the ship state — the
+LM refinement was actively diverging from BoofCV's pure DLT.
 
-Same dataset as the parity table. Times are decoder-only sums per
-category over the 562-image regression; `ratio` is C++/Java.
+**Cycle 4 — sampler hot path (`ea93854`).** Profile on `high_version`
+pinned `QrCodeBinaryGridReader::sampleNearest` and
+`readBitIntensity` as the dominant remaining cost (V40 = ~156k
+`sampleNearest` calls per scan). Five surgical changes: (1)
+`sampleNearest` moved to header `inline` so the 5 calls per bit
+collapse to inline arithmetic + a single pixel read each; (2)
+`std::floor(x)` → `static_cast<int32_t>(x)` (matches Java's `(int)x`
+exactly; the subsequent clamp folds the floor/cast difference to the
+same byte); (3) `image_.at<uint8_t>(iy, ix)` →
+`image_.ptr<uint8_t>(iy)[ix]` (after clamping, indices are in-bounds;
+`at()` adds debug bounds + step multiplication `ptr<>` doesn't); (4)
+`readBitIntensity` collapsed 5× `push_back` into one `resize(base+5)`
++ 5 indexed writes (caller pre-`reserve()`s, so the resize is
+non-allocating); (5) removed unused `<cmath>`. **Universal speedup**:
+every category 1.32–1.36× faster — the hot path runs in every decode.
+
+### Four-state perf progression
+
+| commit    | label                                        | decoder-only sum | C++/Java | Δ vs prior |
+|-----------|----------------------------------------------|-----------------:|---------:|-----------:|
+| `bda1650` | pre-perf (parity ship)                       |          ~74.2 s |    9.27× |          — |
+| `bfbc2e2` | cycle 1 — `perspectiveTransform` inline      |           45.9 s |    5.73× |      1.62× |
+| `23c1327` | cycle 3 — explicit DLT via `cv::SVD::solveZ` |           43.5 s |    5.44× |      1.05× + parity 0.00pp |
+| `ea93854` | cycle 4 — sampler hot path                   |           32.5 s |**4.05×** |      1.34× |
+
+Two parity states banked alongside:
+
+- pre-cycle-3: 74.32% (-0.08pp from Java).
+- post-cycle-3: **74.40%** byte-identical to Java baseline. Held
+  through cycle 4.
+
+### Final per-category timing (post-`ea93854`)
+
+Same 562-image regression set, decoder-only sums per category
+(best-of-4 release `-O3` runs); `ratio` is C++/Java.
 
 | category      | java_ms | cpp_ms | ratio (C++/Java) |
 |---------------|--------:|-------:|-----------------:|
-| blurred       |   760.1 | 2566.4 |            3.38× |
-| bright_spots  |  1458.5 |16991.6 |           11.65× |
-| brightness    |  1011.4 | 7096.7 |            7.02× |
-| close         |   762.1 | 2564.6 |            3.37× |
-| curved        |   803.0 | 5811.2 |            7.24× |
-| damaged       |   207.4 |  818.3 |            3.94× |
-| **decoding**  |    69.0 |   46.6 |       **0.68×** (faster than Java) |
-| glare         |   443.1 | 1745.4 |            3.94× |
-| high_version  |   331.4 |  750.9 |            2.27× (was 44.4× pre-cycle-1) |
-| lots          |   744.6 | 3332.2 |            4.48× |
-| monitor       |   436.4 | 1234.8 |            2.83× |
-| nominal       |   382.2 | 1442.5 |            3.77× |
-| noncompliant  |    62.6 |  143.3 |            2.29× |
-| pathological  |    10.9 |   17.5 |            1.60× |
-| perspective   |    53.7 |  137.3 |            2.56× |
-| rotations     |   299.6 |  747.1 |            2.49× |
-| shadows       |   168.8 |  442.8 |            2.62× |
-| **SUM**       |  8004.8 |45889.3 |        **5.73×** |
+| blurred       |   760.1 | 1891.0 |            2.49× |
+| bright_spots  |  1458.5 |12768.1 |            8.75× |
+| brightness    |  1011.4 | 5256.8 |            5.20× |
+| close         |   762.1 | 1875.9 |            2.46× |
+| curved        |   803.0 | 4166.9 |            5.19× |
+| damaged       |   207.4 |  599.5 |            2.89× |
+| **decoding**  |    69.0 |   33.0 |       **0.48×** (2.1× faster than Java) |
+| glare         |   443.1 | 1209.0 |            2.73× |
+| high_version  |   331.4 |  535.7 |            1.62× (was 44.4× pre-cycle-1) |
+| lots          |   744.6 | 1081.7 |            1.45× |
+| monitor       |   436.4 |  901.3 |            2.07× |
+| nominal       |   382.2 | 1073.0 |            2.81× |
+| noncompliant  |    62.6 |  106.4 |            1.70× |
+| pathological  |    10.9 |   12.0 |            1.10× |
+| perspective   |    53.7 |   95.0 |            1.77× |
+| rotations     |   299.6 |  525.9 |            1.76× |
+| shadows       |   168.8 |  318.1 |            1.88× |
+| **SUM**       |  8004.8 |32449.2 |        **4.05×** |
 
 End-to-end wall clock (load + decode + JSON serialise, 562 images):
-**52.6 s** C++ vs **22.7 s** Java. Decoder-only sum: **45.9 s** vs
+**~37.7 s** C++ vs **22.7 s** Java. Decoder-only sum: **32.5 s** vs
 **8.0 s**.
 
-### Why the gap is what it is — and why no further perf work in v1
+### Why the remaining gap is what it is — and why we stop here
 
-Cycle 2 profile on the slowest categories (`brightness`,
-`bright_spots`) showed **~95% of decode CPU time inside OpenCV's
-`cv::findContours`** — specifically `cv::ContourScanner_::
-findFirstBoundingContour` (79% of main-thread samples on the
-`brightness` test image), plus the surrounding `icvFetchContourEx` /
-`findNextX` / `contourScan` / per-contour storage push_back / tree
-traversal. Not in our wrapper code, not in any pixel-access pattern
-we control.
+The two slowest categories (`bright_spots` 8.75×, `brightness` 5.20×)
+are exactly the noisy-binarisation categories ADR 02 pinned to
+`cv::findContours` time — **~95% of decode CPU time inside
+`cv::findContours`** on those images, specifically
+`cv::ContourScanner_::findFirstBoundingContour` plus the surrounding
+`icvFetchContourEx` / `findNextX` / `contourScan` / per-contour
+storage push_back / tree traversal. Not in our wrapper code, not in
+any pixel-access pattern we control. Cycles 3 and 4 didn't change
+those numbers materially (cycle 4 brought a per-bit-loop speedup that
+all categories benefit from, including these — they dropped from
+11.65×/7.02× to 8.75×/5.20× for the same reason all others did).
 
-The two slowest categories above (`bright_spots` 11.65×, `brightness`
-7.02×) are exactly the categories with the most contours per image —
-noisy binarisation produces thousands of tiny disconnected blobs and
-the contour scanner walks every one. Cutting that source of cost
-without breaking parity would require porting BoofCV's
-`LinearContourLabelChang2004` (the same architectural fork already
-discussed in ADR 01), which is a multi-cycle commitment — not a
-"one fix, profile-confirmed" cycle.
+Cutting `cv::findContours` cost without breaking parity would require
+porting BoofCV's `LinearContourLabelChang2004` — the same
+architectural fork already discussed in ADR 01 (parity) and ADR 02
+(perf). That is a multi-cycle commitment (~600 LOC + tests + algo
+doc + full parity re-validation), not a "one fix, profile-confirmed"
+cycle. **Per ADR 03 the v1 decision is to bank the three perf cycles
+and stop.**
 
-Per ADR 02 the v1 decision is to bank cycle 1's 1.62× aggregate /
-19.58× worst-case win and stop. The ADR also notes a secondary
-benefit not realised: porting `LinearContourLabelChang2004` would
-likely also clear the `monitor -11.76` and `glare -3.77` parity
-residuals from ADR 01. If a downstream consumer needs sub-Java
-performance OR sub-Java parity on the noisy categories, ADR 01 +
-ADR 02 together justify revisiting.
+Note that porting `LinearContourLabelChang2004` would likely *also*
+clear the `monitor -11.76` and `glare -3.77` parity residuals from
+ADR 01. If a downstream consumer needs sub-Java perf on the noisy
+categories OR sub-Java parity on `monitor`/`glare`, ADRs 01 + 02 + 03
+together justify revisiting the fork.
 
 ---
 

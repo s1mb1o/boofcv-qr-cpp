@@ -1,5 +1,53 @@
 # ChangeLog
 
+## 2026-05-10 (later¹⁷) — docs(perf): close out perf push round 2; ADR 03 captures cycles 3+4, decoder algo doc gets the final 4-state progression
+
+Close-out for the resumed perf cycle (cycles 3 + 4, commits `23c1327` + `ea93854`). ADR 02 had banked cycle 1 and stopped on the basis that the dominant remaining hotspot was inside `cv::findContours` (ADR-01-locked). A follow-up profile pass on workloads ADR 02 didn't profile (`lots`, `high_version`) surfaced two profile-confirmed bottlenecks that were *not* inside `cv::findContours` — `cv::findHomography(method=0)` LM refinement and the `QrCodeBinaryGridReader` hot path. Both got their cycle. The result:
+
+- Aggregate parity tightened from **-0.08pp** (ADR-02 ship state) to **0.00pp** byte-identical to Java baseline (74.4038%) — cycle 3 was a parity fix as much as a perf fix, the LM refinement was actively diverging from BoofCV's pure DLT.
+- Decoder-only ratio dropped from **5.73× → 4.05× C++/Java**.
+- `decoding` category now **0.48× C++/Java** = **2.1× faster than Java** end-to-end.
+- Worst-case category `bright_spots` improved from 11.65× to 8.75×.
+- Best-case wall-clock `~37.7 s` for 562 images (was 52.6 s post-cycle-1).
+- Universal speedup from cycle 4: every category 1.32–1.36× faster.
+
+This is the new close-out state. ADR 03 is the durable record of why we stopped here this time, what ADR 02 missed, and what triggers a future revisit.
+
+### Added
+
+- [docs/decisions/03_perf_findhomography_and_sampler_cycles.md](docs/decisions/03_perf_findhomography_and_sampler_cycles.md) — ADR 03. Captures: ADR-02 stop point and what it missed (single-cluster profiling on `bright_spots`/`brightness` masked the per-decode-loop costs in `lots`/`high_version`), cycle 3 + cycle 4 deltas, the four-state perf progression table, the lesson "profile across distinct category clusters before declaring victory," and the revisit conditions. ADR 03 commits the project to one more profile pass before any future close-out, covering at least one image from each of the `lots`/`high_version`/`bright_spots`/`nominal` clusters.
+
+### Changed
+
+- [docs/decisions/02_perf_stop_after_cycle1.md](docs/decisions/02_perf_stop_after_cycle1.md) — status changed from `Accepted` to `Superseded in part by ADR 03`. ADR 02's "do NOT port `LinearContourLabelChang2004`" decision still stands; ADR 02's "stop the perf cycle here" decision is reversed by ADR 03. Forward link added.
+- [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md) "Performance" section rewritten. Replaces the cycle-1-only narrative with the three-cycle close-out:
+  - The three banked optimisations summarised inline (perspectiveTransform inlining, explicit DLT via `cv::SVD::solveZ`, sampler hot-path tightening), with cross-references to the per-stage `.md` algorithm docs and ADRs 02 + 03.
+  - Four-state perf progression table (`bda1650` → `bfbc2e2` → `23c1327` → `ea93854`) with per-state decoder-only sums, C++/Java ratios, and parity deltas.
+  - Final per-category timing table (best-of-4, post-`ea93854`).
+  - "Why the remaining gap is what it is" paragraph: the slowest two categories (`bright_spots` 8.75×, `brightness` 5.20×) are still the `cv::findContours`-bound noisy-binarisation cluster from ADR 01 / ADR 02, and the remaining lever is porting `LinearContourLabelChang2004` (ADRs 01+02+03).
+- [tests/accepted_residuals.json](tests/accepted_residuals.json) `_comment` provenance refreshed: notes that the aggregate tightened from -0.08pp to 0.00pp in cycle 3, but the per-category residuals listed in this file are independent of the homography fix and remain unchanged. Cross-references ADR 03 in the provenance pointer alongside ADR 01.
+
+### Regression
+
+- 421/421 unit tests pass (no library code touched).
+- `tools/cli/run_regression.sh`: PASS, aggregate **74.40%** = Java baseline byte-identical, all 17 categories within their accepted bands. Per-category decode rates byte-identical to the cycle-4 ship state.
+
+### Final perf state (final, post-`ea93854`)
+
+| metric                                | value                                       |
+|---------------------------------------|---------------------------------------------|
+| Aggregate decode rate                 | 74.4038% (Java 74.4038%; **0.00pp**)        |
+| Decoder-only sum (562 images)         | 32.5 s (Java 8.0 s; **4.05× C++/Java**)     |
+| Wall-clock total                      | ~37.7 s (Java 22.7 s)                       |
+| Worst category ratio                  | `bright_spots` 8.75×                        |
+| Best category ratio                   | `decoding` 0.48× (2.1× faster than Java)    |
+| `high_version` (cycle-1 + cycle-4)    | 1.62× (was 44.4× pre-cycle-1)               |
+| Categories within ±2pp parity band    | 11 of 17                                    |
+| Documented parity residuals           | 2 from cv::findContours (ADR 01) + 4 small-N "+" outliers |
+| Unit tests                            | 421/421                                     |
+
+This is the close-out state of v1's perf work. ADR 03 is the durable record of why we stopped here this time.
+
 ## 2026-05-10 (later¹⁶) — perf(sampler): array-buffer + ptr-access in `QrCodeBinaryGridReader` hot path
 
 Cycle 4 of the perf push (post-cycle-3). Profile data on `high_version` showed `QrCodeBinaryGridReader::readBitIntensity` and `sampleNearest` as the dominant remaining hot path — V40 codes hit ~156k `sampleNearest` calls per scan (177×177 modules × 5 samples per bit). Five changes, all profile-confirmed cheap and parity-preserving:

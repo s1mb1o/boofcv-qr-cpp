@@ -1,9 +1,11 @@
 # ADR 02: Stop performance work after cycle 1; do NOT port `LinearContourLabelChang2004` for perf reasons
 
 **Date:** 2026-05-10
-**Status:** Accepted
+**Status:** **Superseded in part by [ADR 03](03_perf_findhomography_and_sampler_cycles.md).** ADR 02's "do NOT port `LinearContourLabelChang2004` for perf reasons" decision still stands. ADR 02's "stop the perf cycle here" decision is reversed by ADR 03 (which adds two more profile-confirmed cycles, dropping the decoder ratio from 5.73× to 4.05× C++/Java and closing the -0.08pp aggregate parity residual ADR 02 logged as the ship state).
 **Deciders:** User decision after escalation; profile data captured at cycle-2 hotspot investigation.
-**Related:** [ADR 01 — `cv::findContours` substitution](01_cv_findcontours_substitution.md). The two ADRs together cover both the parity-driven and perf-driven decisions on the same architectural fork (port `LinearContourLabelChang2004` vs. keep the OpenCV substitution).
+**Related:**
+- [ADR 01 — `cv::findContours` substitution](01_cv_findcontours_substitution.md). The two ADRs together cover both the parity-driven and perf-driven decisions on the same architectural fork (port `LinearContourLabelChang2004` vs. keep the OpenCV substitution).
+- [ADR 03 — Resume the perf cycle](03_perf_findhomography_and_sampler_cycles.md). Documents what ADR 02 missed: profile-confirmed bottlenecks outside `cv::findContours`, on workloads ADR 02 didn't profile.
 
 ---
 
