@@ -421,6 +421,93 @@ also has a small cv::findContours-interaction component).
 
 ---
 
+## Performance
+
+After parity close-out the C++ port ran a single profile-driven perf
+cycle. **One optimisation banked; cycle 2 escalated and stopped.**
+[ADR 02](../../docs/decisions/02_perf_stop_after_cycle1.md) has the
+full reasoning; this section captures the resulting state for
+engineers reading just the algorithm doc.
+
+### The one banked optimisation — inlined single-point homography
+
+`QrCodeBinaryGridToPixel::imageToGrid` / `gridToImage` (and the two
+internal callers in `removeFeatureWithLargestError` /
+`computeTransform`) were originally implemented as
+`cv::perspectiveTransform` over a freshly-heap-allocated 1-element
+`cv::Mat<Point2d>`. Profile on the worst-case `high_version` image
+showed >70% of CPU time in `cv::Mat::create` / `cv::Mat::release` /
+allocator chains, all reached from `gridToImage`. The bit sampler
+(`QrCodeBinaryGridReader::readBit`) calls `gridToImage` 5× per module
+bit, so a Version-40 QR speculative read burns ~156k mat allocations.
+
+Replaced with a hand-rolled 3×3 mat-vec + perspective divide that is
+bit-identical to OpenCV's `perspectiveTransform_64f` on the fast path
+(`|w| > FLT_EPSILON`) and matches OpenCV's `(0, 0)` zero-fill on the
+degenerate branch. See `src/sampler/qr_code_binary_grid_to_pixel.md`
+for the math + bit-identity argument. Commits `340d038` (initial
+inline) + `bfbc2e2` (degenerate-branch parity with OpenCV).
+
+### Final per-category timing (post-`bfbc2e2`)
+
+Same dataset as the parity table. Times are decoder-only sums per
+category over the 562-image regression; `ratio` is C++/Java.
+
+| category      | java_ms | cpp_ms | ratio (C++/Java) |
+|---------------|--------:|-------:|-----------------:|
+| blurred       |   760.1 | 2566.4 |            3.38× |
+| bright_spots  |  1458.5 |16991.6 |           11.65× |
+| brightness    |  1011.4 | 7096.7 |            7.02× |
+| close         |   762.1 | 2564.6 |            3.37× |
+| curved        |   803.0 | 5811.2 |            7.24× |
+| damaged       |   207.4 |  818.3 |            3.94× |
+| **decoding**  |    69.0 |   46.6 |       **0.68×** (faster than Java) |
+| glare         |   443.1 | 1745.4 |            3.94× |
+| high_version  |   331.4 |  750.9 |            2.27× (was 44.4× pre-cycle-1) |
+| lots          |   744.6 | 3332.2 |            4.48× |
+| monitor       |   436.4 | 1234.8 |            2.83× |
+| nominal       |   382.2 | 1442.5 |            3.77× |
+| noncompliant  |    62.6 |  143.3 |            2.29× |
+| pathological  |    10.9 |   17.5 |            1.60× |
+| perspective   |    53.7 |  137.3 |            2.56× |
+| rotations     |   299.6 |  747.1 |            2.49× |
+| shadows       |   168.8 |  442.8 |            2.62× |
+| **SUM**       |  8004.8 |45889.3 |        **5.73×** |
+
+End-to-end wall clock (load + decode + JSON serialise, 562 images):
+**52.6 s** C++ vs **22.7 s** Java. Decoder-only sum: **45.9 s** vs
+**8.0 s**.
+
+### Why the gap is what it is — and why no further perf work in v1
+
+Cycle 2 profile on the slowest categories (`brightness`,
+`bright_spots`) showed **~95% of decode CPU time inside OpenCV's
+`cv::findContours`** — specifically `cv::ContourScanner_::
+findFirstBoundingContour` (79% of main-thread samples on the
+`brightness` test image), plus the surrounding `icvFetchContourEx` /
+`findNextX` / `contourScan` / per-contour storage push_back / tree
+traversal. Not in our wrapper code, not in any pixel-access pattern
+we control.
+
+The two slowest categories above (`bright_spots` 11.65×, `brightness`
+7.02×) are exactly the categories with the most contours per image —
+noisy binarisation produces thousands of tiny disconnected blobs and
+the contour scanner walks every one. Cutting that source of cost
+without breaking parity would require porting BoofCV's
+`LinearContourLabelChang2004` (the same architectural fork already
+discussed in ADR 01), which is a multi-cycle commitment — not a
+"one fix, profile-confirmed" cycle.
+
+Per ADR 02 the v1 decision is to bank cycle 1's 1.62× aggregate /
+19.58× worst-case win and stop. The ADR also notes a secondary
+benefit not realised: porting `LinearContourLabelChang2004` would
+likely also clear the `monitor -11.76` and `glare -3.77` parity
+residuals from ADR 01. If a downstream consumer needs sub-Java
+performance OR sub-Java parity on the noisy categories, ADR 01 +
+ADR 02 together justify revisiting.
+
+---
+
 ## Cross-references
 
 - Upstream BoofCV file:

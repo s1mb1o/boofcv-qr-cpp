@@ -1,5 +1,52 @@
 # ChangeLog
 
+## 2026-05-10 (later¹⁴) — docs(perf): close out perf cycle after cycle 1; ADR 02 records the decision to stop, decoder algo doc gains a Performance section
+
+Perf-cycle close-out. Cycle 1 (`340d038` + `bfbc2e2`) shipped a 1.62× aggregate / 19.58× worst-case decoder speedup with byte-identical parity. Cycle 2 was scoped to row-pointer rewrites in `ThresholdBlockOtsu` and `QrCodeBinaryGridReader::sampleNearest`; profiling forced an escalation before any code change.
+
+Two findings forced the escalation:
+
+1. **`ThresholdBlockOtsu` is already row-pointer-based.** `computeBlockStatistics:118-123` and `thresholdBlock:212-218` both use `input.ptr<std::uint8_t>(y)` in their hot loops; `grep` for `at<uchar>` / `at<uint8_t>` / `at<std::uint8_t>` in `src/binary/` and `include/boofcv_qr/` returns zero hits. The cycle-1 ChangeLog hint that named Otsu as the next pixel-access target was based on a stale read of the file — the binarizer was already done at port time.
+2. **`cv::findContours` is the actual top hotspot, by ~20× over Otsu.** Sample profile on `detection/brightness/image010.jpg` (3024×4032, ~825 ms/iter, 21,144 main-thread samples), inclusive % of CPU:
+
+   | function                                       | inclusive | % CPU |
+   |------------------------------------------------|----------:|------:|
+   | `boofcv_qr::DetectPolygonFromContour::process` |    19835  | 93.8% |
+   | `boofcv_qr::ThresholdBlockOtsu::process`       |      974  |  4.6% |
+
+   Top-of-stack (where cycles burn): `cv::ContourScanner_::findFirstBoundingContour` 16762 samples (79%), plus the surrounding `icvFetchContourEx` / `findNextX` / `contourScan` / `BlockStorage::push_back` / `Tree::newElem` chain. Same shape on `bright_spots/image008.jpg`. **~95% of decode time on noisy categories is inside OpenCV's `cv::findContours`** — not in any code we wrote.
+
+User decision: **stop perf work; ship cycle 1**. Re-aiming cycle 2 at small wins (~0.5–1% from row-pointer rewrites in 4-pixel bilinear-interp helpers) was rejected as not worth the cycle. The big lever (port `LinearContourLabelChang2004`) is ADR-01-rejected and a multi-cycle commitment, not a "one fix, profile-confirmed" cycle. Cycle 1's win is real and banked.
+
+### Added
+
+- [docs/decisions/02_perf_stop_after_cycle1.md](docs/decisions/02_perf_stop_after_cycle1.md) — ADR 02 capturing: cycle-1 outcome (the optimisation that shipped, with full timing table), cycle-2 profile findings, decision to stop, rationale (workarounds (a)–(c) all parity-breaking; ADR-01-rework is multi-cycle), final empirical perf state (decoder-only 5.73× C++/Java aggregate, 11.65×/7.02× worst categories `bright_spots`/`brightness`, wall-clock 52.6 s vs Java 22.7 s on 562 images), and revisit conditions. Cross-linked with ADR 01: ADR 01 is the parity-driven version of the same fork, ADR 02 is the perf-driven version. Together they say "if a downstream consumer needs perf OR parity on noisy categories, port `LinearContourLabelChang2004` — until then, accept both costs."
+
+### Changed
+
+- [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md): new "Performance" section between "Known parity residuals" and "Cross-references". Captures the inlined-homography optimisation as the one banked perf change, the final per-category timing table (Java vs C++ post-`bfbc2e2`, 17 categories + aggregate), and a one-paragraph "why no further perf work in v1" cross-linking ADR 02.
+
+### Regression
+
+- 421/421 unit tests pass (no library code touched).
+- No `tools/cli/run_regression.sh` re-run needed — pure docs commit.
+
+### Final perf state (carried forward from `bfbc2e2`)
+
+| metric                                | value                                  |
+|---------------------------------------|----------------------------------------|
+| Aggregate decode rate                 | 74.32% (Java 74.40%; **-0.08pp**)      |
+| Decoder-only sum (562 images)         | 45.9 s (Java 8.0 s; **5.73× C++/Java**)|
+| Wall-clock total                      | 52.6 s (Java 22.7 s)                   |
+| Worst category ratio                  | `bright_spots` 11.65×                  |
+| Best category ratio                   | `decoding` 0.68× (faster than Java)    |
+| `high_version` (cycle-1 target)       | 2.27× (was 44.4× pre-cycle-1)          |
+| Categories within ±2pp parity band    | 11 of 17                               |
+| Documented parity residuals           | 2 from cv::findContours (ADR 01) + 4 small-N "+" outliers |
+| Unit tests                            | 421/421                                |
+
+This is the close-out state of v1. ADR 02 is the durable record of why we stopped here.
+
 ## 2026-05-10 (later¹³) — fix(perf): match OpenCV `cv::perspectiveTransform` `FLT_EPSILON` guard + zero-fill on degenerate branch
 
 Codex re-review on `340d038` flagged one real divergence on the `applyHomography` degenerate branch: `cv::perspectiveTransform_64f` gates singular `w` on `|w| > FLT_EPSILON` and zero-fills below that threshold (and uses `FLT_EPSILON` even on the 64f path, not `DBL_EPSILON`); the inline I shipped used `w != 0.0` and propagated NaN through division for tiny-but-nonzero `w`. Fast-path arithmetic is unchanged so per-category parity rates and timings stand from `340d038`, but **the commit message + .md claim "bit-identical at the IEEE-754 level" was overstated** — bit-identical only on the fast path. Mechanical fix-up.
