@@ -21,6 +21,8 @@
 #include "boofcv_qr/qr_code.hpp"
 
 #include <array>
+#include <cfloat>
+#include <cmath>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -75,9 +77,50 @@ public:
 
     void computeTransform();
 
-    // Coordinate transforms via cv::perspectiveTransform.
-    void imageToGrid(double x, double y, cv::Point2d& grid) const;
-    void gridToImage(double row, double col, cv::Point2d& pixel) const;
+    // Single-point projective transforms. Defined inline here so the 3×3
+    // mat-vec + perspective-divide is visible to the compiler at every
+    // call site — the bit sampler in `QrCodeBinaryGridReader::readBit` /
+    // `readBitIntensity` hits `gridToImage` 5× per module bit (~156k
+    // calls per Version-40 QR scan), and the original out-of-line
+    // function call was profile-confirmed at ~10% of decode time on
+    // `high_version`. The math is the same `(Mx + b) / (m20 x + m21 y +
+    // m22)` that OpenCV's `perspectiveTransform_64f` runs; we mirror
+    // OpenCV's `FLT_EPSILON` gate (not `DBL_EPSILON`) and `(0, 0)`
+    // zero-fill on the degenerate branch — bit-identical output.
+    //
+    // The `adjustWithFeatures` slow path of `gridToImage` (per-call
+    // nearest-pair lookup) is kept out-of-line: the branch is dead on
+    // every decode call after cycle 3 (no consumer enables it on the
+    // sampling path), and inlining the loop would bloat every call site
+    // with code that never runs. The cheap `adjustWithFeatures &&
+    // !adjustments.empty()` predicate is the only thing inlined; the
+    // body below the predicate is forwarded to `applyAdjustment`.
+    inline void imageToGrid(double x, double y, cv::Point2d& grid) const {
+        const double w = H(2, 0) * x + H(2, 1) * y + H(2, 2);
+        if (std::fabs(w) > FLT_EPSILON) {
+            const double iw = 1.0 / w;
+            grid.x = (H(0, 0) * x + H(0, 1) * y + H(0, 2)) * iw;
+            grid.y = (H(1, 0) * x + H(1, 1) * y + H(1, 2)) * iw;
+        } else {
+            grid.x = 0.0;
+            grid.y = 0.0;
+        }
+    }
+
+    inline void gridToImage(double row, double col, cv::Point2d& pixel) const {
+        const double w = Hinv(2, 0) * col + Hinv(2, 1) * row + Hinv(2, 2);
+        if (std::fabs(w) > FLT_EPSILON) {
+            const double iw = 1.0 / w;
+            pixel.x = (Hinv(0, 0) * col + Hinv(0, 1) * row + Hinv(0, 2)) * iw;
+            pixel.y = (Hinv(1, 0) * col + Hinv(1, 1) * row + Hinv(1, 2)) * iw;
+        } else {
+            pixel.x = 0.0;
+            pixel.y = 0.0;
+        }
+        if (adjustWithFeatures && !adjustments.empty()) {
+            applyAdjustment(row, col, pixel);
+        }
+    }
 
     void setAdjustWithFeatures(bool v) { adjustWithFeatures = v; }
     void setHomographyInv(const cv::Matx33d& Hinv_);
@@ -94,6 +137,11 @@ private:
     std::vector<cv::Point2d> adjustments;
 
     void recomputeInverse();
+
+    // Slow-path helper for `gridToImage` — per-call nearest-pair lookup
+    // when `adjustWithFeatures` is on. Out-of-line so the inlined fast
+    // path stays small.
+    void applyAdjustment(double row, double col, cv::Point2d& pixel) const;
 };
 
 }  // namespace boofcv_qr

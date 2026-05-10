@@ -407,32 +407,28 @@ void QrCodeBinaryGridToPixel::computeTransform() {
     }
 }
 
-void QrCodeBinaryGridToPixel::imageToGrid(double x, double y,
-                                          cv::Point2d& grid) const {
-    applyHomography(H, x, y, grid);
-}
-
-void QrCodeBinaryGridToPixel::gridToImage(double row, double col,
-                                          cv::Point2d& pixel) const {
-    applyHomography(Hinv, col, row, pixel);
-
-    if (adjustWithFeatures && !adjustments.empty()) {
-        // Nearest-pair lookup; cheap, mirrors Java.
-        std::size_t closest = 0;
-        double best = std::numeric_limits<double>::max();
-        for (std::size_t i = 0; i < pairs2D.size(); i++) {
-            double dx = pairs2D[i].p2.x - col;
-            double dy = pairs2D[i].p2.y - row;
-            double d = dx * dx + dy * dy;
-            if (d < best) {
-                best = d;
-                closest = i;
-            }
+// Slow-path helper for the inlined `gridToImage` (header). Hit only when
+// `adjustWithFeatures` is on AND `adjustments` is non-empty — neither is
+// true on the bit-sampler hot path, so this stays out-of-line to keep
+// the inlined fast-path small. Body is unchanged from the pre-cycle-5
+// gridToImage tail; mirrors BoofCV's per-pair nearest-neighbour residual
+// lookup.
+void QrCodeBinaryGridToPixel::applyAdjustment(double row, double col,
+                                              cv::Point2d& pixel) const {
+    std::size_t closest = 0;
+    double best = std::numeric_limits<double>::max();
+    for (std::size_t i = 0; i < pairs2D.size(); i++) {
+        double dx = pairs2D[i].p2.x - col;
+        double dy = pairs2D[i].p2.y - row;
+        double d = dx * dx + dy * dy;
+        if (d < best) {
+            best = d;
+            closest = i;
         }
-        const cv::Point2d& adj = adjustments[closest];
-        pixel.x += adj.x;
-        pixel.y += adj.y;
     }
+    const cv::Point2d& adj = adjustments[closest];
+    pixel.x += adj.x;
+    pixel.y += adj.y;
 }
 
 }  // namespace boofcv_qr

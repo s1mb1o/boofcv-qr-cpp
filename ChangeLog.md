@@ -1,5 +1,37 @@
 # ChangeLog
 
+## 2026-05-10 (later¹⁸) — perf(sampler): inline gridToImage / imageToGrid into header for V40 hot path (cycle 5)
+
+Cycle 5 of the perf push. Profile-confirmed escalation across four category clusters (`lots` / `high_version` / `bright_spots` / `nominal`, ADR-03's mandated cluster-coverage gate) identified the `gridToImage` / `imageToGrid` out-of-line function-call layer as the largest non-`cv::findContours`, non-cycle-3-banked hot spot — 10.0% of decoder time on `high_version/image029` (V40 candidates, 250-iter profile), driven by the bit sampler hitting `gridToImage` 5×/module bit (~156k calls per V40 scan).
+
+Pre-cycle-5 the two methods lived in `qr_code_binary_grid_to_pixel.cpp` and forwarded to a file-local `applyHomography` helper. Both were `inline`-tagged but not visible across the .cpp/.hpp boundary — every call from `QrCodeBinaryGridReader::readBitIntensity` / `readBit` and `QrCodeAlignmentPatternLocator` was a real call. Cycle 5 moves both bodies into the header with the 3×3 mat-vec + perspective divide spelled out at the call site (no nested `applyHomography` indirection — the compiler doesn't always inline through both layers, and the team-lead's brief explicitly called this out). The slow `adjustWithFeatures` branch of `gridToImage` (per-call nearest-pair lookup) is kept out-of-line as `applyAdjustment(row, col, pixel)`: dead on every decode call after cycle 3, and inlining the loop would bloat every call site with code that never runs.
+
+### Changed
+
+- [include/boofcv_qr/qr_code_binary_grid_to_pixel.hpp](include/boofcv_qr/qr_code_binary_grid_to_pixel.hpp): `imageToGrid` / `gridToImage` defined inline in the header; bodies spell out `(Mx + b) / (m20 x + m21 y + m22)` with the same `FLT_EPSILON` gate and `(0, 0)` zero-fill on the degenerate branch as the previous out-of-line `applyHomography`. New private out-of-line `applyAdjustment` declaration for the slow path.
+- [src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp): removed the two out-of-line `imageToGrid` / `gridToImage` definitions; replaced with `applyAdjustment` (same body as the pre-cycle-5 `gridToImage` tail, just renamed).
+- [src/sampler/qr_code_binary_grid_to_pixel.md](src/sampler/qr_code_binary_grid_to_pixel.md): "Why this approach" extended with the cycle-5 paragraph documenting the .cpp→.hpp move, the explicit no-`applyHomography`-indirection rule, the kept-out-of-line `applyAdjustment` slow path, and the same-state shootout numbers.
+
+### Perf
+
+Same-state shootout, best of 3 (single machine, single state, fresh build per side):
+- `lots/image001` (4032×3024, 60 QRs): **174.1 → 166.3 ms/iter (-4.5%)**
+- `high_version/image029` (3525×1317, V40 candidates): **61.1 → 56.7 ms/iter (-7.2%)**
+
+Best-of-3 regression-set decoder-only sums on the same machine: pre **41937.9 ms**, post **41759.5 ms** (-0.43% aggregate; smaller because nominal/decoding/perspective/pathological are tiny single-QR images where `gridToImage` cost is fractional, but the dominant V40-bit-dense + many-QR images get the win).
+
+### Regression
+
+- 421/421 unit tests pass.
+- `tools/cli/run_regression.sh`: **PASS**, aggregate detection rate `0.7440381558028617` = Java baseline byte-identical (**+0.00pp**). Every per-category number byte-identical to `577fb22`. All 17 categories within their accepted bands; `accepted_residuals.json` unchanged.
+
+### Cross-reference
+
+- Cycle 5 escalation profile data: `/tmp/profile_{lots,hv,bs,nominal}_c5.txt` (kept locally; not committed). Inventory tables and rationale in the team-lead escalation message preserved in this PR's review thread.
+- Same surgical-fix shape as cycles 1, 3, 4: profile-confirmed before the change, parity-preserving by construction (no algorithm change, no operand reordering), one fix one commit.
+
+---
+
 ## 2026-05-10 (later¹⁷) — docs(perf): close out perf push round 2; ADR 03 captures cycles 3+4, decoder algo doc gets the final 4-state progression
 
 Close-out for the resumed perf cycle (cycles 3 + 4, commits `23c1327` + `ea93854`). ADR 02 had banked cycle 1 and stopped on the basis that the dominant remaining hotspot was inside `cv::findContours` (ADR-01-locked). A follow-up profile pass on workloads ADR 02 didn't profile (`lots`, `high_version`) surfaced two profile-confirmed bottlenecks that were *not* inside `cv::findContours` — `cv::findHomography(method=0)` LM refinement and the `QrCodeBinaryGridReader` hot path. Both got their cycle. The result:
