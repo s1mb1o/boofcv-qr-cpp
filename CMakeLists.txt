@@ -55,6 +55,8 @@ add_library(boofcv_qr STATIC
     src/sampler/qr_code_binary_grid_to_pixel.cpp
     src/sampler/qr_code_binary_grid_reader.cpp
     src/binary/threshold_block_otsu.cpp
+    src/binary/contour_tracer.cpp
+    src/binary/linear_contour_label_chang2004.cpp
     src/polygon/square_node.cpp
     src/polygon/square_graph.cpp
     src/polygon/polyline_split_merge.cpp
@@ -136,6 +138,7 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_qr_code_codeword_locations.cpp
         tests/unit/test_qr_code_binary_grid_to_pixel.cpp
         tests/unit/test_threshold_block_otsu.cpp
+        tests/unit/test_linear_contour_label_chang2004.cpp
         tests/unit/test_square_node.cpp
         tests/unit/test_square_graph.cpp
         tests/unit/test_polyline_split_merge.cpp

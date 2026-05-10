@@ -1,5 +1,44 @@
 # ChangeLog
 
+## 2026-05-11 — port: boofcv.alg.filter.binary.LinearContourLabelChang2004 → src/binary/ (cycle A)
+
+Cycle A of the LinearContour port. Verbatim port of `LinearContourLabelChang2004` + `ContourTracer` + supporting types (`PackedSetsPoint2D_I32`, `ContourPacked`, `ConnectRule`) from upstream `boofcv-ip/src/main/java/boofcv/alg/filter/binary/`. JUnit suite mirrored verbatim into `tests/unit/`. Algorithm doc shipped alongside the source.
+
+**No call-site wiring yet.** The library still consumes `cv::findContours` via `DetectPolygonFromContour`. Cycle B will swap the call site and close ADR 01's `monitor` -11.76pp / `glare` -3.77pp parity residuals.
+
+### Added
+
+- [include/boofcv_qr/binary/connect_rule.hpp](include/boofcv_qr/binary/connect_rule.hpp) — enum FOUR / EIGHT.
+- [include/boofcv_qr/binary/packed_sets_point2d_i32.hpp](include/boofcv_qr/binary/packed_sets_point2d_i32.hpp) — block-allocated packed point storage. Only the methods exercised by the algorithmic core + JUnit test are exposed (verbatim where used, plumbing-adjacent for the iterator).
+- [include/boofcv_qr/binary/contour_packed.hpp](include/boofcv_qr/binary/contour_packed.hpp) — per-blob header (id + external/internal set indices).
+- [include/boofcv_qr/binary/contour_tracer.hpp](include/boofcv_qr/binary/contour_tracer.hpp) + [src/binary/contour_tracer.cpp](src/binary/contour_tracer.cpp) — Moore-neighbour 8-conn boundary follower with `searchOne4`/`searchOne8` unroll. `0xFF`-sentinel marker writes (Java's `-1` byte bit pattern) for already-searched cells; equality test against `1` is bit-identical between signed Java and unsigned C++.
+- [include/boofcv_qr/binary/linear_contour_label_chang2004.hpp](include/boofcv_qr/binary/linear_contour_label_chang2004.hpp) + [src/binary/linear_contour_label_chang2004.cpp](src/binary/linear_contour_label_chang2004.cpp) — driver class with the 3-step scan-line dispatch.
+- [src/binary/linear_contour_label_chang2004.md](src/binary/linear_contour_label_chang2004.md) — algorithm doc covering: paper citation, the 3-step driver, border-padding rationale, `0xFF`-sentinel arithmetic audit (per cycle A review checklist), winding/start-pixel guarantees (the parity-load-bearing details for closing ADR 01), failure modes, tunables, integration points for downstream recovery, and cross-references.
+- [tests/unit/test_linear_contour_label_chang2004.cpp](tests/unit/test_linear_contour_label_chang2004.cpp) — 7 tests mirroring `TestLinearContourLabelChang2004.java` verbatim (4 fixtures `TEST1`..`TEST4`, both `FOUR` and `EIGHT` connect rules, structural inner/outer-contour assertion).
+
+### Changed
+
+- [CMakeLists.txt](CMakeLists.txt) — add the two new `.cpp` files to `boofcv_qr` and the new test file to `boofcv_qr_tests`.
+
+### Test results
+
+- 428/428 unit tests pass (was 421/421; new total = old + 7 new from `LinearContourLabelChang2004`).
+- Build clean Release `-O3 -DNDEBUG` under `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+
+### Cycle plan
+
+- **Cycle A (this commit)**: port + tests, NOT WIRED IN.
+- **Cycle B (next)**: swap `cv::findContours` call site in `src/polygon/detect_polygon_from_contour.cpp` for the new port. Drop the `fixup` reversal + `rotate_to_canonical_start` workaround (no longer needed — the port emits BoofCV's winding + start pixel directly). Run regression: expect `monitor` and `glare` residuals to close.
+- **Cycle C**: update ADR 01 from "deferred → implemented"; possibly write ADR 05 documenting outcome; close-out docs.
+
+### Cross-reference
+
+- ADR 01 ([docs/decisions/01_cv_findcontours_substitution.md](docs/decisions/01_cv_findcontours_substitution.md)): "When to revisit" condition #3 (compositional regressions) is closed by this cycle. Cycle C will update its status.
+- Upstream Java: `boofcv.alg.filter.binary.LinearContourLabelChang2004` (228 LOC). Pinned tag: see [UPSTREAM_VERSION](UPSTREAM_VERSION) (v1.3.0).
+- Paper: Chang, Chen, Lu, "A linear-time component-labeling algorithm using contour tracing technique", *Computer Vision and Image Understanding*, vol. 93 (2), 2004, pp. 206–220.
+
+---
+
 ## 2026-05-10 (later¹⁹) — docs(perf): close out cycle 5; ADR 04 records the surgical-fix floor
 
 Pure-docs close-out for cycle 5 (commit `7063ec2`). Records the four-cluster profile pass that justified cycle 5 (per ADR 03's cluster-coverage gate), the inline-into-header decision, the cycle-5 perf delta (-0.43% aggregate, -4.5–7.2% on V40 / multi-QR images), and the empirical justification for stopping at the **surgical-fix floor for v1**: every remaining top hot spot is either ADR-01-locked (`cv::findContours`), parity-load-bearing (`cv::SVD::solveZ` from cycle 3 — reverting reopens the -0.08pp parity residual), or a verbatim BoofCV port forbidden to reshape under "Verbatim vs idiomize" (`ThresholdBlockOtsu`).
