@@ -90,16 +90,34 @@ public:
     QrCodeBinaryGridToPixel& getTransformGrid() { return transformGrid; }
     const QrCodeBinaryGridToPixel& getTransformGrid() const { return transformGrid; }
 
+    // Nearest-neighbour pixel read with EXTENDED-border clamping. Mirrors
+    // BoofCV's `nearestNeighborPixelS` + `BorderType.EXTENDED`. Inlined in
+    // the header (cycle-4 hot path: ~156k calls per Version-40 QR scan via
+    // readBitIntensity / readBit).
+    //
+    // BoofCV's `NearestNeighborPixel_U8.get(x, y)` does Java `(int)x`,
+    // `(int)y` — truncation toward zero — then clamps via the EXTENDED
+    // border. C++ `static_cast<int32_t>(x)` is also truncation toward
+    // zero, so it matches Java's `(int)` exactly. (Pre-cycle-4 used
+    // `std::floor`, which differs from Java only for x in (-1, 0), but
+    // the `if (ix < 0) ix = 0` clamp folds both to 0 — output identical
+    // either way. The cast is faster.)
+    [[nodiscard]] inline float sampleNearest(double x, double y) const {
+        int32_t ix = static_cast<int32_t>(x);
+        int32_t iy = static_cast<int32_t>(y);
+        if (ix < 0) ix = 0;
+        if (iy < 0) iy = 0;
+        if (ix >= imageWidth) ix = imageWidth - 1;
+        if (iy >= imageHeight) iy = imageHeight - 1;
+        return static_cast<float>(image_.ptr<std::uint8_t>(iy)[ix]);
+    }
+
 private:
     QrCodeBinaryGridToPixel transformGrid;
     cv::Mat image_;
     int32_t imageWidth = 0;
     int32_t imageHeight = 0;
     float threshold = 127.0f;
-
-    // Nearest-neighbour pixel read with EXTENDED-border clamping.
-    // Mirrors BoofCV's `nearestNeighborPixelS` + `BorderType.EXTENDED`.
-    float sampleNearest(double x, double y) const;
 };
 
 }  // namespace boofcv_qr

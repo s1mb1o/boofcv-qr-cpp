@@ -1,5 +1,64 @@
 # ChangeLog
 
+## 2026-05-10 (later¹⁶) — perf(sampler): array-buffer + ptr-access in `QrCodeBinaryGridReader` hot path
+
+Cycle 4 of the perf push (post-cycle-3). Profile data on `high_version` showed `QrCodeBinaryGridReader::readBitIntensity` and `sampleNearest` as the dominant remaining hot path — V40 codes hit ~156k `sampleNearest` calls per scan (177×177 modules × 5 samples per bit). Five changes, all profile-confirmed cheap and parity-preserving:
+
+### Changes
+
+[include/boofcv_qr/qr_code_binary_grid_reader.hpp](include/boofcv_qr/qr_code_binary_grid_reader.hpp), [src/sampler/qr_code_binary_grid_reader.cpp](src/sampler/qr_code_binary_grid_reader.cpp):
+
+1. **`sampleNearest` moved to header `inline`** so the 5 calls per bit from `readBit` and `readBitIntensity` collapse to inline arithmetic + a single pixel read each. (Previously defined out-of-line in the .cpp; even with `-O3` the compiler had to duplicate the body across the two callers, but more importantly the optimization was opaque to readers.)
+2. **`std::floor(x)` → `static_cast<int32_t>(x)`** inside `sampleNearest`. Java's `NearestNeighborPixel_U8.get(x, y)` uses `(int)x` — truncation toward zero — so the cast matches Java's behaviour exactly. `std::floor` differs from `(int)` only for `x ∈ (-1, 0)`, but the subsequent `if (ix < 0) ix = 0` clamp folds both to `0` for those inputs, so the visible output is byte-identical. The cast is faster.
+3. **`image_.at<std::uint8_t>(iy, ix)` → `image_.ptr<std::uint8_t>(iy)[ix]`** inside `sampleNearest`. After clamping we already know `(iy, ix)` are in-bounds; `at()` adds a debug-mode bounds check + computes `step.p[0] * iy` per call which `ptr<>` doesn't.
+4. **`readBitIntensity`**: replace 5× `push_back(...)` with one `intensity.resize(base + 5)` + 5 indexed writes via `intensity.data() + base`. The caller (`readBitIntensityAndThresholdDownRight`) `reserve()`s the full `5 * locationBits.size()` capacity upfront, so the resize is non-allocating; the win is collapsing 5 capacity-checks + 5 size-increments into 1 each. API contract is unchanged — still appends 5 floats per call.
+5. Removed unused `<cmath>` include from the .cpp (no more `std::floor`).
+
+### Parity
+
+| metric                        | pre `23c1327` | post (this commit) |
+|-------------------------------|--------------:|-------------------:|
+| Aggregate decode rate         |        74.40% |             74.40% |
+| Java baseline                 |        74.40% |             74.40% |
+| Per-category decode rates     |             — | byte-identical to cycle 3 |
+| Unit tests                    |       421/421 |            421/421 |
+
+`tools/cli/run_regression.sh` PASSes byte-identically; every category's decode rate matches the cycle-3 number. No drift in any accepted residual.
+
+### Performance (best of 3 runs)
+
+| category      | java_ms | c3_best (`23c1327`) | c4_best (this) | C++/Java c3 | C++/Java c4 |
+|---------------|--------:|---------------------:|----------------:|------------:|------------:|
+| blurred       |   760.1 |               2534.4 |          1906.5 |       3.33× |       2.51× |
+| bright_spots  |  1458.5 |              17061.1 |         12768.1 |      11.70× |       8.75× |
+| brightness    |  1011.4 |               7098.2 |          5256.8 |       7.02× |       5.20× |
+| close         |   762.1 |               2508.1 |          1875.9 |       3.29× |       2.46× |
+| curved        |   803.0 |               5597.4 |          4166.9 |       6.97× |       5.19× |
+| damaged       |   207.4 |                804.8 |           599.5 |       3.88× |       2.89× |
+| **decoding**  |    69.0 |                 44.7 |            33.0 |       0.65× |   **0.48×** (faster than Java) |
+| glare         |   443.1 |               1648.6 |          1209.0 |       3.72× |       2.73× |
+| high_version  |   331.4 |                727.6 |           546.0 |       2.20× |   **1.65×** |
+| lots          |   744.6 |               1459.7 |          1081.7 |       1.96× |   **1.45×** |
+| monitor       |   436.4 |               1215.3 |           901.3 |       2.78× |       2.07× |
+| nominal       |   382.2 |               1413.9 |          1073.0 |       3.70× |       2.81× |
+| noncompliant  |    62.6 |                140.1 |           106.4 |       2.24× |       1.70× |
+| pathological  |    10.9 |                 15.9 |            12.0 |       1.46× |       1.10× |
+| perspective   |    53.7 |                125.6 |            95.0 |       2.34× |       1.77× |
+| rotations     |   299.6 |                715.7 |           525.9 |       2.39× |       1.76× |
+| shadows       |   168.8 |                428.3 |           318.1 |       2.54× |       1.88× |
+| **TOTAL**     |  8004.8 |              43539.4 |     **32475.1** |   **5.44×** |   **4.06×** |
+
+**Universal speedup**: every category improved by 1.32–1.36× — the change hits the inner-most loop that touches every single bit read. Aggregate decoder time **43.5 s → 32.5 s** (1.34× speedup); ratio **5.44× → 4.06× C++/Java**. The `decoding` category is now **2.1× faster than Java** end-to-end. `bright_spots` and `brightness`, dominated by `cv::findContours` per ADR 02, also improved meaningfully — the per-bit hot path is in *all* categories, not just decode-heavy ones.
+
+### Documentation
+
+- [src/sampler/qr_code_binary_grid_reader.md](src/sampler/qr_code_binary_grid_reader.md): "Sample-and-clamp" rewritten to document the cast/floor equivalence (with the negative-coord proof) and the `inline` + `ptr<>` perf rationale. Added a new section for `readBitIntensity` covering the resize-once optimisation and the API-preserving contract. Added `readBitIntensity` to the read-styles list at the top.
+
+### Regression
+
+- 421/421 unit tests pass.
+- `tools/cli/run_regression.sh`: PASS, aggregate **74.40%** = Java baseline, all 17 categories within their accepted bands. Byte-identical to the cycle-3 close-out state.
+
 ## 2026-05-10 (later¹⁵) — perf+parity(sampler): explicit DLT via `cv::SVD::solveZ` in `computeTransform` — eliminate `cv::findHomography` LM refinement; aggregate parity tightens 74.32% → 74.40%
 
 Cycle 3 of the perf push (post-cycle-1, post-ADR-02). Profile data on `lots`/`high_version` showed `cv::findHomography(method=0)` doing post-DLT iterative Levenberg–Marquardt refinement (`cv::LMSolverImpl::run` → `cv::solve` → `cv::JacobiImpl_<double>` chain). CLAUDE.md and the sampler algorithm doc both claimed `method=0` was "pure DLT, no iterative refinement" — that's incorrect for OpenCV when `npoints > 4`. BoofCV's `GenerateHomographyLinear` → `HomographyDirectLinearTransform` runs **only** DLT (no LM, and `shouldNormalize` is hard-coded `false` in `process()` regardless of the constructor flag, so no Hartley normalisation either). The OpenCV LM refinement was both a perf cost on detection-heavy categories (`lots`, `high_version`) and the source of the residual -0.08pp aggregate parity gap.

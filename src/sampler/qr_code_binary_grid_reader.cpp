@@ -2,7 +2,6 @@
 
 #include "boofcv_qr/qr_code_binary_grid_reader.hpp"
 
-#include <cmath>
 #include <stdexcept>
 
 namespace boofcv_qr {
@@ -60,20 +59,6 @@ void QrCodeBinaryGridReader::gridToImage(double row, double col,
     transformGrid.gridToImage(row, col, pixel);
 }
 
-float QrCodeBinaryGridReader::sampleNearest(double x, double y) const {
-    // BoofCV's `NearestNeighborPixel_U8.get(x, y)` does `(int)x`, `(int)y`
-    // — truncation toward zero — then clamps via the EXTENDED border.
-    // Use std::floor (== truncation for non-negatives, but stable for the
-    // possible-negative coords cv::perspectiveTransform can produce).
-    int32_t ix = static_cast<int32_t>(std::floor(x));
-    int32_t iy = static_cast<int32_t>(std::floor(y));
-    if (ix < 0) ix = 0;
-    if (iy < 0) iy = 0;
-    if (ix >= imageWidth) ix = imageWidth - 1;
-    if (iy >= imageHeight) iy = imageHeight - 1;
-    return static_cast<float>(image_.at<std::uint8_t>(iy, ix));
-}
-
 float QrCodeBinaryGridReader::read(float row, float col) const {
     cv::Point2d pixel;
     transformGrid.gridToImage(row, col, pixel);
@@ -82,19 +67,28 @@ float QrCodeBinaryGridReader::read(float row, float col) const {
 
 void QrCodeBinaryGridReader::readBitIntensity(
     int32_t row, int32_t col, std::vector<float>& intensity) const {
+    // The caller (`readBitIntensityAndThresholdDownRight`) accumulates
+    // 5 floats per call into a single buffer, so we append. Pre-cycle-4
+    // the body issued 5 push_back() calls — each with its own capacity
+    // check + size increment. Replace with a single resize() to grow by
+    // 5 (capacity is already reserved by the caller, so this is a
+    // non-allocating size bump) followed by 5 indexed writes.
     constexpr float center = 0.5f;
-    cv::Point2d pixel;
+    const std::size_t base = intensity.size();
+    intensity.resize(base + 5);
+    float* out = intensity.data() + base;
 
+    cv::Point2d pixel;
     transformGrid.gridToImage(row + center - 0.2, col + center, pixel);
-    intensity.push_back(sampleNearest(pixel.x, pixel.y));
+    out[0] = sampleNearest(pixel.x, pixel.y);
     transformGrid.gridToImage(row + center + 0.2, col + center, pixel);
-    intensity.push_back(sampleNearest(pixel.x, pixel.y));
+    out[1] = sampleNearest(pixel.x, pixel.y);
     transformGrid.gridToImage(row + center, col + center - 0.2, pixel);
-    intensity.push_back(sampleNearest(pixel.x, pixel.y));
+    out[2] = sampleNearest(pixel.x, pixel.y);
     transformGrid.gridToImage(row + center, col + center + 0.2, pixel);
-    intensity.push_back(sampleNearest(pixel.x, pixel.y));
+    out[3] = sampleNearest(pixel.x, pixel.y);
     transformGrid.gridToImage(row + center, col + center, pixel);
-    intensity.push_back(sampleNearest(pixel.x, pixel.y));
+    out[4] = sampleNearest(pixel.x, pixel.y);
 }
 
 int32_t QrCodeBinaryGridReader::readBit(int32_t row, int32_t col) const {
