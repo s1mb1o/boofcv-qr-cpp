@@ -8,6 +8,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <array>
+#include <cfloat>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -16,25 +17,27 @@ namespace boofcv_qr {
 
 namespace {
 
-// Apply a 3x3 projective transform to a single 2D point. Mathematically
-// identical to `cv::perspectiveTransform` over a 1-element CV_64FC2 Mat,
-// but skips the per-call cv::Mat allocation, NAryMatIterator setup, and
-// dispatch overhead which dominate when this is called millions of times
-// per QR scan from `QrCodeBinaryGridReader::readBit` (5 calls per module
-// bit) and `QrCodeAlignmentPatternLocator`. The arithmetic order matches
-// OpenCV's `perspectiveTransform_64f` so output is bit-identical.
+// Apply a 3x3 projective transform to a single 2D point. Bit-identical
+// to `cv::perspectiveTransform` over a 1-element CV_64FC2 Mat on the
+// fast path (`|w| > FLT_EPSILON`), and matches OpenCV's `(0, 0)`
+// zero-fill fallback on the degenerate branch (`|w| <= FLT_EPSILON`).
+// OpenCV's 64f path also gates on FLT_EPSILON (not DBL_EPSILON) and
+// computes the reciprocal once, then multiplies — we mirror both.
+//
+// Skips the per-call cv::Mat allocation, NAryMatIterator setup, and
+// dispatch overhead that dominate when this is hit millions of times
+// per QR scan from `QrCodeBinaryGridReader::readBit` (5 calls per
+// module bit) and `QrCodeAlignmentPatternLocator`.
 inline void applyHomography(const cv::Matx33d& M, double x, double y,
                             cv::Point2d& out) {
-    const double xt = M(0, 0) * x + M(0, 1) * y + M(0, 2);
-    const double yt = M(1, 0) * x + M(1, 1) * y + M(1, 2);
-    const double w  = M(2, 0) * x + M(2, 1) * y + M(2, 2);
-    if (w != 0.0) {
+    const double w = M(2, 0) * x + M(2, 1) * y + M(2, 2);
+    if (std::fabs(w) > FLT_EPSILON) {
         const double iw = 1.0 / w;
-        out.x = xt * iw;
-        out.y = yt * iw;
+        out.x = (M(0, 0) * x + M(0, 1) * y + M(0, 2)) * iw;
+        out.y = (M(1, 0) * x + M(1, 1) * y + M(1, 2)) * iw;
     } else {
-        out.x = xt;
-        out.y = yt;
+        out.x = 0.0;
+        out.y = 0.0;
     }
 }
 

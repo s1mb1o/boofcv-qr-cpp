@@ -1,5 +1,44 @@
 # ChangeLog
 
+## 2026-05-10 (later¹³) — fix(perf): match OpenCV `cv::perspectiveTransform` `FLT_EPSILON` guard + zero-fill on degenerate branch
+
+Codex re-review on `340d038` flagged one real divergence on the `applyHomography` degenerate branch: `cv::perspectiveTransform_64f` gates singular `w` on `|w| > FLT_EPSILON` and zero-fills below that threshold (and uses `FLT_EPSILON` even on the 64f path, not `DBL_EPSILON`); the inline I shipped used `w != 0.0` and propagated NaN through division for tiny-but-nonzero `w`. Fast-path arithmetic is unchanged so per-category parity rates and timings stand from `340d038`, but **the commit message + .md claim "bit-identical at the IEEE-754 level" was overstated** — bit-identical only on the fast path. Mechanical fix-up.
+
+### Fix
+
+[src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp): three-line code change + `<cfloat>` include. The new `applyHomography` body:
+
+```cpp
+const double w = M(2,0)*x + M(2,1)*y + M(2,2);
+if (std::fabs(w) > FLT_EPSILON) {
+    const double iw = 1.0 / w;
+    out.x = (M(0,0)*x + M(0,1)*y + M(0,2)) * iw;
+    out.y = (M(1,0)*x + M(1,1)*y + M(1,2)) * iw;
+} else {
+    out.x = 0.0;
+    out.y = 0.0;
+}
+```
+
+Two findings rolled into the rewrite:
+1. **`FLT_EPSILON` (not `DBL_EPSILON`) is OpenCV's gate** even on `perspectiveTransform_64f`. Mirrored.
+2. **Numerator multiplication by `iw` only happens after the gate.** Earlier code computed `xt`/`yt` numerators unconditionally then branched. OpenCV computes the reciprocal once and multiplies; we now mirror that order, which is what makes the degenerate-branch outputs bit-match OpenCV's `(0, 0)` zero-fill rather than producing the un-normalised numerator.
+
+### Documentation tightening
+
+[src/sampler/qr_code_binary_grid_to_pixel.md](src/sampler/qr_code_binary_grid_to_pixel.md): replaced the overstated "bit-identical at the IEEE-754 level" line with: "Bit-identical to `cv::perspectiveTransform_64f` on the fast path (`|w| > FLT_EPSILON`); matches OpenCV's `(0, 0)` zero-fill fallback on the degenerate branch where `|w| ≤ FLT_EPSILON`. Degenerate inputs are unreachable on plausible QR finder-pattern homographies (`w` is O(1) for valid detections); the guard exists for parity with OpenCV, not because it fires in practice." Same tightening applied to the "Why this approach" section.
+
+### Parity (must match `bda1650` / `340d038` exactly)
+
+- Aggregate decode rate **74.32%** unchanged.
+- Per-category rates byte-identical to step-9b close-out table (re-verified by full regression run).
+- 421/421 unit tests pass.
+- `tools/cli/run_regression.sh` → `PASS: no new regressions; all out-of-band categories are documented residuals within their accepted-tolerance bands.`
+
+### Timings — not re-measured
+
+Per team-lead direction, perf re-run skipped: the fast path (which is the only branch hit on real inputs) is unchanged, so the `340d038` numbers stand — decoder-only sum 45.9s, high_version 750ms, 1.62× aggregate speedup vs pre-9b-perf.
+
 ## 2026-05-10 (later¹²) — perf(sampler): inline single-point homography in `QrCodeBinaryGridToPixel` — 1.62× decoder-only speedup, 19.6× on `high_version`
 
 First profile-driven perf cycle after step 9b parity close-out. `sample` on the canonical worst-case image (`detection/high_version/image029.jpg`, 3525×1317, prior C++ time 1304ms vs Java 30ms = **42.7×**) showed >70% of CPU time spent in `cv::Mat::create` / `cv::Mat::release` / `cv::StdMatAllocator::{allocate,deallocate}` chains, all reached from `boofcv_qr::QrCodeBinaryGridToPixel::gridToImage`. That function (and its sibling `imageToGrid`) was implemented as `cv::perspectiveTransform` on a freshly-constructed 1-element `cv::Mat<Point2d>` — heap-allocating per call. `QrCodeBinaryGridReader::readBit` calls `gridToImage` 5× per module bit, so for a Version-40 QR each speculative read costs ~156k mat allocations.
