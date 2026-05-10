@@ -1,5 +1,45 @@
 # ChangeLog
 
+## 2026-05-11 (later²) — docs(perf): close out LinearContour port; ADR 05 records cycle A+B + residual re-attribution (cycle C)
+
+Cycle C of the LinearContour port — pure documentation + two small code fix-ups gathered from cycle B's review. **This is the close-out commit for the LinearContour port.**
+
+### ADR 05 — new
+
+- [docs/decisions/05_perf_linear_contour_label_chang2004_port.md](docs/decisions/05_perf_linear_contour_label_chang2004_port.md) — banks the cycle A + cycle B architectural rework. Covers the cycle outcomes, the algorithmic substitution (`LinearContourLabelChang2004` for upstream Java's `LinearExternalContours` variant — dataset-PASS-justified), the connect-rule deviation (`EIGHT` for the port vs upstream Java's `FOUR` — measured: FOUR drops aggregate parity -0.79pp on `qrcodes_v3`, EIGHT holds byte-identical), the parity-residual re-attribution (`monitor` / `glare` did NOT close after `cv::findContours` retirement; root cause re-attributed upstream to `ThresholdBlockOtsu` binarizer divergence), the 6-state perf progression, and the "when to revisit" conditions (next move for `monitor` / `glare` is a binarizer audit, NOT another contour-stage rework).
+
+### ADR 01 — status updated
+
+- [docs/decisions/01_cv_findcontours_substitution.md](docs/decisions/01_cv_findcontours_substitution.md) — status `Accepted` → **`Superseded by ADR 05`**. ADR 01's substitution decision is reversed in the polygon path; its parity-cost prediction was partially wrong (re-attribution disclosed inline).
+
+### Algorithm-doc updates
+
+- [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md) Performance section: 5-state → **6-state perf progression** (adds cycle B = `c21926e`); replaced per-category timing table with post-`c21926e` mean-ms numbers (decoder mean ms 57.06 → 24.55, -57%; wallclock 36.9 s → 18.6 s, 1.99× speedup); replaced "Why the remaining gap is what it is — and why we stop here" with a post-cycle-B "Why the remaining gap is what it is" / "When future perf cycles make sense" pair that names the binarizer as the next target. Residuals section: `monitor` / `glare` re-attribution inlined.
+- [src/binary/linear_contour_label_chang2004.md](src/binary/linear_contour_label_chang2004.md): sentinel-arithmetic audit count corrected from 4 → 5 sites (cycle B review caught the missed `scanForOne` site — substantive conclusion unchanged); added `vs. LinearExternalContours` and `Connect rule — EIGHT (port) vs FOUR (upstream Java)` sections.
+
+### Code fix-ups (cycle B review findings)
+
+- [include/boofcv_qr/polygon/detect_polygon_from_contour.hpp](include/boofcv_qr/polygon/detect_polygon_from_contour.hpp) `process()` doc comment tightened (finding #2): the prior "CV_8UC1 0/1 or 0/255 (any non-zero counts as foreground)" claim is no longer accurate — the new labeller tests pixels strictly against `1`. Comment now reads "CV_8UC1 and MUST use the 0/1 convention" with the explicit failure mode (non-1 foreground silently produces no contours). Also dropped the stale "cv::findContours mutates its input" cloning rationale — the new labeller copies into its own scratch.
+- [src/polygon/detect_polygon_from_contour.cpp](src/polygon/detect_polygon_from_contour.cpp) (finding #3): dropped the redundant `if (contourSize > maximumContourPixels_) continue;` downstream check. Java's `DetectPolygonFromContour.findCandidateShapes` only enforces the lower bound; the upper cap is enforced upstream inside `LinearContourLabelChang2004` (we push `maxContour` into the labeller in `process()`), so over-cap contours come back as empty externals and are skipped in `buildContoursFromPort`. The cached `maximumContourPixels_` recomputes only on image-shape change, so a downstream `>` check would interact badly if `setMaximumContour()` is raised between same-sized frames.
+
+### Test results
+
+- Build clean Release `-O3 -DNDEBUG` under `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+- 428/428 unit tests pass.
+- `tools/cli/run_regression.sh` PASS — aggregate +0.00pp byte-identical to Java baseline, every category in-band or matching its accepted-residual band.
+
+### Cycle close-out summary
+
+| cycle | commit | summary |
+|---|---|---|
+| A | `d3ef6cf` | port + 7 JUnit-mirror tests + algorithm doc; NOT wired (1306 LOC) |
+| B | `c21926e` | wired into `DetectPolygonFromContour`; cv::findContours retired; 770f210 reversal+rotate workaround removed; 1.99× wallclock speedup; parity held |
+| C | this commit | ADR 05; ADR 01 superseded; perf section 6-state; 2 small code fix-ups from cycle B review |
+
+LinearContour port complete. `cv::findContours` retired from the polygon path. Next contour-stage work (if any) would target the binarizer per ADR 05's "When to revisit".
+
+---
+
 ## 2026-05-11 (later) — port: wire LinearContourLabelChang2004 into DetectPolygonFromContour, retire cv::findContours from polygon path (cycle B)
 
 Cycle B of the LinearContour port. The polygon detector now consumes the verbatim BoofCV port `LinearContourLabelChang2004` (cycle A, commit `d3ef6cf`) in place of the prior `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` + per-contour reversal + topmost-leftmost rotation workaround that landed at `770f210` (step 7b/2).

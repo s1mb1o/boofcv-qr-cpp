@@ -379,16 +379,18 @@ void DetectPolygonFromContour::findCandidateShapes(const cv::Mat& /*gray*/) {
     for (std::size_t i = 0; i < contours_.size(); i++) {
         Contour& c = contours_[i];
 
-        // Mirror Java's BinaryContourFinder pre-filter: discard
-        // contours below the min OR above the max cap. The upper cap
-        // is correctness-relevant — without it, page borders / UI
-        // chrome blobs produce phantom 4-corner candidates that pass
-        // every downstream check including the QR finder's 1:1:3:1:1
-        // gate.
+        // Mirror Java's `DetectPolygonFromContour.findCandidateShapes`
+        // pre-filter: discard contours below the min. The upper cap
+        // is enforced upstream inside `LinearContourLabelChang2004`
+        // (we push `maxContour` into the labeller in `process()`,
+        // mirroring Java's `BinaryContourFinder.setMaxContour`); over-
+        // cap contours come back as empty externals and are skipped
+        // by `buildContoursFromPort`. A downstream `>` check here
+        // would diverge from Java AND interact badly with the cached
+        // `maximumContourPixels_` (only refreshed on image-shape
+        // change), so it has been removed.
         int32_t contourSize = static_cast<int32_t>(c.external.size());
         if (contourSize < minimumContourPixels_)
-            continue;
-        if (contourSize > maximumContourPixels_)
             continue;
         float edgeInside = -1, edgeOutside = -1;
 

@@ -1,8 +1,8 @@
 # ADR 01: Use `cv::findContours` instead of porting `LinearContourLabelChang2004`
 
 **Date:** 2026-05-10
-**Status:** Accepted
-**Deciders:** Project at start (CLAUDE.md "OpenCV substitution policy"); empirical-cost data captured at step-9b close-out.
+**Status:** **Superseded by [ADR 05](05_perf_linear_contour_label_chang2004_port.md)** (2026-05-11). The substitution decision is reversed in the polygon path: `cv::findContours` has been retired and replaced by a verbatim port of `LinearContourLabelChang2004` (cycles A + B + C of the LinearContour port). ADR 01's parity-cost prediction was also partially wrong — the `monitor` -11.76pp and `glare` -3.77pp residuals did **not** close after the substitution was retired, which re-attributes them upstream to `ThresholdBlockOtsu` (binarizer divergence). See ADR 05 § "Parity residual re-attribution".
+**Deciders:** Project at start (CLAUDE.md "OpenCV substitution policy"); empirical-cost data captured at step-9b close-out. Reversed by user decision after ADR 04 close-out.
 
 ---
 

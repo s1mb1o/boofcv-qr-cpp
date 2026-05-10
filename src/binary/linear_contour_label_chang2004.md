@@ -58,6 +58,24 @@ This is the convention `PolylineSplitMerge` was designed for. The C++ port prese
 
 ## Why this approach over alternatives
 
+### vs. `LinearExternalContours` (the actual upstream Java wiring)
+
+A subtle disclosure caught at cycle B review: BoofCV's `FactoryShapeDetector.polygonContour()` wires `BinaryContourFinderLinearExternal` around `boofcv.alg.filter.binary.LinearExternalContours(ConnectRule.FOUR)`, **not** `LinearContourLabelChang2004` directly. Cycle A's JUnit suite proved parity against `TestLinearContourLabelChang2004.java`; the actual QR-path upstream is a sister algorithm.
+
+`LinearExternalContours` is class-level-documented in upstream as "follows a similar pattern to other finding/tracing algorithms from [Chang 2004]" — algorithmically related, external-only, with its own `0xFF`/`-2` sentinel scheme. The C++ port substitutes the full `LinearContourLabelChang2004` labeller and configures `setSaveInternalContours(false)` for the QR finder-pattern path (matching the external-only behaviour).
+
+Empirical justification: cycle B's dataset regression on `qrcodes_v3` (562 images / 1258 GT) is **+0.00pp byte-identical to Java baseline** across every category. Substituting `LinearExternalContours` for `LinearContourLabelChang2004` would add ~250 LOC of additional algorithmic port for no measured parity gain. See `docs/decisions/05_perf_linear_contour_label_chang2004_port.md` for the full justification chain.
+
+If a future cycle observes a parity regression that traces to internal contour handling, that's the signal to port `LinearExternalContours` separately.
+
+### Connect rule — EIGHT (port) vs FOUR (upstream Java)
+
+The polygon detector wires this stage with `ConnectRule::EIGHT`. Upstream Java's `FactoryShapeDetector.polygonContour` wires `LinearExternalContours(ConnectRule.FOUR)`. This is a deliberate deviation.
+
+Cycle C measured the FOUR-connect alternative on the full `qrcodes_v3` regression set: aggregate -0.79pp from Java baseline, with `close` and `damaged` falling out of the ±2pp band (close -2.50pp, damaged +2.33pp) and four accepted-residual categories drifting past their bands (glare -9.43pp vs -3.77, monitor -5.88 vs -11.76, noncompliant -3.85 vs +3.85, high_version -2.70 vs +2.70). EIGHT happens to match the locked Java baseline on this dataset better than FOUR; the `cv::findContours` pre-cycle-B path was 8-connected, so the locked baseline numbers were captured against 8-connectivity end-to-end.
+
+This is documented in ADR 05 "Connect rule choice"; revisiting FOUR is conditional on future binarizer or downstream changes making the relative comparison different.
+
 ### vs. `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)`
 
 OpenCV's `findContours` is the obvious substitute and is what BoofCV C++'s sister-port projects use. We started there. Empirically (see ADR 01) it produces:
@@ -92,14 +110,17 @@ Chang 2004 does both in a single raster scan, in linear time. The classic two-pa
 
 ### Sentinel arithmetic audit (per cycle A review checklist)
 
-The team-lead's checklist specifically flagged the `-1`-vs-`0xFF` sentinel. Audit results:
+The team-lead's checklist specifically flagged the `-1`-vs-`0xFF` sentinel. Audit results — 5 byte-access sites total:
 
-- `ContourTracer::checkOne` writes the marker, then tests `data[idx] == 1` on subsequent reads. Equality with `1` is bit-identical between signed `-1` and unsigned `0xFF`.
-- `LinearContourLabelChang2004::process` step-1 tests `binaryData[indexIn - binaryStride] != 1`. Same: bit-identical inequality with `1`.
-- `LinearContourLabelChang2004::process` step-2 tests `binaryData[indexIn + binaryStride] == 0`. The pixel below has never been written by the tracer (a step-2 dispatch only happens when the pixel below is *background*, not a marker); the equality test is on raw input data only.
-- `scanForOne` tests `data[index] != 1`. Bit-identical.
+1. `ContourTracer::checkOne` (`contour_tracer.cpp:182`) tests `binaryData[index] == 1`. Equality with `1` is bit-identical between signed `-1` and unsigned `0xFF`.
+2. `ContourTracer::checkOne` (`contour_tracer.cpp:186`) writes the marker `binaryData[index] = static_cast<uint8_t>(0xFF)`. Pure write — no comparison.
+3. `LinearContourLabelChang2004::process` step-1 (`linear_contour_label_chang2004.cpp:102`) tests `binaryData[indexIn - binaryStride] != 1`. Inequality with `1`; bit-identical.
+4. `LinearContourLabelChang2004::process` step-2 (`linear_contour_label_chang2004.cpp:108`) tests `binaryData[indexIn + binaryStride] == 0`. The pixel below has never been written by the tracer (a step-2 dispatch happens when the pixel below is *background*, not a marker); the equality test is on raw input data only.
+5. `LinearContourLabelChang2004::scanForOne` (`linear_contour_label_chang2004.cpp:129`) tests `data[index] != 1`. Inequality with `1`; bit-identical.
 
 **No `<0`, `>=0`, `+1`, or signed arithmetic on a marker pixel anywhere in the trace path.** Safe.
+
+*Cycle A's audit doc originally counted 4 sites; cycle B's review correctly noted the count is 5 (the cycle-A doc lumped `checkOne`'s read and write into one bullet and missed counting `scanForOne` as the fifth distinct location). Substantive conclusion is unchanged — all 5 sites are equality-only.*
 
 ## Tunable parameters
 

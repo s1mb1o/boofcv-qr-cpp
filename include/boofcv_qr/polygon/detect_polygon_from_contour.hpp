@@ -286,9 +286,14 @@ public:
     DetectPolygonFromContour();
 
     // Run the detection pipeline. `gray` is `CV_8UC1`. `binary` is
-    // `CV_8UC1` 0/1 or 0/255 (any non-zero counts as foreground = dark
-    // module per CLAUDE.md). `binary` is cloned internally because
-    // `cv::findContours` mutates its input.
+    // `CV_8UC1` and MUST use the 0/1 convention from CLAUDE.md
+    // "Binary image convention" (foreground = dark module = value 1).
+    // The Chang2004 contour labeller's `checkOne` and `scanForOne`
+    // helpers test pixels strictly against `1`; non-1 foreground
+    // values (e.g. `255`) silently produce no contours. Callers must
+    // ensure the binarizer emits `0/1`, not `0/255`. `binary` is
+    // copied into the labeller's internal 1-pixel-bordered scratch
+    // buffer — the caller's `cv::Mat` is not mutated.
     void process(const cv::Mat& gray, const cv::Mat& binary);
 
     // Detection results. The reference is invalidated by the next
@@ -462,6 +467,16 @@ private:
     // `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` call site —
     // see `src/binary/linear_contour_label_chang2004.md` and ADR 01).
     // Connect rule EIGHT matches `ConfigQrCode.polygon.detector.contourRule`.
+    // Connect rule: `EIGHT` is a deliberate deviation from upstream
+    // Java, which wires `LinearExternalContours(ConnectRule.FOUR)` via
+    // `FactoryShapeDetector.polygonContour` →
+    // `FactoryBinaryContourFinder.linearExternal()`. See
+    // `docs/decisions/05_perf_linear_contour_label_chang2004_port.md`
+    // for the empirical justification (FOUR drops aggregate parity
+    // -0.79pp on `qrcodes_v3`; EIGHT keeps the +0.00pp byte-identical
+    // baseline that the cv::findContours path achieved). Cycle B's
+    // dataset PASS was at EIGHT; reverting to FOUR would be a real
+    // regression even though it would be more Java-source-faithful.
     LinearContourLabelChang2004 contourLabeller_{ConnectRule::EIGHT};
     // Scratch label image — `CV_32SC1`, same dims as the input binary,
     // re-allocated lazily by `LinearContourLabelChang2004::process`.

@@ -302,15 +302,11 @@ for two distinct, well-understood reasons. Future engineers staring at
 the per-category table should read this section before assuming any of
 the residuals is a fixable bug.
 
-### 1. `monitor` -11.76pp + `glare` -3.77pp — `cv::findContours` substitution cost
+### 1. `monitor` -11.76pp + `glare` -3.77pp — **`ThresholdBlockOtsu` binarizer divergence** (re-attributed in ADR 05)
 
-Both residuals trace to the same root cause: the project uses OpenCV's
-`cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)` instead of porting
-BoofCV's `LinearContourLabelChang2004` (per CLAUDE.md "Replace with
-OpenCV"). Both contour extractors emit ~the same boundary, but the
-**per-pixel sequence differs at the boundary**, especially around
-diagonal moves. Binarised images agree to within ~1% per-pixel diff;
-the divergence is downstream of binarisation.
+**Re-attribution note (2026-05-11).** ADR 01 originally diagnosed both residuals as a `cv::findContours` per-pixel-encoding cost. Cycles A + B of the LinearContour port (commits `d3ef6cf` + `c21926e`) retired `cv::findContours` from the polygon path and replaced it with a verbatim port of `LinearContourLabelChang2004`. The residuals did **not** close — they remain at exactly -11.76pp / -3.77pp post-cycle-B, byte-identical to pre-cycle-B. Combined with cycle A's JUnit proof that the new port emits Java-identical contours on identical binary inputs, this isolates the root cause upstream of the contour stage: **the binarizer (`ThresholdBlockOtsu`) produces a binary image that differs from Java's by ~0.6–1.9% per pixel** (ADR 01's own diagnostic figure). Those pixel differences propagate into the contour pixel sequence regardless of which extractor processes them, then into the downstream `ContourEdgeIntensity` and `PolylineSplitMerge` stages. See [ADR 05 § "Parity residual re-attribution"](../../docs/decisions/05_perf_linear_contour_label_chang2004_port.md) for the full causal-chain analysis.
+
+The mechanism descriptions below (sample-position drift on `monitor`, corner-finder rejection on `glare`) are still accurate; ADR 01 was correct about the *propagation paths* but wrong about the upstream origin. The corrected causal chain is `ThresholdBlockOtsu divergence → contour pixel sequence → edge-intensity sample positions / corner-finder convex check → finder/polygon-fit rejection`.
 
 Empirical breakdown:
 
@@ -349,18 +345,11 @@ tipping-point thresholds amplify the divergence; non-borderline images
 
 **Why we accept this residual:**
 
-- CLAUDE.md "Replace with OpenCV" explicitly approves
-  `cv::findContours` for contour extraction. This is a project-level
-  architectural decision made at start, not a porting oversight.
-- Cost is 5 borderline images out of 562 → ~0.4pp aggregate impact.
-  Aggregate is already at -0.08pp from Java; closing these residuals
-  buys 0.4pp at high cost.
-- Alternatives rejected: see [`docs/decisions/01_cv_findcontours_substitution.md`](../../docs/decisions/01_cv_findcontours_substitution.md).
+- The contour stage is now provably parity-clean (cycle A JUnit proof). The remaining divergence is in `ThresholdBlockOtsu` — a verbatim BoofCV port, forbidden to reshape under CLAUDE.md "Verbatim vs idiomize" without a parity audit and a structural change.
+- Cost is 5 borderline images out of 562 → ~0.4pp aggregate impact. Aggregate is at +0.00pp byte-identical to Java; closing the residual requires a binarizer audit, not a quick fix.
+- Alternatives historically rejected: see [`docs/decisions/01_cv_findcontours_substitution.md`](../../docs/decisions/01_cv_findcontours_substitution.md) (now superseded). Future revisit path: see [`docs/decisions/05_perf_linear_contour_label_chang2004_port.md`](../../docs/decisions/05_perf_linear_contour_label_chang2004_port.md) "When to revisit" — the next move is a `ThresholdBlockOtsu` per-pixel parity audit on the failing images.
 
-When a downstream consumer's input distribution makes monitor/glare-
-style images dominant (e.g. shelf-photo scenarios with reflective
-glare), the ADR spells out the conditions under which we'd revisit
-the substitution.
+When a downstream consumer's input distribution makes monitor/glare-style images dominant (e.g. shelf-photo scenarios with reflective glare), ADR 05's revisit conditions name the binarizer audit as the path forward.
 
 ### 2. Small-N "+" outliers — `high_version` +2.70pp, `perspective` +2.86pp, `noncompliant` +3.85pp, `bright_spots` +2.06pp
 
@@ -424,20 +413,26 @@ also has a small cv::findContours-interaction component).
 ## Performance
 
 After parity close-out the C++ port ran a profile-driven perf push.
-The push ran in three episodes — ADR 02 stopped at the cycle-1 win;
+The push ran in four episodes — ADR 02 stopped at the cycle-1 win;
 ADR 03 resumed for two more profile-confirmed cycles; ADR 04 added
-one more under a stricter cluster-coverage gate. This section captures
-the **as-shipped state** at the end of ADR 04, plus the five-state
-perf progression and the rationale for why each cycle landed where it
-did. The full per-cycle reasoning lives in the ADRs:
+one more under a stricter cluster-coverage gate; **ADR 05 banked one
+final architectural rework (port `LinearContourLabelChang2004`,
+retire `cv::findContours`) that ADR 04 had explicitly deferred as the
+only lever remaining.** This section captures the **as-shipped state**
+at the end of ADR 05, plus the six-state perf progression and the
+rationale for why each cycle landed where it did. The full per-cycle
+reasoning lives in the ADRs:
 [ADR 02](../../docs/decisions/02_perf_stop_after_cycle1.md) (cycle 1
 banked, cycle 2 stopped),
 [ADR 03](../../docs/decisions/03_perf_findhomography_and_sampler_cycles.md)
-(cycles 3 + 4 banked, cluster-coverage gate introduced), and
+(cycles 3 + 4 banked, cluster-coverage gate introduced),
 [ADR 04](../../docs/decisions/04_perf_cycle5_gridToImage_inline.md)
-(cycle 5 banked under the gate; surgical-fix floor for v1).
+(cycle 5 banked under the gate; surgical-fix floor for v1), and
+**[ADR 05](../../docs/decisions/05_perf_linear_contour_label_chang2004_port.md)
+(architectural rework: `LinearContourLabelChang2004` port — closes
+ADR 01's substitution).**
 
-### The four banked optimisations
+### The five banked optimisations
 
 **Cycle 1 — inlined single-point homography (commits `340d038` +
 `bfbc2e2`).** `QrCodeBinaryGridToPixel::imageToGrid` / `gridToImage`
@@ -506,90 +501,96 @@ cycle 3, would bloat call sites if inlined). Same arithmetic, same
 deltas: `lots/image001` 174.1 → 166.3 ms/iter (-4.5%);
 `high_version/image029` 61.1 → 56.7 ms/iter (-7.2%). Aggregate
 regression-set delta -0.43% — **cycle 5 is the surgical-fix floor for
-v1**.
+v1 (until ADR 05 banks the architectural rework)**.
 
-### Five-state perf progression
+**Cycle B — `LinearContourLabelChang2004` wired in; `cv::findContours`
+retired (`c21926e`).** ADR 04 had named this as the only architectural
+lever remaining: port BoofCV's `LinearContourLabelChang2004` and swap
+the polygon path's `cv::findContours(RETR_CCOMP, CHAIN_APPROX_NONE)`
+call site. ADRs 01–04 had all deferred it. Cycle A (commit `d3ef6cf`)
+shipped the verbatim port + 7 JUnit-mirror tests + algorithm doc, NOT
+wired in (1306 LOC). Cycle B (commit `c21926e`) replaced the
+`cv::findContours` call with `LinearContourLabelChang2004::process(...)`
+and removed the 770f210 reversal+rotation post-processing workaround
+(no longer needed — the port emits BoofCV-native winding + start
+pixel directly). Aggregate parity **held at +0.00pp byte-identical to
+Java**; every per-category decode rate is byte-identical to
+pre-cycle-B. **Per-image decoder mean ms dropped from 57.06 → 24.55
+(-57%); total dataset wallclock 36.9 s → 18.6 s (1.99× speedup).** The
+three cv::findContours-dominated categories collapsed exactly as
+predicted: `bright_spots` -81%, `brightness` -66%, `curved` -64%. The
+`monitor` -11.76pp and `glare` -3.77pp parity residuals from ADR 01
+did **not** close — re-attributed to upstream binarizer divergence in
+ADR 05.
 
-| commit    | label                                            | decoder-only sum | C++/Java | Δ vs prior |
-|-----------|--------------------------------------------------|-----------------:|---------:|-----------:|
-| `bda1650` | pre-perf (parity ship)                           |          ~74.2 s |    9.27× |          — |
-| `bfbc2e2` | cycle 1 — `perspectiveTransform` inline          |           45.9 s |    5.73× |      1.62× |
-| `23c1327` | cycle 3 — explicit DLT via `cv::SVD::solveZ`     |           43.5 s |    5.44× |  1.05× + parity 0.00pp |
-| `ea93854` | cycle 4 — sampler hot path                       |           32.5 s |    4.05× |      1.34× |
-| `7063ec2` | cycle 5 — `gridToImage` / `imageToGrid` inline   |        **32.1 s**|**4.01×** |      1.01× |
+### Six-state perf progression
+
+| commit    | label                                                | decoder-only sum | C++/Java |  Δ vs prior |
+|-----------|------------------------------------------------------|-----------------:|---------:|------------:|
+| `bda1650` | pre-perf (parity ship)                                |          ~74.2 s |    9.27× |          — |
+| `bfbc2e2` | cycle 1 — `perspectiveTransform` inline               |           45.9 s |    5.73× |       1.62× |
+| `23c1327` | cycle 3 — explicit DLT via `cv::SVD::solveZ`          |           43.5 s |    5.44× |   1.05× + parity 0.00pp |
+| `ea93854` | cycle 4 — sampler hot path                             |           32.5 s |    4.05× |       1.34× |
+| `7063ec2` | cycle 5 — `gridToImage` / `imageToGrid` inline         |           32.1 s |    4.01× |       1.01× |
+| **`c21926e`** | **cycle B — `LinearContourLabelChang2004` wired in** | **~16.1 s**¹ | **≈2.0×** | **≈2.0×** |
+
+¹ Inferred from end-to-end wallclock: pre 36.9 s → post 18.6 s on the regression script; per-image decoder mean dropped from 57.06 ms to 24.55 ms (-57%). The decoder-only sum in the same proportion would land at ~16.1 s vs the post-cycle-5 32.1 s. Re-measurement with the `qr_scan_iterated` benchmark harness is straightforward if a more precise number is needed.
 
 Two parity states banked alongside:
 
 - pre-cycle-3: 74.32% (-0.08pp from Java).
 - post-cycle-3: **74.40%** byte-identical to Java baseline. Held
-  through cycle 4.
+  through cycles 4, 5, A, and B.
 
-### Final per-category timing (post-`7063ec2`)
+### Final per-category timing (post-`c21926e`)
 
-Same 562-image regression set, decoder-only sums per category
-(release `-O3` run); `ratio` is C++/Java.
+Same 562-image regression set, mean ms per image from the regression script's `score.json` (release `-O3 -DNDEBUG` run). The pre-cycle-B column is the post-`7063ec2` state at ADR 04 close-out; the post-cycle-B column is HEAD as of cycle B.
 
-| category      | java_ms | cpp_ms | ratio (C++/Java) |
-|---------------|--------:|-------:|-----------------:|
-| blurred       |   760.1 | 1859.8 |            2.45× |
-| bright_spots  |  1458.5 |12611.2 |            8.65× |
-| brightness    |  1011.4 | 5235.6 |            5.18× |
-| close         |   762.1 | 1858.7 |            2.44× |
-| curved        |   803.0 | 4094.8 |            5.10× |
-| damaged       |   207.4 |  601.8 |            2.90× |
-| **decoding**  |    69.0 |   32.5 |       **0.47×** (2.1× faster than Java) |
-| glare         |   443.1 | 1205.5 |            2.72× |
-| high_version  |   331.4 |  526.9 |            1.59× (was 44.4× pre-cycle-1) |
-| lots          |   744.6 | 1053.0 |            1.41× |
-| monitor       |   436.4 |  886.7 |            2.03× |
-| nominal       |   382.2 | 1032.5 |            2.70× |
-| noncompliant  |    62.6 |  103.7 |            1.66× |
-| pathological  |    10.9 |   13.3 |            1.21× |
-| perspective   |    53.7 |   95.8 |            1.78× |
-| rotations     |   299.6 |  528.0 |            1.76× |
-| shadows       |   168.8 |  327.1 |            1.94× |
-| **SUM**       |  8004.8 |32067.0 |        **4.01×** |
+| category      | pre cycle B (ms) | post cycle B (ms) | delta | note |
+|---------------|-----------------:|-----------------:|------:|------|
+| bright_spots  |          394.10 |             73.39 |  **-81%** | cv::findContours was 95% on this cluster (ADR 04) |
+| brightness    |          186.99 |             64.06 |  **-66%** | same |
+| curved        |           81.90 |             29.25 |  **-64%** | same |
+| lots          |          150.43 |            134.24 |   -11% | dominated by per-QR DLT (cycle 3) |
+| blurred       |           41.33 |             26.38 |   -36% |       |
+| close         |           46.47 |             38.04 |   -18% |       |
+| monitor       |           52.16 |             41.90 |   -20% | parity residual upstream of contour stage |
+| shadows       |           23.36 |             20.91 |   -10% |       |
+| nominal       |           15.88 |             12.00 |   -24% |       |
+| damaged       |           16.27 |             11.96 |   -27% |       |
+| rotations     |           12.00 |             11.83 |    -1% | near-noise; not contour-bound |
+| noncompliant  |            6.48 |              7.27 |   +12% | small absolute numbers, near noise |
+| high_version  |           15.97 |             17.83 |   +12% | small absolute numbers, near noise |
+| glare         |           24.11 |             18.75 |   -22% |       |
+| pathological  |            0.58 |              0.55 |    -5% | trivial baseline |
+| perspective   |            2.74 |              2.89 |    +5% | small absolute |
+| decoding      |            1.25 |              1.54 |   +23% | tiny baseline, noise-dominated |
+| **AGGREGATE** |       **57.06** |         **24.55** | **-57%** |   |
 
-End-to-end wall clock (load + decode + JSON serialise, 562 images):
-**~37.7 s** C++ vs **22.7 s** Java. Decoder-only sum: **32.1 s** vs
-**8.0 s**.
+End-to-end wall clock (load + decode + JSON serialise, 562 images): **~18.6 s** C++ vs **22.7 s** Java pre-cycle-B-reference (Java side has not been re-measured post-cycle-B; the Java number remains the same locked baseline). The C++ side is now within ~80% of Java's end-to-end wallclock; the prior 4.01× decoder-only ratio is reshaped to roughly ~2× C++/Java with the cv::findContours retirement.
 
-### Why the remaining gap is what it is — and why we stop here
+### Why the remaining gap is what it is
 
-The two slowest categories (`bright_spots` 8.75×, `brightness` 5.20×)
-are exactly the noisy-binarisation categories ADR 02 pinned to
-`cv::findContours` time — **~95% of decode CPU time inside
-`cv::findContours`** on those images, specifically
-`cv::ContourScanner_::findFirstBoundingContour` plus the surrounding
-`icvFetchContourEx` / `findNextX` / `contourScan` / per-contour
-storage push_back / tree traversal. Not in our wrapper code, not in
-any pixel-access pattern we control. Cycles 3, 4, and 5 didn't change
-those numbers materially (each brought a per-bit-loop speedup that all
-categories benefit from, including these — `bright_spots` dropped
-from 11.65× → 8.75× → 8.65× across the cycles for the same reason all
-others did).
+ADR 05 banked the architectural rework ADR 04 had named: port `LinearContourLabelChang2004` (cycle A, `d3ef6cf`) and wire it in (cycle B, `c21926e`). `cv::findContours` is fully retired from the polygon path.
 
-Cycle 5's four-cluster profile (per ADR 03's gate, executed in ADR 04)
-confirmed the surgical-fix floor: the new top hot spots are now either
-ADR-01-locked (`cv::findContours`), parity-load-bearing
-(`cv::SVD::solveZ` from cycle 3's DLT — reverting it would re-open
-the closed -0.08pp parity residual), or verbatim BoofCV ports
-(`ThresholdBlockOtsu` is forbidden to reshape under the
-"Verbatim vs idiomize" rule). None are surgical-fixable for v1.
+The post-cycle-B state is the cv::findContours-free state. Remaining cost sources, ranked by approximate share:
 
-Cutting `cv::findContours` cost without breaking parity would require
-porting BoofCV's `LinearContourLabelChang2004` — the same
-architectural fork already discussed in ADR 01 (parity) and ADRs
-02–04 (perf). That is a multi-cycle commitment (~600 LOC + tests +
-algo doc + full parity re-validation), not a "one fix,
-profile-confirmed" cycle. **Per ADR 04 the v1 decision is to bank the
-four perf cycles and stop at the surgical-fix floor.**
+- **`ThresholdBlockOtsu`** — verbatim BoofCV port, forbidden to reshape under "Verbatim vs idiomize". Also the source of the upstream binarizer divergence that re-attributed the `monitor` / `glare` residuals in ADR 05.
+- **`cv::SVD::solveZ`** — parity-load-bearing (cycle 3). Reverting would re-open the -0.08pp parity residual cycle 3 closed.
+- **`LinearContourLabelChang2004`** itself (post-cycle-B) — verbatim port, forbidden to reshape. Still meaningfully faster than `cv::findContours` was on the same inputs, which is why bright_spots/brightness/curved collapsed -64-81%.
+- **`PolylineSplitMerge` corner finder** + the per-blob `findCandidateShapes` driver — already on the hot path; further wins would require either a verbatim-rule-violating reshape or a SIMD/threading rework that's out of v1 scope.
 
-Note that porting `LinearContourLabelChang2004` would likely *also*
-clear the `monitor -11.76` and `glare -3.77` parity residuals from
-ADR 01. If a downstream consumer needs sub-Java perf on the noisy
-categories OR sub-Java parity on `monitor`/`glare`, ADRs 01 + 02 + 03
-\+ 04 together justify revisiting the fork.
+None of these are surgical-fixable for v1.
+
+### When future perf cycles make sense
+
+A v2 perf push would need:
+
+- **A fresh four-cluster profile pass** (per ADR 03's cluster-coverage gate) — cycle B substantially reshaped the relative hotspot ordering. The pre-cycle-B "95% of CPU in cv::findContours" finding no longer applies; the new dominant hotspots have not been characterized.
+- **A binarizer parity audit on `ThresholdBlockOtsu`** — this is the only path to closing `monitor` / `glare` after ADR 05. The audit would compare per-block Otsu output between Java and C++ on the failing images and identify the divergence source.
+- **An architectural change** — SIMD, threading, or a v2 algorithm pass. None of these are in v1 scope per CLAUDE.md.
+
+ADRs 01-05 together form the durable record of what was banked, what was deferred, and what would justify revisiting. ADR 05 closes the contour-stage chapter; the next perf-or-parity chapter starts with the binarizer.
 
 ---
 
