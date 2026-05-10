@@ -1,5 +1,57 @@
 # ChangeLog
 
+## 2026-05-10 (later¹⁵) — perf+parity(sampler): explicit DLT via `cv::SVD::solveZ` in `computeTransform` — eliminate `cv::findHomography` LM refinement; aggregate parity tightens 74.32% → 74.40%
+
+Cycle 3 of the perf push (post-cycle-1, post-ADR-02). Profile data on `lots`/`high_version` showed `cv::findHomography(method=0)` doing post-DLT iterative Levenberg–Marquardt refinement (`cv::LMSolverImpl::run` → `cv::solve` → `cv::JacobiImpl_<double>` chain). CLAUDE.md and the sampler algorithm doc both claimed `method=0` was "pure DLT, no iterative refinement" — that's incorrect for OpenCV when `npoints > 4`. BoofCV's `GenerateHomographyLinear` → `HomographyDirectLinearTransform` runs **only** DLT (no LM, and `shouldNormalize` is hard-coded `false` in `process()` regardless of the constructor flag, so no Hartley normalisation either). The OpenCV LM refinement was both a perf cost on detection-heavy categories (`lots`, `high_version`) and the source of the residual -0.08pp aggregate parity gap.
+
+### Fix
+
+[src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp) `computeTransform()`:
+
+- 4-point case unchanged (`cv::getPerspectiveTransform` — exact at this size, BoofCV's path agrees).
+- N>4 case: build the 2N×9 design matrix in place (same row layout as Java's `addPoints2D`: rows 1+2 per pair use cols 3..5 = (-f.x, -f.y, -1), cols 6..8 = (s.y\*f.x, s.y\*f.y, s.y); cols 0..2 = (f.x, f.y, 1), cols 6..8 = (-s.x\*f.x, -s.x\*f.y, -s.x)), then `cv::SVD::solveZ(A, h)` returns the right-singular vector at the smallest singular value. Reshape h row-major into 3×3 H. Same algorithm BoofCV's `SolveNullSpaceSvd_DDRM` runs.
+- No Hartley normalisation (mirrors BoofCV — `shouldNormalize` is dead-coded `false`).
+- No post-DLT scale/sign canonicalisation (BoofCV's `AdjustHomographyMatrix.adjust`): the only consumers of H are `applyHomography` (perspective divide cancels any non-zero scalar multiple) and `cv::invert` (handles any sign/scale uniformly). Result is projectively invariant.
+- Removed unused `<opencv2/calib3d.hpp>` include.
+
+### Parity (the real win)
+
+| metric                        | pre (`4045b12`) | post (this commit) | delta   |
+|-------------------------------|----------------:|-------------------:|--------:|
+| Aggregate decode rate         |        74.32%   |             74.40% | **+0.08pp** (byte-matches Java baseline) |
+| Java baseline                 |        74.40%   |             74.40% |          0.00pp gap |
+| Per-category accepted residuals | matched all   |     matched all   | unchanged (every accepted residual within ±tolerance) |
+| Unit tests                    |       421/421   |            421/421 |  pass    |
+
+Aggregate gap closed from -0.08pp to **0.00pp**. Run-regression PASS with the existing `tests/accepted_residuals.json`; no documented residual drifted.
+
+### Performance (secondary win)
+
+Best of 3 runs on the 562-image regression set, decoder-only sums:
+
+| category      | java_ms | pre_ms (`4045b12`) | post_ms (this) | C++/Java pre | C++/Java post |
+|---------------|--------:|--------------------:|----------------:|-------------:|--------------:|
+| **lots**      |   744.6 |              2618.5 |        **1459.7** |        4.48× |      **1.96×** |
+| pathological  |    10.9 |                20.2 |            15.9 |        1.60× |          1.46× |
+| perspective   |    53.7 |               136.9 |           125.6 |        2.56× |          2.34× |
+| decoding      |    69.0 |                45.9 |            44.7 |        0.68× |          0.65× |
+| rotations     |   299.6 |               738.8 |           715.7 |        2.49× |          2.39× |
+| nominal       |   382.2 |              1442.8 |          1413.9 |        3.77× |          3.70× |
+| (others)      |    —    |                 —   |             —   |       (flat) |       (flat)   |
+| **TOTAL**     |  8004.8 |             44392.9 |       **43539.4** |    **5.73×** |      **5.44×** |
+
+`lots` is the headline (60-QR images call `computeTransform` per detected QR; LM cost there was substantial). Aggregate ratio dropped 5.73× → 5.44× C++/Java. Categories dominated by `cv::findContours` (`bright_spots`, `brightness`, `curved`) are flat — expected, since `computeTransform` is a small fraction of their decode time.
+
+### Documentation
+
+- [src/sampler/qr_code_binary_grid_to_pixel.md](src/sampler/qr_code_binary_grid_to_pixel.md): "Why this approach" rewritten — documents the LM-refinement finding, the explicit-DLT replacement, the row layout of the design matrix, and why we skip Hartley normalisation + scale/sign adjustment. Mapping table updated to point at `cv::SVD::solveZ` for the N-point path. New row in the deferred-vs-equivalent table for `AdjustHomographyMatrix.adjust` (not needed; downstream operations are projectively invariant).
+- [CLAUDE.md](CLAUDE.md) "OpenCV substitution policy": removed the incorrect claim that `cv::findHomography(..., 0)` is pure DLT. Now reads: "do **not** use `cv::findHomography(..., 0)` for the N>4 case; OpenCV runs LM refinement after the initial DLT for `npoints > 4`. Build the 2N×9 design matrix explicitly and solve with `cv::SVD::solveZ`."
+
+### Regression
+
+- 421/421 unit tests pass.
+- `tools/cli/run_regression.sh`: PASS, aggregate **74.40%** = Java baseline, all 17 categories within their accepted bands.
+
 ## 2026-05-10 (later¹⁴) — docs(perf): close out perf cycle after cycle 1; ADR 02 records the decision to stop, decoder algo doc gains a Performance section
 
 Perf-cycle close-out. Cycle 1 (`340d038` + `bfbc2e2`) shipped a 1.62× aggregate / 19.58× worst-case decoder speedup with byte-identical parity. Cycle 2 was scoped to row-pointer rewrites in `ThresholdBlockOtsu` and `QrCodeBinaryGridReader::sampleNearest`; profiling forced an escalation before any code change.

@@ -4,7 +4,6 @@
 
 #include "boofcv_qr/qr_code_binary_grid_to_pixel.hpp"
 
-#include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <array>
@@ -166,13 +165,16 @@ void QrCodeBinaryGridToPixel::setTransformFromLinesSquare(const QrCode& qr) {
     //   row1: cols 3..5 = (-s.z*f.x, -s.z*f.y, -s.z*f.z),  cols 6..8 = (s.y*f.x, s.y*f.y, s.y*f.z)
     //   row2: cols 0..2 = ( s.z*f.x,  s.z*f.y,  s.z*f.z),  cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x*f.z)
     //
-    // CLAUDE.md mandates `cv::findHomography(method=0)` only for pure-
-    // 4-point DLTs. The mixed point/line DLT here is NOT a 4-point fit
-    // — line endpoints aren't point correspondences, they're co-linear
-    // direction vectors at infinity (z=0), so we build the design matrix
-    // explicitly and solve via cv::SVDecomp, mirroring Java's
-    // SolveNullSpaceSvd_DDRM. Convention everywhere in this file: H
-    // maps **image (x, y) → grid (col, row)**, i.e. p1=image, p2=grid.
+    // The mixed point/line DLT here is not expressible as a point-
+    // correspondence problem — line endpoints aren't point
+    // correspondences, they're co-linear direction vectors at infinity
+    // (z=0). Build the 2N×9 design matrix explicitly and solve via
+    // cv::SVDecomp, mirroring Java's SolveNullSpaceSvd_DDRM. The same
+    // explicit-DLT pattern is used in computeTransform() for the N>4
+    // pure-point case; see CLAUDE.md "OpenCV substitution policy" and
+    // the sampler algorithm doc for why cv::findHomography(method=0) is
+    // not pure DLT for npoints > 4. Convention everywhere in this file:
+    // H maps **image (x, y) → grid (col, row)**, i.e. p1=image, p2=grid.
 
     // ---- 2D point correspondences (3 of ppCorner — skip outside [0]). ----
     // Java's setLine endpoints in the QR caller use grid coords (col, row)
@@ -324,25 +326,73 @@ void QrCodeBinaryGridToPixel::computeTransform() {
     if (pairs2D.size() < 4)
         throw std::runtime_error("Need >=4 correspondences for homography");
 
-    std::vector<cv::Point2f> src(pairs2D.size()), dst(pairs2D.size());
-    for (std::size_t i = 0; i < pairs2D.size(); i++) {
-        // Java H maps image -> grid (Hinv = grid -> image). We follow
-        // the same convention.
-        src[i] = cv::Point2f(static_cast<float>(pairs2D[i].p1.x),
-                             static_cast<float>(pairs2D[i].p1.y));
-        dst[i] = cv::Point2f(static_cast<float>(pairs2D[i].p2.x),
-                             static_cast<float>(pairs2D[i].p2.y));
-    }
-
-    cv::Mat H_mat;
     if (pairs2D.size() == 4) {
-        H_mat = cv::getPerspectiveTransform(src, dst);
+        // 4-point homography solved exactly by cv::getPerspectiveTransform.
+        // Algorithm matches BoofCV's GenerateHomographyLinear at this size.
+        std::vector<cv::Point2f> src(4), dst(4);
+        for (std::size_t i = 0; i < 4; i++) {
+            src[i] = cv::Point2f(static_cast<float>(pairs2D[i].p1.x),
+                                 static_cast<float>(pairs2D[i].p1.y));
+            dst[i] = cv::Point2f(static_cast<float>(pairs2D[i].p2.x),
+                                 static_cast<float>(pairs2D[i].p2.y));
+        }
+        cv::Mat H_mat = cv::getPerspectiveTransform(src, dst);
+        H_mat.convertTo(H_mat, CV_64F);
+        H = cv::Matx33d(H_mat.ptr<double>());
     } else {
-        // No RANSAC — DLT only, matching BoofCV's GenerateHomographyLinear.
-        H_mat = cv::findHomography(src, dst, 0);
+        // > 4 correspondences: pure DLT via cv::SVD::solveZ on the 2N x 9
+        // design matrix. cv::findHomography(method=0) is NOT pure DLT for
+        // N > 4: it post-processes the DLT solution with iterative
+        // Levenberg-Marquardt refinement (cv::LMSolverImpl::run path,
+        // confirmed in profile data) which diverges from BoofCV's
+        // GenerateHomographyLinear -> HomographyDirectLinearTransform path
+        // (no LM, no Hartley normalization — `shouldNormalize` is hard-coded
+        // false in BoofCV's process()). Building A and solving via
+        // cv::SVD::solveZ matches BoofCV's SolveNullSpaceSvd_DDRM exactly.
+        //
+        // For each pair (f = image (p1), s = grid (p2)) Java's addPoints2D
+        // writes 2 rows:
+        //   row1: cols 3..5 = (-f.x, -f.y, -1),
+        //         cols 6..8 = ( s.y*f.x,  s.y*f.y,  s.y)
+        //   row2: cols 0..2 = ( f.x,  f.y,  1),
+        //         cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x)
+        // Same structure as setTransformFromLinesSquare's 2D block.
+        const int32_t numRows = 2 * static_cast<int32_t>(pairs2D.size());
+        cv::Mat A = cv::Mat::zeros(numRows, 9, CV_64F);
+        for (std::size_t i = 0; i < pairs2D.size(); i++) {
+            const double f_x = pairs2D[i].p1.x;
+            const double f_y = pairs2D[i].p1.y;
+            const double s_x = pairs2D[i].p2.x;
+            const double s_y = pairs2D[i].p2.y;
+            double* r0 = A.ptr<double>(static_cast<int32_t>(2 * i));
+            double* r1 = A.ptr<double>(static_cast<int32_t>(2 * i + 1));
+            r0[3] = -f_x;
+            r0[4] = -f_y;
+            r0[5] = -1.0;
+            r0[6] = s_y * f_x;
+            r0[7] = s_y * f_y;
+            r0[8] = s_y;
+            r1[0] = f_x;
+            r1[1] = f_y;
+            r1[2] = 1.0;
+            r1[6] = -s_x * f_x;
+            r1[7] = -s_x * f_y;
+            r1[8] = -s_x;
+        }
+
+        cv::Mat h;
+        cv::SVD::solveZ(A, h);
+        // h is a 9-element column vector; reshape row-major into the 3x3 H.
+        // Note: scale and sign of H are projectively irrelevant — both
+        // applyHomography (perspective divide cancels scalars) and
+        // cv::invert handle any non-zero scalar multiple identically.
+        // BoofCV's AdjustHomographyMatrix (post-DLT scale/sign canon) is
+        // not needed for our consumers.
+        const double* hp = h.ptr<double>();
+        H = cv::Matx33d(hp[0], hp[1], hp[2],
+                        hp[3], hp[4], hp[5],
+                        hp[6], hp[7], hp[8]);
     }
-    H_mat.convertTo(H_mat, CV_64F);
-    H = cv::Matx33d(H_mat.ptr<double>());
     cv::invert(H, Hinv);
 
     adjustments.clear();
