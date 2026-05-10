@@ -1,5 +1,44 @@
 # ChangeLog
 
+## 2026-05-10 (later¹⁹) — docs(perf): close out cycle 5; ADR 04 records the surgical-fix floor
+
+Pure-docs close-out for cycle 5 (commit `7063ec2`). Records the four-cluster profile pass that justified cycle 5 (per ADR 03's cluster-coverage gate), the inline-into-header decision, the cycle-5 perf delta (-0.43% aggregate, -4.5–7.2% on V40 / multi-QR images), and the empirical justification for stopping at the **surgical-fix floor for v1**: every remaining top hot spot is either ADR-01-locked (`cv::findContours`), parity-load-bearing (`cv::SVD::solveZ` from cycle 3 — reverting reopens the -0.08pp parity residual), or a verbatim BoofCV port forbidden to reshape under "Verbatim vs idiomize" (`ThresholdBlockOtsu`).
+
+### Final state at HEAD
+
+- Aggregate decode rate **74.4038%** = Java baseline byte-identical (+0.00pp).
+- Decoder-only sum **32.1 s** vs Java's 8.0 s = **4.01× C++/Java**.
+- Best category `decoding` at 0.47× (2.1× **faster** than Java end-to-end).
+- Worst category `bright_spots` at 8.65× (cv::findContours-bound, ADR-01-locked).
+- `high_version` at **1.59×** (was 44.4× pre-cycle-1).
+- 12 of 17 categories byte-identical to Java (every non-substitution-bound category).
+- 421/421 unit tests pass.
+
+### Five-state perf progression
+
+| commit    | label                                            | decoder-only sum | C++/Java |
+|-----------|--------------------------------------------------|-----------------:|---------:|
+| `bda1650` | pre-perf (parity ship)                           |          ~74.2 s |    9.27× |
+| `bfbc2e2` | cycle 1 — `perspectiveTransform` inline          |           45.9 s |    5.73× |
+| `23c1327` | cycle 3 — explicit DLT via `cv::SVD::solveZ`     |           43.5 s |    5.44× (parity 0.00pp) |
+| `ea93854` | cycle 4 — sampler hot path                       |           32.5 s |    4.05× |
+| `7063ec2` | cycle 5 — `gridToImage` / `imageToGrid` inline   |       **32.1 s** |**4.01×** |
+
+### Added
+
+- [docs/decisions/04_perf_cycle5_gridToImage_inline.md](docs/decisions/04_perf_cycle5_gridToImage_inline.md) — ADR 04. Records the cluster-coverage profile (executed per ADR 03's gate), the cycle 5 hotspot finding + fix, the triage of alternatives (cv::findContours / cv::SVD::solveZ / ThresholdBlockOtsu / bitIntensityToBitValue), the five-state perf progression, the diminishing-returns reading, the surgical-fix-floor argument, and the revisit conditions for any future cycle 6+ (which would require an architectural change, not a surgical one).
+
+### Changed
+
+- [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md) Performance section: rewritten as four banked optimisations (was three), five-state perf progression table (was four), final per-category timing post-`7063ec2`, "why we stop here" updated to reference ADR 04 + the surgical-fix-floor argument.
+
+### Cross-reference
+
+- ADR chain: [01](docs/decisions/01_cv_findcontours_substitution.md) (parity) → [02](docs/decisions/02_perf_stop_after_cycle1.md) (cycle 1 banked, cycle 2 stopped — superseded in part by 03) → [03](docs/decisions/03_perf_findhomography_and_sampler_cycles.md) (cycles 3 + 4 banked, cluster-coverage gate introduced) → **04** (cycle 5 banked under the gate, surgical-fix floor for v1).
+- Cycle 5 perf commit: `7063ec2`.
+
+---
+
 ## 2026-05-10 (later¹⁸) — perf(sampler): inline gridToImage / imageToGrid into header for V40 hot path (cycle 5)
 
 Cycle 5 of the perf push. Profile-confirmed escalation across four category clusters (`lots` / `high_version` / `bright_spots` / `nominal`, ADR-03's mandated cluster-coverage gate) identified the `gridToImage` / `imageToGrid` out-of-line function-call layer as the largest non-`cv::findContours`, non-cycle-3-banked hot spot — 10.0% of decoder time on `high_version/image029` (V40 candidates, 250-iter profile), driven by the bit sampler hitting `gridToImage` 5×/module bit (~156k calls per V40 scan).
