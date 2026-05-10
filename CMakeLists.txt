@@ -34,7 +34,7 @@ if(APPLE AND NOT DEFINED OpenCV_DIR)
         endif()
     endforeach()
 endif()
-find_package(OpenCV REQUIRED COMPONENTS core calib3d imgproc)
+find_package(OpenCV REQUIRED COMPONENTS core calib3d imgproc imgcodecs)
 
 # ---------------------------------------------------------------------------
 # Core library — populated stage-by-stage as the port progresses (see
@@ -50,6 +50,7 @@ add_library(boofcv_qr STATIC
     src/decoder/qr_code_mask_pattern.cpp
     src/decoder/qr_code_polynomial_math.cpp
     src/decoder/qr_code_decoder_bits.cpp
+    src/decoder/qr_code_decoder_image.cpp
     src/sampler/qr_code_codeword_locations.cpp
     src/sampler/qr_code_binary_grid_to_pixel.cpp
     src/sampler/qr_code_binary_grid_reader.cpp
@@ -123,13 +124,19 @@ if(BOOFCV_QR_BUILD_TESTS)
         tests/unit/test_qr_code_position_pattern_detector.cpp
         tests/unit/test_qr_code_position_pattern_graph_generator.cpp
         tests/unit/test_qr_code_alignment_pattern_locator.cpp
+        tests/unit/test_qr_code_decoder_image.cpp
     )
     target_link_libraries(boofcv_qr_tests
         PRIVATE
             boofcv_qr
+            opencv_imgcodecs
             GTest::gtest_main
     )
     target_compile_features(boofcv_qr_tests PRIVATE cxx_std_17)
+    # Step-9 orchestrator tests load PNG fixtures from the source tree.
+    target_compile_definitions(boofcv_qr_tests PRIVATE
+        BOOFCV_QR_FIXTURE_DIR_DEFINE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/qr"
+    )
 
     include(GoogleTest)
     gtest_discover_tests(boofcv_qr_tests)

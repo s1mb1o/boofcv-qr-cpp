@@ -7,9 +7,12 @@
 // bitsTransposed).
 //
 // Step 8 adds the `Alignment` inner struct and `alignment[]` field —
-// populated by the alignment-pattern locator. The remaining geometry
-// fields (`ppCorner`, `ppDown`, `ppRight`, `bounds`, `Hinv`) are
-// deferred to step 9's orchestrator.
+// populated by the alignment-pattern locator.
+//
+// Step 9 adds the remaining geometry fields (`ppCorner`, `ppDown`,
+// `ppRight`, `bounds`, `Hinv`), the `BlockStatus` enum and the
+// CLAUDE.md "Public API design" mandate fields (`rawCodewords`,
+// `rsErrorLocations`, `blockStatus[]`) populated by the orchestrator.
 //
 // Algorithm description: src/decoder/qr_code.md.
 
@@ -174,6 +177,59 @@ public:
     // succeeds. Java's `DogArray<Alignment>` → `std::vector<Alignment>`
     // (value-typed; `// TODO(perf): recycle`).
     std::vector<Alignment> alignment;
+
+    // ---- Geometry fields populated by the step-9 orchestrator. ----
+    //
+    // The 3 finder-pattern quads in canonical orientation. Java's
+    // `Polygon2D_F64(4)` → `std::array<cv::Point2d, 4>` (size fixed
+    // at 4 — QR finders are always quads). Indexed CCW.
+    std::array<cv::Point2d, 4> ppCorner{};
+    std::array<cv::Point2d, 4> ppRight{};
+    std::array<cv::Point2d, 4> ppDown{};
+
+    // Outer bounding box of the QR. Computed by `computeBoundingBox`
+    // in the orchestrator: 3 corners come from the finder patterns,
+    // the 4th is extrapolated by line intersection.
+    std::array<cv::Point2d, 4> bounds{};
+
+    // Inverse homography (image pixel → grid coord). Mirrors Java's
+    // `qr.Hinv`. Populated from
+    // `gridReader.getTransformGrid().Hinv` at the end of `decode()`,
+    // even on failure paths so callers can introspect the last
+    // attempt's geometry.
+    cv::Matx33d Hinv = cv::Matx33d::eye();
+
+    // ---- CLAUDE.md "Public API design" mandate fields (step 9). ----
+    //
+    // Per-RS-block decode status. One entry per RS block in the QR
+    // (numBlocksA + numBlocksB at the resolved version+ECC level).
+    // Populated by `QrCodeDecoderBits::applyErrorCorrection`.
+    // Downstream multi-frame fusion / known-prefix RS recovery uses
+    // this to decide which blocks to retry.
+    enum class BlockStatus : int32_t {
+        NOT_DECODED = 0,
+        SUCCESS_NO_ERRORS = 1,         // RS ran, found nothing to fix
+        SUCCESS = 2,                   // RS corrected ≥ 1 error
+        ERROR_CORRECTION_FAILED = 3,   // RS exceeded its capacity
+    };
+
+    // Pre-RS, post-de-interleave codewords. After `readRawData`
+    // succeeds this is a copy of `rawbits` (same content, but
+    // surfaced as part of the public result so consumers can fuse
+    // codewords across frames before re-running RS — see CLAUDE.md
+    // "Public API design").
+    std::vector<std::uint8_t> rawCodewords;
+
+    // RS-error byte offsets within `rawbits` / `rawCodewords`.
+    // Concatenated across blocks (block boundaries are recoverable
+    // via `blockStatus[]`'s indices). Empty if RS found no errors
+    // or if RS hasn't run yet.
+    std::vector<std::int32_t> rsErrorLocations;
+
+    // Per-block status; size == numBlocksA + numBlocksB at the
+    // resolved version+ECC level after a successful version/ECC
+    // decode. Empty before that.
+    std::vector<BlockStatus> blockStatus;
 
     QrCode() { reset(); }
 

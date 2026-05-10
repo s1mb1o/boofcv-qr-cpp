@@ -36,6 +36,20 @@ void QrCodeBinaryGridReader::setMarker(
         (qr.threshCorner + qr.threshDown + qr.threshRight) / 3.0);
 }
 
+void QrCodeBinaryGridReader::setMarker(const QrCode& qr) {
+    transformGrid.addAllFeatures(qr);
+    transformGrid.removeOutsideCornerFeatures();
+    transformGrid.computeTransform();
+    threshold = static_cast<float>(
+        (qr.threshCorner + qr.threshDown + qr.threshRight) / 3.0);
+}
+
+void QrCodeBinaryGridReader::setMarkerUnknownVersion(const QrCode& qr,
+                                                     float threshold_) {
+    transformGrid.setTransformFromLinesSquare(qr);
+    threshold = threshold_;
+}
+
 void QrCodeBinaryGridReader::imageToGrid(double x, double y,
                                          cv::Point2d& grid) const {
     transformGrid.imageToGrid(x, y, grid);

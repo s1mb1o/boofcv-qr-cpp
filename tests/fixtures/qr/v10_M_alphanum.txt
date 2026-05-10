@@ -1,0 +1,11 @@
+name = v10_M_alphanum
+version = 10
+error = M
+message = VERSIONTENISGOOD
+module_pixels = 4
+border_modules = 4
+image_size = 260
+num_modules = 57
+ppCorner = 16,16 44,16 44,44 16,44
+ppRight = 216,16 244,16 244,44 216,44
+ppDown = 16,216 44,216 44,244 16,244

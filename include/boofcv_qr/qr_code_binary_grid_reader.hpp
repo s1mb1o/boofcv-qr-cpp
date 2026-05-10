@@ -44,14 +44,30 @@ public:
     void setSquare(const std::array<cv::Point2d, 4>& square, float threshold);
 
     // Full setup: pulls in finder corners + alignment patterns from `qr`.
-    // Caller passes the polygons explicitly because the runtime QrCode
-    // struct hasn't yet grown geometry fields (those land in step 7).
+    //
+    // The 6-arg overload predates the QrCode geometry growth in step
+    // 9; it is preserved for the step-7/8 callers that still need to
+    // pass the polygons explicitly.
     void setMarker(const QrCode& qr,
                    const std::array<cv::Point2d, 4>& ppCorner,
                    const std::array<cv::Point2d, 4>& ppRight,
                    const std::array<cv::Point2d, 4>& ppDown,
                    const std::vector<cv::Point2d>& alignmentCenters,
                    const std::vector<cv::Point2d>& alignmentGridCoords);
+
+    // Java's 1-arg signature — reads `qr.ppCorner` / `ppRight` /
+    // `ppDown` / `alignment[]` directly. Called by the step-9
+    // orchestrator. Equivalent to:
+    //   transformGrid.addAllFeatures(qr);
+    //   transformGrid.removeOutsideCornerFeatures();
+    //   transformGrid.computeTransform();
+    //   threshold = (qr.threshCorner + qr.threshDown + qr.threshRight)/3
+    void setMarker(const QrCode& qr);
+
+    // Estimate image-to-grid before the version is known. Used in the
+    // orchestrator's `estimateVersionBySize` path. Mirrors Java's
+    // `setMarkerUnknownVersion(QrCode, float)`.
+    void setMarkerUnknownVersion(const QrCode& qr, float threshold_);
 
     // Coordinate transforms (forwarded to the underlying QrCodeBinary
     // GridToPixel).

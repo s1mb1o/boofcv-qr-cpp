@@ -1,5 +1,55 @@
 # ChangeLog
 
+## 2026-05-10 (later⁵) — Step 9a: `QrCodeDecoderImage` orchestrator + step-9 public API mandates
+
+The top-level QR-decode orchestrator. Wires the previously-shipped stages (binarize → polygon → finder → alignment → sampler → format/version + mask XOR → RS → mode dispatch) into a single `process(pps, gray) → vector<QrCode>` entry point. Lands the seven CLAUDE.md "Public API design — for downstream recovery pipelines" mandates that have been deferred since step 4: stage-isolation entry points, strategy injection, polygon-only mode, raw codewords + erasure positions, line-correspondence DLT for unknown-version sampling, and the `bitsTransposed` retry path.
+
+### Added
+
+- [include/boofcv_qr/qr_code_decoder_image.hpp](include/boofcv_qr/qr_code_decoder_image.hpp) + [src/decoder/qr_code_decoder_image.cpp](src/decoder/qr_code_decoder_image.cpp) — verbatim port of `QrCodeDecoderImage` (~625 LOC). Decode order matches Java line-by-line: `extractFormatInfo → extractVersionInfo → alignmentLocator.process → iterative-transform/readRawData (≤ 6 retries with `removeFeatureWithLargestError`) → applyErrorCorrection → decodeMessage`. Format/mask are extracted **before** sampling — never invert that order.
+- [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md) — algorithm doc covering stage wiring, runtime order (the inverse of the porting order), failure-mode propagation, the "format BEFORE sampling" non-invertibility constraint, integration points for downstream recovery, and the Lens-distortion / Micro-QR / multi-frame deferrals.
+- **CLAUDE.md "Public API design" mandates landed on `QrCode`** ([include/boofcv_qr/qr_code.hpp](include/boofcv_qr/qr_code.hpp) + [src/decoder/qr_code.cpp](src/decoder/qr_code.cpp)):
+  - `ppCorner` / `ppRight` / `ppDown` / `bounds` (`std::array<cv::Point2d, 4>` each) — finder-pattern + bounding-box geometry.
+  - `Hinv` (`cv::Matx33d`) — inverse homography, populated even on failure paths so callers can introspect the last attempt's geometry.
+  - `BlockStatus` enum + `blockStatus[]` — per-RS-block decode status (`NOT_DECODED` / `SUCCESS_NO_ERRORS` / `SUCCESS` / `ERROR_CORRECTION_FAILED`).
+  - `rawCodewords` — pre-RS, post-de-interleave codewords (copy of `rawbits` after `readRawData`, surfaced for multi-frame fusion / known-prefix recovery pipelines).
+  - `rsErrorLocations` — flat list of byte offsets into `rawbits`/`rawCodewords` that RS corrected, translated from per-block positions back to raw-bits positions via the de-interleave stride.
+  - All five fields cleared in `QrCode::reset()`.
+- **`PositionPatternTriplet` + `PolygonOnlyResult` helper structs** in the orchestrator header — value-typed return types for `find_finders` / `detect_polygons_only` (no raw pointers in public signatures, per CLAUDE.md "Public API design").
+- **Stage-isolation public entry points** on `QrCodeDecoderImage`:
+  - `find_finders(pps) → vector<PositionPatternTriplet>` (static).
+  - `detect_polygons_only(pps, gray) → PolygonOnlyResult`.
+  - `sample_bit_matrix(gray, qr) → bool`.
+  - `extract_raw_codewords(gray, qr) → bool`.
+  - `rs_correct(qr) → bool`.
+  - `decode_message(qr) → bool`.
+- **Strategy injection** via `std::function` hooks: `setRsCorrectStrategy(fn)` and `setAlignmentStrategy(fn)`. Defaults preserve verbatim Java behaviour. Tested by injecting stubs that record being called (`Strategy_RsInjection`, `Strategy_AlignmentInjection`).
+- **`QrCodeBinaryGridToPixel::setTransformFromLinesSquare`** ([src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp)) — the codex/step-5 carry-over. SVD-based DLT on 3 corner correspondences + 4 direction-line correspondences (skipping the "prone to damage" outside corner). Used by `setMarkerUnknownVersion` for the v < 7 size-estimation path.
+- **`QrCodeBinaryGridToPixel::addAllFeatures(qr)` 1-arg overload** + **`QrCodeBinaryGridReader::setMarker(qr)` 1-arg overload** + **`QrCodeBinaryGridReader::setMarkerUnknownVersion(qr, threshold)`** — Java's 1-arg API, finally usable now that QrCode has the geometry fields. The 6-arg overloads are preserved for step-7/8 callers.
+- **RS plumbing for blockStatus + rsErrorLocations** ([src/decoder/qr_code_decoder_bits.cpp](src/decoder/qr_code_decoder_bits.cpp)) — `applyErrorCorrection` pre-sizes `qr.blockStatus[]` to `numBlocksA + numBlocksB` and clears `qr.rsErrorLocations`; `decodeBlocks` writes per-block status (success / success-no-errors / failed) and translates each `rscodes.errorLocations[k]` back to a raw-bits byte offset using the de-interleave stride.
+
+### Tests
+
+- [tests/unit/test_qr_code_decoder_image.cpp](tests/unit/test_qr_code_decoder_image.cpp) — 19 cases:
+  - **JUnit-mirroring (pure data)**: `TransposePositionPatterns`, `RotateUntilAt`, `ComputeBoundingBox`, `SetPositionPatterns`, `ExtractVersionInfo_VersionOutOfRange` (substitutes for Java's subclass-override test by feeding degenerate ppRight/ppDown geometry).
+  - **JUnit-mirroring (full pipeline, via PNG fixtures)**: `FullSimple_v1_v2_v7`, `FullSimple_v20_v40`, `Message_numeric`, `Message_alphanumeric`, `Message_byte`. The Java `withLensDistortion` and `transposed` (encoder-side) cases are skipped (no encoder port; lens distortion deferred).
+  - **CLAUDE.md mandate tests**: `StageIsolation_FindFinders`, `StageIsolation_SampleBitMatrix`, `Strategy_RsInjection`, `Strategy_AlignmentInjection`, `PolygonOnlyMode`, `MandateFields_PopulatedAfterDecode`, `RsErrorLocations_PopulatedOnCorruption`, `BitsTransposed_RetryPath`.
+  - **Deferred-item regression**: `SetTransformFromLinesSquare_RoundTrip` (verifies the SVD-based DLT round-trips a known finder geometry through the `imageToGrid` mapping within 1e-3).
+- [tools/fixture_gen/gen_qr_fixtures.py](tools/fixture_gen/gen_qr_fixtures.py) — one-shot Python fixture generator using the `qrcode` library. Emits 12 PNG + ground-truth pairs at module-pixel-size 4 with 4-module quiet zone (matching BoofCV's `QrCodeGeneratorImage(4)` defaults). Ground truth is a flat `key = value` text format the C++ tests parse without a JSON dep. Fixtures committed under [tests/fixtures/qr/](tests/fixtures/qr/).
+- The PNG fixtures are loaded via `cv::imread`; CMake adds `opencv_imgcodecs` to `boofcv_qr_tests` link line and a `BOOFCV_QR_FIXTURE_DIR_DEFINE` so tests work both from `build/` and from any other CWD.
+
+### Regression
+
+- C++ unit tests: **258/258 pass** (was 239/239; 19 new cases). All previously-shipped tests continue to pass — no behavioural changes to step 1–8 modules; the QrCode field additions are append-only and `QrCode::reset()` extension preserves existing semantics for all old fields.
+
+### Deviations from upstream
+
+- **Lens distortion not ported.** Java's `setLensDistortion(width, height, model)` plumbing is omitted because the narrow-FOV `LensDistortionNarrowFOV` model isn't ported. Downstream consumers that need lens correction should pre-undistort the input image before calling `process()`.
+- **`QrCode.LOCATION_BITS[v]` cache → on-demand recomputation.** Java caches the bit-extraction zigzag per version in a static array. We recompute via `QrCodeCodeWordLocations::qrcode(version).bits` on each `readRawData` call. Cost is negligible (v40 worst case is ~28k modules and well under a millisecond) and avoids the static-init footprint of a 40-entry pre-populated table.
+- **`storageQR_` is a `std::vector<QrCode>` rather than Java's `DogArray<QrCode>` recycle pool.** Per CLAUDE.md type mappings, `DogArray<T>` → `std::vector<T>` value-typed; identity of pointers into successes/failures is NOT preserved across `process()` calls (Java's DogArray.reset() invalidates the same way). Marked `// TODO(perf): recycle` in the relevant comment.
+- **`computeBoundingBox` defends against parallel-line case.** Java's `Intersection2D_F64.intersection` returns false on parallel input lines but the Java orchestrator doesn't check the return value (relies on the geometry being non-degenerate). Our port leaves `bounds[2]` at (0, 0) on parallel input — same observable behaviour, but explicit.
+- **Public stage-isolation entry points beyond Java's surface.** `find_finders`, `detect_polygons_only`, `sample_bit_matrix`, `extract_raw_codewords`, `rs_correct`, `decode_message` are introduced per CLAUDE.md "Public API design"; they wrap or compose the Java behaviour without altering it.
+
 ## 2026-05-10 (later⁴) — Step 8: QrCodeAlignmentPatternLocator + `QrCode::alignment[]`
 
 The alignment-pattern subpixel locator. Per QR spec, every version ≥ 2 has at least one alignment pattern at known grid coordinates inside the marker; the orchestrator (step 9, next) seeds a homography from the three finder patterns, then this stage refines each alignment-pattern centre to subpixel accuracy so the homography can correct for image-distortion drift far from the finders.

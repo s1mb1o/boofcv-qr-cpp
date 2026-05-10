@@ -1,0 +1,324 @@
+# `QrCodeDecoderImage` — top-level QR-decode orchestrator (step 9)
+
+**Upstream:** `boofcv.alg.fiducial.qrcode.QrCodeDecoderImage` (BoofCV
+v1.3.0, ~625 LOC).
+**Step:** 9 — top-level orchestrator + step-9 public-API mandates.
+**Inputs:** `std::vector<PositionPatternNode>` (graph from step 7c) +
+`cv::Mat CV_8UC1` (greyscale source image).
+**Outputs:** `successes_` and `failures_` populated on the orchestrator
+instance. Each `QrCode` carries the full decode result: payload,
+version, error-correction level, mask, raw codewords, RS error
+locations, per-block decode status, geometry (`ppCorner` / `ppRight` /
+`ppDown` / `bounds` / `Hinv`).
+
+---
+
+## One-paragraph summary
+
+Given the position-pattern graph from the finder-pattern detector, this
+stage walks every (j, k) edge pair on every node, treats each pair as
+a candidate QR, and runs the full decode pipeline: format-info BCH
+correction → version-info BCH correction (or size estimate for v < 7)
+→ alignment-pattern localisation → iterative homography fitting with
+outlier rejection (≤ 6 attempts) + bit-matrix sampling + Reed-Solomon
+error correction → mode-aware payload decode. On RS success the
+candidate moves to `successes_`; on any earlier failure it lands in
+`failures_` with `failureCause` set. A second pass with transposed
+finder positions is attempted automatically when `considerTransposed`
+is true, surfaced via `qr.bitsTransposed = true` on success.
+
+---
+
+## Algorithm description
+
+### Outer loop (`process` — Java line ~88)
+
+```
+for each PositionPatternNode in pps:
+  for (j=3, k=0; k < 4; j=k, k++):    // 4 rotations
+    if (edges[j] != null && edges[k] != null):
+      qr = storageQR_.emplace_back()
+      setPositionPatterns(ppn, j, k, qr)
+      computeBoundingBox(qr)
+      if (decode(gray, qr)):
+        if (failureCause == NONE) successes_.push_back(qr)
+        else                       failures_.push_back(qr)
+      else if (considerTransposed):
+        transposePositionPatterns(qr)
+        if (decode(gray, qr)):
+          qr.bitsTransposed = true
+          successes_.push_back(qr)  // or failures_ if cause != NONE
+        else:
+          failures_.push_back(qr)
+      else:
+        failures_.push_back(qr)
+```
+
+`setPositionPatterns` rotates each of the three finder-pattern polygons
+into canonical orientation: corner index 0 of the corner-pp at the
+outside corner; corner index 1 of corner-pp connects to the right pp;
+etc. After rotation the orchestrator can use index-based access without
+worrying about which physical corner is which.
+
+`computeBoundingBox` extrapolates the missing 4th corner of the QR
+(diagonally opposite the corner finder) by intersecting the side lines
+of the right and down finders. Three of the four bounds corners come
+directly from finder polygons.
+
+### Inner decode (`decode` — Java line ~226)
+
+```
+1. extractFormatInfo(qr)               // BCH(15,5) twice (region0 + region1)
+   → on fail: failureCause = FORMAT, return false
+2. extractVersionInfo(qr)              // size estimate or BCH(18,6)
+   → on fail: failureCause = VERSION, return false
+3. alignmentLocator.process(gray, qr)   // step-8 locator
+   → on fail: failureCause = ALIGNMENT, return false
+4. gridReader.setMarker(qr)             // 12 finder corners → H + Hinv
+   gridReader.transformGrid().addAllFeatures(qr)  // re-add 15 (+alignment)
+   for i in 0..5:
+     if i > 0:
+       removed = removeFeatureWithLargestError()
+       if !removed: break
+     computeTransform()
+     if !readRawData(qr): failureCause = READING_BITS; continue
+     if !applyErrorCorrection(qr): failureCause = ERROR_CORRECTION; continue
+     success = true; break
+5. if success:
+     decoder.decodeMessage(qr)   // mode dispatch — failure encoded in qr
+6. qr.Hinv = transformGrid.Hinv  // populated even on failure for diag
+```
+
+### Format-info extraction (`extractFormatInfo` — Java line ~291)
+
+QR encodes its error-correction level + mask twice: once near the
+top-left finder (region 0) and once split between the top-right + bottom
+finders (region 1). The orchestrator tries region 0 first, then region
+1. Each read produces a 15-bit field; we XOR it with `FORMAT_MASK`
+(`0b101010000010010`) to undo the encoder-side mask, then run the
+BCH(15,5) checker. If the field has zero error, shift right 10 to get
+the 5-bit message; otherwise run the brute-force minimum-Hamming
+corrector. The 5-bit message decodes to the (`error`, `mask`) pair.
+
+### Version-info extraction (`extractVersionInfo` — Java line ~492)
+
+For QR codes ≥ v7 the version is encoded explicitly in two 18-bit
+regions (one near each non-corner finder) protected by BCH(18,6). For
+v < 7 there is no version info — version is estimated from the *number
+of modules between the corner pp and the right pp* using a rough
+homography from `setTransformFromLinesSquare` and a heuristic check
+that the right and down finders are roughly at right angles.
+
+`setTransformFromLinesSquare` fits a homography from 3 of the 4 corner
+finder corners (skipping the outside corner, which is "prone to
+damage") plus 4 direction lines connecting the corner finder to the
+other two finders. This makes the fit robust to mis-localisation at
+any single corner. The line-correspondence DLT solves a 10-row 9-column
+linear system via SVD, picking the right-singular vector with the
+smallest singular value.
+
+### Iterative homography (Java line ~242–269)
+
+The Java code re-adds *all 15* features (12 finder corners + 3
+alignment-pattern centres for v2; more for higher versions) after
+`setMarker(qr)` (which adds 12 finder corners + alignment, then
+`removeOutsideCornerFeatures` drops the 3 outside corners → 9 + alignment,
+then `computeTransform`). The orchestrator's second `addAllFeatures`
+call resets `pairs2D` to all 15. Then on each iteration `i > 0`,
+`removeFeatureWithLargestError` drops the feature with the largest
+re-projection residual (provided the residual exceeds 4.0 px²). When
+no further feature can be safely removed (returns false), the loop
+exits.
+
+This iterative outlier rejection is the main mechanism by which the
+decoder copes with one-or-two damaged finder corners or a mis-located
+alignment pattern.
+
+### Bit sampling (`readRawData` — Java line ~365)
+
+`QrCodeCodeWordLocations::qrcode(version)` produces the spec-defined
+zigzag bit-extraction order through the QR's data modules. For each
+data module, the orchestrator:
+1. samples the source image at 5 sub-pixel positions around the module
+   centre via `gridReader.readBitIntensity(row, col, intensities)`,
+2. computes a per-module threshold by bilinearly interpolating the four
+   corner thresholds (`threshCorner` / `threshRight` / `threshDown` /
+   `threshDownRight`),
+3. votes 5 ways: > threshold → 0, < threshold → 1; majority wins,
+4. XORs the result with `qr.mask->apply(row, col, 0)` to undo the
+   encoder's mask pattern.
+
+The lower-right corner of the QR has no nearby finder, so its
+threshold is computed at sample time as the mean intensity of the data
+modules in that corner (everything below module column `max(8, N-10)`
+and below row `max(8, N-10)`, where `N = numModules`).
+
+### Reed-Solomon (delegated to `QrCodeDecoderBits::applyErrorCorrection`)
+
+Step 9 wires this into the public-mandate fields:
+- `qr.blockStatus[i]` — one entry per RS block, `SUCCESS_NO_ERRORS` /
+  `SUCCESS` / `ERROR_CORRECTION_FAILED`.
+- `qr.rsErrorLocations` — flat list of byte offsets into `qr.rawbits`
+  / `qr.rawCodewords` that RS corrected. Translated from per-block
+  positions back to raw-bits positions using the de-interleave stride.
+
+### Mode dispatch (delegated to `QrCodeDecoderBits::decodeMessage`)
+
+Always called *after* RS succeeds. Mode dispatch failure (e.g. invalid
+ECI, unknown mode, padding violation) sets `qr.failureCause` but
+`decode()` still returns true — the QR was at least RS-correctable, so
+it counts as a "found marker, but message parse error" rather than a
+non-detection. Java has the same convention.
+
+---
+
+## Why this approach over alternatives
+
+- **Format/version BEFORE alignment, before sampling.** Format info is
+  in fixed positions next to the corner finder so we can read it with
+  only the rough homography from `setSquare(ppCorner)`. Version info
+  for v7+ uses a similar fixed-position read. Knowing version + ECC
+  level + mask is a precondition for everything downstream:
+  - alignment-pattern *expected positions* depend on version;
+  - the de-interleave stride depends on version + ECC level;
+  - the bit-extraction zigzag depends on version (alignment patterns
+    block data modules);
+  - the per-module bit value depends on the mask.
+  Doing format/mask AFTER sampling — a tempting refactor — would
+  require sampling with the *wrong* mask and re-sampling, and would
+  re-introduce the dependency cycle.
+- **Iterative outlier rejection (≤ 6 attempts) over a one-shot
+  least-squares fit.** Damaged outside corners are the dominant noise
+  source on real QR images; greedily dropping the worst one and
+  refitting gives much better numerical conditioning than a single
+  pass. The 6-iteration bound comes from a worst-case scenario where
+  the 3 outside corners + 3 alignment patterns all need rejection
+  (this never happens in practice; usually 1–2 iterations suffice).
+- **`setTransformFromLinesSquare` over a 3-point homography for v<7
+  size estimation.** A 3-point homography is rank-deficient — 4 points
+  are needed for the standard DLT. BoofCV adds 4 *direction lines*
+  between the corner finder and the other two finders, which fully
+  constrains the homography even when only 3 corner finder corners
+  are reliable (the 4th, outside corner is intentionally skipped).
+- **Voting threshold (≥ 3 of 5) over a single-sample read.** A single
+  sample is sensitive to printing artefacts (e.g. a stray dot inside
+  a "white" module) and sub-pixel coordinate rounding. Five samples
+  around the module centre + majority vote are a cheap robustness
+  win.
+- **`considerTransposed` retry.** Some encoders (notably old industrial
+  QR generators) emit codes with the bit order transposed, which would
+  otherwise fail format extraction. Java's pragmatic fix: try the
+  normal orientation first; on any failure, swap right ↔ down finders
+  and corner-1 ↔ corner-3 on each finder, retry. Cheap correctness
+  improvement.
+
+## Failure modes and known limits
+
+| Stage | Failure → `failureCause` | Trigger |
+|-------|--------------------------|---------|
+| `extractFormatInfo` | `FORMAT` | Both 15-bit regions exceed BCH(15,5) correction capacity (3 errors). |
+| `extractVersionInfo` | `VERSION` | v < 7 size estimate falls outside [1, 40]; or v ≥ 7 BCH(18,6) decode failure on both regions. |
+| `alignmentLocator.process` | `ALIGNMENT` | One or more expected alignment patterns couldn't be localised. v1 has no alignment patterns so this never fires for v1. |
+| `readRawData` (sampling) | `READING_BITS` | Indexing out-of-bounds or sample failure. Rare in practice; the `gridReader.readBit` returning `-1` is masked to `0` so partial QRs go through. |
+| `applyErrorCorrection` | `ERROR_CORRECTION` | Any block exceeded its RS capacity. Iterative loop retries with one more correspondence dropped — break early if no further drop is helpful. |
+| `decodeMessage` | various | Mode dispatch failure; message parse error. `decode()` still returns true; caller checks `qr.failureCause` to disambiguate "decoded but invalid payload" from "RS-correctable, no payload". |
+
+**Out of scope for v1 of this port:**
+- Lens distortion (`setLensDistortion(width, height, model)`). The
+  Java orchestrator threads the model through `alignmentLocator` and
+  `gridReader`; we don't have the narrow-FOV distortion model ported,
+  so this codepath is omitted. Downstream consumers that need lens
+  correction should pre-undistort the input image before calling
+  `process()`.
+- Micro QR. The decoder is ISO 18004 QR only.
+- Multi-frame fusion / temporal voting. Per CLAUDE.md "Public API
+  design": this library is single-frame; consumers compose multi-frame
+  recovery on top of the exposed mandate fields (`rawCodewords` /
+  `rsErrorLocations` / `blockStatus`).
+
+## Tunable parameters
+
+- `considerTransposed` (bool, default `true`). Toggle the
+  transposed-bits retry. Disable if you know upstream encoders are
+  always orientation-correct and you want to halve worst-case
+  per-candidate decode time.
+- The `≤ 6` iteration cap on the outlier-rejection loop is hard-coded.
+  In practice 1–2 iterations suffice; raising it doesn't help and
+  lowering it risks rejecting a recoverable but noisy QR.
+- `removeFeatureWithLargestError`'s residual threshold (`> 4.0`, in
+  pixel² space) is set in `qr_code_binary_grid_to_pixel.cpp`. Lower
+  → more aggressive outlier rejection (may discard legitimate
+  correspondences); higher → more conservative (may keep bad ones).
+- Strategy-injection hooks on `QrCodeDecoderImage`:
+  - `setRsCorrectStrategy(fn)` — replace built-in
+    `QrCodeDecoderBits::applyErrorCorrection`. Use case: known-prefix
+    RS recovery, where `n` data bytes are known a priori and treated
+    as erasures.
+  - `setAlignmentStrategy(fn)` — replace built-in
+    `QrCodeAlignmentPatternLocator::process`. Use case: clipped-QR
+    fallback that uses a different localiser when patterns are
+    out-of-frame.
+
+## Integration points for downstream recovery (CLAUDE.md mandates)
+
+1. **Stage isolation.** `find_finders`, `sample_bit_matrix`,
+   `extract_raw_codewords`, `rs_correct`, `decode_message` are all
+   public entry points and can be composed without the top-level
+   `process()`. Multi-frame fusion typically calls
+   `extract_raw_codewords` per frame, fuses the rawCodewords across
+   frames, then calls `rs_correct` once on the fused buffer.
+2. **Strategy injection.** `RsCorrectFn` and `AlignmentLocatorFn`
+   `std::function` hooks. Defaults preserve verbatim Java behaviour.
+3. **Polygon-only mode.** `detect_polygons_only(pps, gray)` runs
+   `find_finders` + alignment localisation, then stops. Useful for
+   best-frame selection over video where you call detection many times
+   per full decode and want to pay the RS / mode-decode cost only for
+   the chosen frame.
+4. **Public mandate fields on `QrCode`.**
+   `rawCodewords` / `rsErrorLocations` / `blockStatus` are populated by
+   the RS step and surfaced for downstream multi-frame fusion or
+   known-prefix recovery.
+5. **`setTransformFromLinesSquare` and `setMarkerUnknownVersion`.**
+   Used internally by `estimateVersionBySize`; also useful as a
+   standalone for applications that have a partial finder-pattern
+   triplet and want a rough homography.
+6. **`bitsTransposed` retry path.** Surface the `qr.bitsTransposed`
+   flag so consumers know which orientation succeeded. Toggle via
+   `considerTransposed = false` to disable.
+7. **No raw pointers in public signatures.** All public APIs return
+   value-typed `std::vector` / `std::optional`. The internal sub-modules
+   (`QrCodeAlignmentPatternLocator`, `QrCodeBinaryGridReader`,
+   `QrCodeDecoderBits`) are returned by reference for tests +
+   diagnostics; ownership stays with the orchestrator.
+
+---
+
+## Cross-references
+
+- Upstream BoofCV file:
+  `main/boofcv-recognition/src/main/java/boofcv/alg/fiducial/qrcode/QrCodeDecoderImage.java`
+- Upstream JUnit:
+  `main/boofcv-recognition/src/test/java/boofcv/alg/fiducial/qrcode/TestQrCodeDecoderImage.java`
+- ISO/IEC 18004:2015 — QR Code bar code symbology specification.
+  Sections referenced:
+  - §7.9 (format information mask `FORMAT_MASK = 0b101010000010010`).
+  - §7.10 (version information).
+  - Annex C (error correction codeword arrangement and de-interleave).
+  - Annex E (alignment pattern coordinates).
+- Pinned upstream tag: see `UPSTREAM_VERSION` at repo root.
+- Related stages this orchestrator depends on (in runtime order, the
+  inverse of porting order):
+  - step 7c: `QrCodePositionPatternDetector` →
+    `QrCodePositionPatternGraphGenerator` produces the
+    `PositionPatternNode` graph this orchestrator consumes.
+  - step 8: `QrCodeAlignmentPatternLocator` localises alignment
+    patterns once the version is known.
+  - step 5: `QrCodeBinaryGridReader` + `QrCodeBinaryGridToPixel`
+    homography sampling.
+  - step 4: `QrCodePolynomialMath` BCH decoders +
+    `QrCodeMaskPattern` mask XOR.
+  - step 3: `QrCodeDecoderBits` mode dispatch + payload extraction
+    on RS-corrected codewords.
+  - step 2: `ReedSolomonCodes_U8` per-block RS correction (consumed by
+    `QrCodeDecoderBits::applyErrorCorrection`).
+  - step 1: `GaliosFieldOps` GF(2^8) primitives (consumed by RS).

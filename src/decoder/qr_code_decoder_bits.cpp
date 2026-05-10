@@ -48,6 +48,14 @@ bool QrCodeDecoderBits::applyErrorCorrection(QrCode& qr) {
     ecc.assign(static_cast<std::size_t>(wordsEcc), 0);
     rscodes.generator(wordsEcc);
 
+    // CLAUDE.md "Public API design" mandate: surface per-block status
+    // and the byte offsets RS corrected. Pre-size + clear here so the
+    // step-9 orchestrator can rely on these being populated whether or
+    // not RS succeeds in every block.
+    qr.blockStatus.assign(static_cast<std::size_t>(totalBlocks),
+                          QrCode::BlockStatus::NOT_DECODED);
+    qr.rsErrorLocations.clear();
+
     totalErrorBits = 0;
     if (!decodeBlocks(qr, wordsBlockDataA, numBlocksA, 0, 0, totalDataBytes, totalBlocks))
         return false;
@@ -74,9 +82,38 @@ bool QrCodeDecoderBits::decodeBlocks(QrCode& qr, int32_t bytesInDataBlock,
         QrCodeCodecBitsUtils::flipBits8(message, message.size());
         QrCodeCodecBitsUtils::flipBits8(ecc, ecc.size());
 
-        if (!rscodes.correct(message, ecc))
+        int32_t globalBlockIndex = offsetBlock + idxBlock;
+        if (!rscodes.correct(message, ecc)) {
+            qr.blockStatus[static_cast<std::size_t>(globalBlockIndex)] =
+                QrCode::BlockStatus::ERROR_CORRECTION_FAILED;
             return false;
-        totalErrorBits += rscodes.getTotalErrors();
+        }
+        int32_t blockErrors = rscodes.getTotalErrors();
+        totalErrorBits += blockErrors;
+        qr.blockStatus[static_cast<std::size_t>(globalBlockIndex)] =
+            (blockErrors == 0) ? QrCode::BlockStatus::SUCCESS_NO_ERRORS
+                               : QrCode::BlockStatus::SUCCESS;
+
+        // Translate per-block error positions back to raw-bits byte
+        // offsets so downstream consumers (multi-frame fusion,
+        // known-prefix recovery) can re-decode without re-running RS.
+        // RS reports positions in the concatenation [message | ecc];
+        // the de-interleaved raw-bits index for codeword `j` in this
+        // block is `j*stride + (offsetBlock + idxBlock)` for data
+        // bytes and `(j - msg.size())*stride + (offsetBlock + idxBlock)
+        // + offsetEcc` for ecc bytes.
+        int32_t msgSize = static_cast<int32_t>(message.size());
+        for (std::size_t k = 0; k < rscodes.errorLocations.size(); k++) {
+            int32_t loc = rscodes.errorLocations[k];
+            int32_t rawIdx;
+            if (loc < msgSize) {
+                rawIdx = loc * stride + offsetBlock + idxBlock;
+            } else {
+                rawIdx = (loc - msgSize) * stride + offsetBlock + idxBlock
+                         + offsetEcc;
+            }
+            qr.rsErrorLocations.push_back(rawIdx);
+        }
 
         QrCodeCodecBitsUtils::flipBits8(message, message.size());
         for (std::size_t i = 0; i < message.size(); i++)

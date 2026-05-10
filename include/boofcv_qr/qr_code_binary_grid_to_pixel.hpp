@@ -43,12 +43,27 @@ public:
 
     // Add the 12 finder-corner correspondences and any alignment
     // patterns from `qr`. Caller must then call computeTransform().
+    //
+    // The 6-arg overload was the only one available before step 9
+    // because `QrCode` lacked the geometry fields. It is preserved
+    // for the step-7/8 callers that still need to pass the polygons
+    // explicitly.
     void addAllFeatures(const QrCode& qr,
                         const std::array<cv::Point2d, 4>& ppCorner,
                         const std::array<cv::Point2d, 4>& ppRight,
                         const std::array<cv::Point2d, 4>& ppDown,
                         const std::vector<cv::Point2d>& alignmentCenters,
                         const std::vector<cv::Point2d>& alignmentGridCoords);
+
+    // Java's 1-arg signature — reads `qr.ppCorner`/`ppRight`/`ppDown`
+    // and `qr.alignment[]` directly. Step-9 orchestrator path.
+    void addAllFeatures(const QrCode& qr);
+
+    // Estimate image-to-grid before the version is known. The top-left
+    // finder square fixes the coordinate system; 4 lines between the
+    // finders make the fit less sensitive to errors at any one corner.
+    // Mirrors Java's `setTransformFromLinesSquare(QrCode)`.
+    void setTransformFromLinesSquare(const QrCode& qr);
 
     // Outside corners of finder patterns are commonly damaged — drop
     // pairs at indices 0, 5, 11 (must follow exactly addAllFeatures).

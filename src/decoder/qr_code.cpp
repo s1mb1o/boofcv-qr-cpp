@@ -303,6 +303,18 @@ void QrCode::reset() {
     bitsTransposed = false;
     totalBitErrors = 0;
     alignment.clear();
+    // Step-9 geometry fields.
+    for (std::size_t i = 0; i < 4; i++) {
+        ppCorner[i] = cv::Point2d(0.0, 0.0);
+        ppRight[i] = cv::Point2d(0.0, 0.0);
+        ppDown[i] = cv::Point2d(0.0, 0.0);
+        bounds[i] = cv::Point2d(0.0, 0.0);
+    }
+    Hinv = cv::Matx33d::eye();
+    // Step-9 mandate fields.
+    rawCodewords.clear();
+    rsErrorLocations.clear();
+    blockStatus.clear();
 }
 
 }  // namespace boofcv_qr

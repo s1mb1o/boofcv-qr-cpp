@@ -1,0 +1,11 @@
+name = v3_M_mixed
+version = 3
+error = M
+message = 1235AFefg
+module_pixels = 4
+border_modules = 4
+image_size = 148
+num_modules = 29
+ppCorner = 16,16 44,16 44,44 16,44
+ppRight = 104,16 132,16 132,44 104,44
+ppDown = 16,104 44,104 44,132 16,132

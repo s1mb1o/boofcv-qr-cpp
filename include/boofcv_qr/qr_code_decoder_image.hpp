@@ -1,0 +1,222 @@
+// Port of boofcv.alg.fiducial.qrcode.QrCodeDecoderImage (BoofCV v1.3.0).
+// Step 9: top-level orchestrator that consumes a `PositionPatternNode`
+// graph from step 7c and a `cv::Mat CV_8UC1` source image, runs the
+// full decode pipeline (format → version → alignment → iterative-
+// transform/readRawData → RS → mode dispatch), and produces a
+// `std::vector<QrCode>` of successes plus a `std::vector<QrCode>` of
+// failures-with-cause.
+//
+// Per CLAUDE.md type mappings: ImageGray<T> -> cv::Mat CV_8UC1
+// (template <T> dropped). Lens distortion not ported (deferred —
+// downstream pricetag-vision pipeline doesn't use it).
+//
+// CLAUDE.md "Public API design" mandates that land here:
+//   1. Stage-isolation public entry points (find_finders,
+//      sample_bit_matrix, extract_raw_codewords, rs_correct,
+//      decode_message).
+//   2. Strategy injection: std::function hooks for RS decoder + the
+//      alignment-pattern locator.
+//   3. detect_polygons_only() polygon-only mode.
+//   4. rawCodewords / rsErrorLocations / blockStatus surfaced on QrCode.
+//   5. setTransformFromLinesSquare / setMarkerUnknownVersion finally
+//      get used (rough-homography pre-version path).
+//   6. bitsTransposed retry path.
+//   7. pybind11-friendliness — no raw pointers in public signatures.
+//
+// Algorithm description: src/decoder/qr_code_decoder_image.md.
+
+#ifndef BOOFCV_QR_QR_CODE_DECODER_IMAGE_HPP
+#define BOOFCV_QR_QR_CODE_DECODER_IMAGE_HPP
+
+#include "boofcv_qr/alignment/qr_code_alignment_pattern_locator.hpp"
+#include "boofcv_qr/packed_bits.hpp"
+#include "boofcv_qr/position_pattern_node.hpp"
+#include "boofcv_qr/qr_code.hpp"
+#include "boofcv_qr/qr_code_binary_grid_reader.hpp"
+#include "boofcv_qr/qr_code_codeword_locations.hpp"
+#include "boofcv_qr/qr_code_decoder_bits.hpp"
+
+#include <opencv2/core.hpp>
+
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace boofcv_qr {
+
+// Helper struct surfaced by `find_finders(...)` — finder triplets
+// without running any decoding. Each triplet is in canonical
+// orientation (`setPositionPatterns` rotated the polygons so corners
+// align with Java's `ppCorner[0..3]` / `ppRight[0..3]` / `ppDown[0..3]`
+// ordering convention).
+struct PositionPatternTriplet {
+    std::array<cv::Point2d, 4> ppCorner{};
+    std::array<cv::Point2d, 4> ppRight{};
+    std::array<cv::Point2d, 4> ppDown{};
+    double threshCorner = 0.0;
+    double threshRight = 0.0;
+    double threshDown = 0.0;
+};
+
+// Result of `detect_polygons_only(...)` — runs binarize → polygon →
+// finder → alignment but stops before sampling/RS/mode. The
+// `qrCodes` vector contains one QrCode entry per candidate triplet
+// with `ppCorner`/`ppRight`/`ppDown`/`bounds`/`alignment[]` populated
+// but `version`/`error`/`mask`/`message`/`rawbits`/`corrected` left
+// empty.
+struct PolygonOnlyResult {
+    std::vector<QrCode> qrCodes;
+};
+
+class QrCodeDecoderImage {
+public:
+    // Strategy-injection hook for RS error correction. Returns true
+    // on success. Default = use the built-in `QrCodeDecoderBits`. The
+    // hook may inspect/mutate `qr.rawbits`, `qr.corrected`,
+    // `qr.rsErrorLocations`, `qr.blockStatus`, etc.
+    using RsCorrectFn = std::function<bool(QrCode& qr)>;
+
+    // Strategy-injection hook for alignment-pattern localisation.
+    // Returns true if all expected alignment patterns were found.
+    // Default = use the built-in `QrCodeAlignmentPatternLocator`.
+    using AlignmentLocatorFn = std::function<bool(const cv::Mat& gray, QrCode& qr)>;
+
+    // forceEncoding mirrors Java's `forceEncoding` arg — when set,
+    // overrides the byte-mode encoding auto-detection.
+    // defaultEncoding mirrors Java's `defaultEncoding` arg — used when
+    // auto-detection finds no ECI and the byte mode produces invalid
+    // UTF-8 / Latin-1.
+    explicit QrCodeDecoderImage(std::optional<std::string> forceEncoding,
+                                std::string defaultEncoding = "UTF-8");
+
+    // ---- End-to-end entry — Java's `process()`. ----
+    //
+    // Runs the full pipeline on every PositionPatternNode triplet
+    // walked from the `pps` graph. After this returns, `getSuccesses()`
+    // and `getFailures()` reflect what was decoded.
+    void process(const std::vector<PositionPatternNode>& pps,
+                 const cv::Mat& gray);
+
+    // ---- Stage-isolation public entry points (CLAUDE.md mandate). ----
+    //
+    // `find_finders` — given a PositionPatternNode graph, walk it and
+    // emit the canonical-orientation finder triplets. No decoding.
+    static std::vector<PositionPatternTriplet> find_finders(
+        const std::vector<PositionPatternNode>& pps);
+
+    // `detect_polygons_only` — runs `find_finders` + alignment locator
+    // (with the default or injected hook) + `setPositionPatterns` /
+    // `computeBoundingBox`, then stops. Returns a vector of QrCode
+    // shells with geometry + alignment fields populated.
+    PolygonOnlyResult detect_polygons_only(
+        const std::vector<PositionPatternNode>& pps, const cv::Mat& gray);
+
+    // `sample_bit_matrix` — sample the QR's bit matrix at a known
+    // version + finder geometry. Pre-fills `qr.rawbits` with N bytes
+    // where N = VERSION_INFO[version].codewords. Caller must have
+    // already populated `qr.ppCorner` / `ppRight` / `ppDown`,
+    // `qr.version`, `qr.error`, `qr.mask`, and the threshold fields.
+    bool sample_bit_matrix(const cv::Mat& gray, QrCode& qr);
+
+    // `extract_raw_codewords` — alias of `sample_bit_matrix` that also
+    // mirrors the orchestrator's `qr.rawCodewords = qr.rawbits` step
+    // so the public mandate field is populated.
+    bool extract_raw_codewords(const cv::Mat& gray, QrCode& qr);
+
+    // `rs_correct` — runs Reed-Solomon on `qr.rawbits` (or honours the
+    // injected `rs_decoder` strategy). Populates `qr.corrected`,
+    // `qr.totalBitErrors`, `qr.rsErrorLocations`, `qr.blockStatus`.
+    bool rs_correct(QrCode& qr);
+
+    // `decode_message` — runs the mode-dispatch payload extractor on
+    // `qr.corrected`. Populates `qr.message`, `qr.byteEncoding`,
+    // `qr.mode`. Returns false on hard mode-decode failure (with
+    // `qr.failureCause` set).
+    bool decode_message(QrCode& qr);
+
+    // ---- Strategy injection (CLAUDE.md mandate). ----
+    void setRsCorrectStrategy(RsCorrectFn fn) { rsHook_ = std::move(fn); }
+    void setAlignmentStrategy(AlignmentLocatorFn fn) {
+        alignmentHook_ = std::move(fn);
+    }
+    void clearRsCorrectStrategy() { rsHook_ = nullptr; }
+    void clearAlignmentStrategy() { alignmentHook_ = nullptr; }
+
+    // ---- Result accessors (mirror Java's getSuccesses/getFailures). ----
+    const std::vector<QrCode>& getSuccesses() const { return successes_; }
+    const std::vector<QrCode>& getFailures() const { return failures_; }
+    std::vector<QrCode>& getSuccesses() { return successes_; }
+    std::vector<QrCode>& getFailures() { return failures_; }
+
+    // Internal sub-modules — exposed for tests + parity diagnostics.
+    QrCodeAlignmentPatternLocator& getAlignmentLocator() {
+        return alignmentLocator_;
+    }
+    QrCodeBinaryGridReader& getGridReader() { return gridReader_; }
+    QrCodeDecoderBits& getDecoder() { return decoder_; }
+
+    // Mirrors Java's public field — when true, decode() retries with
+    // a transposed bit pattern if the first pass fails (mis-encoded
+    // QR codes).
+    bool considerTransposed = true;
+
+    // ---- TEST-VISIBLE static helpers (Java JUnit pokes these directly). ----
+    static void setPositionPatterns(const PositionPatternNode& ppn,
+                                    int32_t cornerToRight,
+                                    int32_t cornerToDown,
+                                    QrCode& qr);
+    static void rotateUntilAt(std::array<cv::Point2d, 4>& square,
+                              int32_t current, int32_t desired);
+    static void computeBoundingBox(QrCode& qr);
+    static void transposeCorners(std::array<cv::Point2d, 4>& c);
+
+    // ---- TEST-VISIBLE non-static (Java JUnit pokes these directly). ----
+    void transposePositionPatterns(QrCode& qr);
+    bool extractFormatInfo(QrCode& qr);
+    bool extractVersionInfo(QrCode& qr);
+    int32_t estimateVersionBySize(QrCode& qr);
+    int32_t decodeVersion();
+    bool readFormatRegion0(QrCode& qr);
+    bool readFormatRegion1(QrCode& qr);
+
+    // Version-info read regions — Java has these as private; we expose
+    // them so `extractVersionInfo`'s parity tests can poke at them.
+    bool readVersionRegion0(QrCode& qr);
+    bool readVersionRegion1(QrCode& qr);
+
+private:
+    bool decode(const cv::Mat& gray, QrCode& qr);
+    bool readRawData(QrCode& qr);
+    float readBitIntensityAndThresholdDownRight(
+        QrCode& qr, const std::vector<Point2I>& locationBits);
+    void bitIntensityToBitValue(QrCode& qr,
+                                const std::vector<Point2I>& locationBits);
+    void read(int32_t bit, int32_t row, int32_t col);
+
+    // ---- Sub-modules. ----
+    QrCodeDecoderBits decoder_;
+    QrCodeAlignmentPatternLocator alignmentLocator_;
+    QrCodeBinaryGridReader gridReader_;
+
+    // ---- Result storage. ----
+    std::vector<QrCode> successes_;
+    std::vector<QrCode> failures_;
+    std::vector<QrCode> storageQR_;  // Java DogArray<QrCode> recycle pool
+
+    // ---- Internal workspace. ----
+    PackedBits8 bits_;
+    cv::Point2d grid_{0.0, 0.0};
+    std::array<cv::Point2d, 4> tempTranspose_{};
+    std::vector<float> intensityBits_;
+
+    // ---- Strategy-injection hooks. ----
+    RsCorrectFn rsHook_;
+    AlignmentLocatorFn alignmentHook_;
+};
+
+}  // namespace boofcv_qr
+
+#endif  // BOOFCV_QR_QR_CODE_DECODER_IMAGE_HPP

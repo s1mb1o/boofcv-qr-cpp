@@ -1,0 +1,11 @@
+name = v5_M_alphanum
+version = 5
+error = M
+message = ALPHANUMTESTV5
+module_pixels = 4
+border_modules = 4
+image_size = 180
+num_modules = 37
+ppCorner = 16,16 44,16 44,44 16,44
+ppRight = 136,16 164,16 164,44 136,44
+ppDown = 16,136 44,136 44,164 16,164
