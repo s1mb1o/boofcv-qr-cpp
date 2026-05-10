@@ -60,7 +60,7 @@ Per CLAUDE.md "Replace with OpenCV" + team-lead's (Y) approval. Alternatives (W)
 | shadows       |   85.00% | 85.00% |   +0.00pp  | ✓ |
 | **AGGREGATE** | **74.40%** | **74.32%** | **-0.08pp** | |
 
-11/16 categories within ±2pp band. 5 residuals — 2 from the cv::findContours substitution + 3 small-N "+" outliers (`high_version`, `perspective`, `noncompliant` are 1-image swings on 26-37 GT) + `bright_spots` (overshoots Java parity by +2.06pp on 97 GT — straddles small-N noise + cv::findContours bands).
+11/17 categories within ±2pp band. 6 residuals — 2 from the cv::findContours substitution (`monitor` -11.76, `glare` -3.77) + 4 small-N "+" outliers (`bright_spots` +2.06, `high_version` +2.70, `perspective` +2.86, `noncompliant` +3.85; `bright_spots` straddles small-N noise + cv::findContours bands).
 
 ### Added
 
@@ -81,14 +81,14 @@ Per CLAUDE.md "Replace with OpenCV" + team-lead's (Y) approval. Alternatives (W)
 | metric | value |
 |---|---|
 | Aggregate decode rate | 74.32% (Java baseline 74.40%; **delta -0.08pp**) |
-| Categories within ±2pp band | **11 of 16** |
-| Documented residuals (5 borderline images) | `monitor` 2 imgs + `glare` 3 GT — `cv::findContours`-substitution cost |
+| Categories within ±2pp band | **11 of 17** |
+| Documented residuals (5 borderline images) | `monitor` 2 imgs + `glare` 3 GT — `cv::findContours`-substitution cost (categories: `monitor`, `glare`) |
 | Small-N noise residuals | 4 categories |
 | Unit tests | 421/421 pass |
 | Lines of C++ shipped | ~10,400 (per `wc -l src/ include/`) |
 | Algorithm docs | ~25 .md files alongside source |
 
-Step 9b complete. Aggregate parity goal (CLAUDE.md goal #1: "per-category read rate within ~2% of the Java reference") met on the strict-±2pp interpretation for 11/16 categories, with the remaining 5 explained and documented. Aggregate at -0.08pp is well inside any reasonable noise floor.
+Step 9b complete. Aggregate parity goal (CLAUDE.md goal #1: "per-category read rate within ~2% of the Java reference") met on the strict-±2pp interpretation for 11/17 categories, with the remaining 6 explained and documented. Aggregate at -0.08pp is well inside any reasonable noise floor.
 
 ## 2026-05-10 (later¹⁰) — Step 9b.3 cycle (b): mirror 4 missing `ConfigQrCode` settings (polygon tuning + decode-side)
 

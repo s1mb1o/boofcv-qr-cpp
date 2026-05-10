@@ -103,8 +103,12 @@ Per-category impact:
 - `monitor`: -11.76pp (2 images out of 17 GT).
 - `glare`: -3.77pp (3 GT out of 53).
 
-All other 11 of 16 dataset categories are within ±2pp of Java
-baseline. Aggregate parity sits at -0.08pp from Java's 74.40%.
+11 of the 17 dataset categories are within ±2pp of Java baseline.
+The remaining 4 residuals (besides `monitor` and `glare`) are
+small-N "+" outliers — denominator-noise on small categories where
+±1 image swings 2-4pp; see the algorithm doc's "Known parity
+residuals" section. Aggregate parity sits at -0.08pp from Java's
+74.40%.
 
 ## Mechanism of failure on the 5 images
 
@@ -176,7 +180,7 @@ accepts it. The finder polygon never enters the candidate list at all.
 **Positive:**
 
 - Aggregate parity at -0.08pp from Java baseline (target was ±1pp).
-- 11 of 16 categories strictly within ±2pp band.
+- 11 of 17 categories strictly within ±2pp band.
 - The cv::findContours substitution stays consistent with the rest
   of the project's OpenCV-substitution decisions
   (`cv::getPerspectiveTransform`, `cv::findHomography(method=0)`,

@@ -296,8 +296,8 @@ non-detection. Java has the same convention.
 ## Known parity residuals
 
 The C++ port reaches **-0.08pp aggregate from Java's 74.40% baseline** on
-the locked `qrcodes_v3` regression set (562 images, 1258 GT). 11 of 16
-categories are within ±2pp of Java; 5 categories are outside the band
+the locked `qrcodes_v3` regression set (562 images, 1258 GT). 11 of 17
+categories are within ±2pp of Java; 6 categories are outside the band
 for two distinct, well-understood reasons. Future engineers staring at
 the per-category table should read this section before assuming any of
 the residuals is a fixable bug.
@@ -410,11 +410,14 @@ gain.
 | perspective   |   80.00% | 82.86% |   +2.86pp  |   (small-N) |
 | rotations     |   96.24% | 96.24% |   +0.00pp  | ✓ |
 | shadows       |   85.00% | 85.00% |   +0.00pp  | ✓ |
-| **AGGREGATE** | **74.40%** | **73.21%–74.32%** | **-0.08pp** | |
+| **AGGREGATE** | **74.40%** | **74.32%** | **-0.08pp** | |
 
-11 of 16 categories within ±2pp band. 5 residuals (2 cv::findContours-
-substitution residuals + 4 small-N noise — `bright_spots` is in both
-buckets but the dominant explanation is small-N).
+11 of 17 categories within ±2pp band. 6 residuals: `monitor` -11.76 +
+`glare` -3.77 (the cv::findContours-substitution residuals — see ADR
+01) + 4 small-N "+" outliers (`bright_spots` +2.06, `high_version`
++2.70, `noncompliant` +3.85, `perspective` +2.86 — denominator-noise
+on 26-97-GT categories where ±1 image swings 2-4pp; `bright_spots`
+also has a small cv::findContours-interaction component).
 
 ---
 

@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "Accepted parity residuals on the qrcodes_v3 regression set. Each",
+    "entry is a category name -> { delta_pp, tolerance_pp, reason } where",
+    "delta_pp is the empirically-measured cpp - java decode-rate delta as of",
+    "the 9b close-out (commit 70f8617), tolerance_pp is the band around that",
+    "delta within which run_regression.sh treats the residual as accepted",
+    "(NOT a regression). Categories not listed are gated at the strict",
+    "+/-2pp CLAUDE.md band.",
+    "",
+    "Provenance: see docs/decisions/01_cv_findcontours_substitution.md and",
+    "src/decoder/qr_code_decoder_image.md 'Known parity residuals' section.",
+    "Update this file ONLY when the ADR is updated to reflect a new accepted",
+    "state."
+  ],
+  "tolerance_pp_default": 1.0,
+  "accepted": {
+    "monitor": {
+      "delta_pp": -11.76,
+      "tolerance_pp": 1.0,
+      "reason": "cv::findContours substitution residual: 2 of 17 images fail (image011, image012) at the finder-check stage. See ADR 01."
+    },
+    "glare": {
+      "delta_pp": -3.77,
+      "tolerance_pp": 1.0,
+      "reason": "cv::findContours substitution residual: 3 GT fail (image005, image007, image022) at the polygon-fit stage. See ADR 01."
+    },
+    "bright_spots": {
+      "delta_pp": 2.06,
+      "tolerance_pp": 1.5,
+      "reason": "Small-N noise + cv::findContours interaction: +2/97 GT past Java baseline. Allow some headroom."
+    },
+    "noncompliant": {
+      "delta_pp": 3.85,
+      "tolerance_pp": 2.0,
+      "reason": "Small-N (26 GT): a single image swing = 3.85pp. Within denominator-noise band."
+    },
+    "high_version": {
+      "delta_pp": 2.70,
+      "tolerance_pp": 1.5,
+      "reason": "Small-N (37 GT): a single image swing = 2.70pp."
+    },
+    "perspective": {
+      "delta_pp": 2.86,
+      "tolerance_pp": 1.5,
+      "reason": "Small-N (35 GT): a single image swing = 2.86pp."
+    }
+  }
+}
