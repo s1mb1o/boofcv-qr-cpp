@@ -7,7 +7,7 @@ behavior.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests -- -j
+cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests boofcv_qr_python -- -j
 ctest --test-dir build --output-on-failure
 ```
 
@@ -20,6 +20,15 @@ build/qr_scan tests/fixtures/qr/full_v1_L_M000.png
 ```
 
 Expected: JSON is printed to stdout and the process exits with status 0.
+
+## Python PyBoof-Compatible API
+
+```bash
+PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
+```
+
+Expected: `FactoryFiducial(np.uint8).qrcode()` detects the fixture QR code and
+exposes PyBoof-style detection fields.
 
 ## BoofCV Regression Dataset
 

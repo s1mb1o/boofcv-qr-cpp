@@ -8,8 +8,14 @@ otherwise.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests -- -j
+cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests boofcv_qr_python -- -j
 ctest --test-dir build --output-on-failure
+```
+
+For the package build:
+
+```bash
+python3 -m pip wheel . -w /tmp/boofcv_qr_wheel
 ```
 
 If you have the BoofCV QR regression dataset locally:

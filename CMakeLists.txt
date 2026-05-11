@@ -71,6 +71,8 @@ add_library(boofcv_qr STATIC
     src/alignment/qr_code_alignment_pattern_locator.cpp
 )
 
+set_target_properties(boofcv_qr PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(boofcv_qr
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -105,6 +107,62 @@ if(BOOFCV_QR_BUILD_CLI)
             -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
         )
     endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Python bindings — PyBoof-compatible QR subset.
+# ---------------------------------------------------------------------------
+option(BOOFCV_QR_BUILD_PYTHON "Build the boofcv_qr Python extension module" ON)
+if(BOOFCV_QR_BUILD_PYTHON)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+
+    find_package(pybind11 CONFIG QUIET)
+    if(NOT pybind11_FOUND)
+        include(FetchContent)
+        FetchContent_Declare(
+            pybind11
+            GIT_REPOSITORY https://github.com/pybind/pybind11.git
+            GIT_TAG v3.0.4
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(pybind11)
+    endif()
+
+    pybind11_add_module(boofcv_qr_python MODULE
+        bindings/python/boofcv_qr_bindings.cpp
+    )
+    set_target_properties(boofcv_qr_python PROPERTIES
+        OUTPUT_NAME "_boofcv_qr"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python/boofcv_qr"
+    )
+    target_link_libraries(boofcv_qr_python PRIVATE
+        boofcv_qr
+        opencv_imgcodecs
+        opencv_imgproc
+    )
+    target_compile_definitions(boofcv_qr_python PRIVATE
+        BOOFCV_QR_VERSION="${PROJECT_VERSION}"
+    )
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(boofcv_qr_python PRIVATE
+            -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+        )
+    endif()
+
+    add_custom_command(TARGET boofcv_qr_python POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/python/boofcv_qr"
+            "${CMAKE_CURRENT_BINARY_DIR}/python/boofcv_qr"
+    )
+
+    install(TARGETS boofcv_qr_python LIBRARY DESTINATION boofcv_qr)
+    install(DIRECTORY python/boofcv_qr/
+        DESTINATION boofcv_qr
+        FILES_MATCHING
+            PATTERN "*.py"
+            PATTERN "*.pyi"
+            PATTERN "py.typed"
+    )
 endif()
 
 # ---------------------------------------------------------------------------
@@ -165,4 +223,17 @@ if(BOOFCV_QR_BUILD_TESTS)
 
     include(GoogleTest)
     gtest_discover_tests(boofcv_qr_tests)
+
+    if(BOOFCV_QR_BUILD_PYTHON)
+        add_dependencies(boofcv_qr_tests boofcv_qr_python)
+        add_test(
+            NAME python_pyboof_compat
+            COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_pyboof_compat.py"
+        )
+        set_tests_properties(python_pyboof_compat PROPERTIES
+            ENVIRONMENT
+                "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python;BOOFCV_QR_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/qr"
+        )
+    endif()
 endif()

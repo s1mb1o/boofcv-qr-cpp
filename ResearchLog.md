@@ -1,5 +1,43 @@
 # ResearchLog
 
+## 2026-05-11 — PyBoof-compatible Python QR subset
+
+### Why
+
+Expose the port to Python while matching the PyBoof QR detector shape closely
+enough that existing QR-only examples are easy to translate.
+
+### Findings
+
+Local PyBoof QR usage is centered on:
+
+```python
+detector = pb.FactoryFiducial(np.uint8).qrcode()
+image = pb.load_single_band(path, np.uint8)
+detector.detect(image)
+detector.detections
+detector.failures
+```
+
+The compatible surface therefore needs `FactoryFiducial`, `ConfigQrCode`,
+`QrCodeDetector`, `QrCode`, `Polygon2D`, `Point2D`, and `load_single_band`.
+The image type can stay constrained to `np.uint8` / GrayU8 because the QR
+pipeline itself is GrayU8-only in this port.
+
+### Decision
+
+Ship a pybind11 extension as package `boofcv_qr`, not `pyboof`. The API mirrors
+the PyBoof QR subset above but does not claim to be a full PyBoof replacement
+or provide JVM-backed BoofCV modules outside QR detection/decoding.
+
+### Consequences
+
+- Existing Python code should import `boofcv_qr as pb` for PyBoof-like QR usage.
+- CMake builds expose the package through `build/python` after the
+  `boofcv_qr_python` target is built.
+- Wheel builds use `scikit-build-core`; OpenCV remains a native system
+  dependency discovered by CMake.
+
 ## 2026-05-11 — Public repository naming and publication readiness
 
 ### Why

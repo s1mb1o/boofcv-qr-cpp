@@ -1,0 +1,47 @@
+[build-system]
+requires = [
+  "scikit-build-core>=0.10",
+  "pybind11>=3.0.4",
+  "numpy>=1.21",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "boofcv-qr-cpp"
+version = "0.1.0"
+description = "Unofficial C++17/OpenCV port of BoofCV's QR code detector/decoder"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Alexander Shmelev" },
+]
+keywords = ["boofcv", "opencv", "qr-code", "qrcode", "computer-vision"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+  "numpy>=1.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/ashmelev/boofcv-qr-cpp"
+Source = "https://github.com/ashmelev/boofcv-qr-cpp"
+
+[tool.scikit-build]
+cmake.args = [
+  "-DBOOFCV_QR_BUILD_TESTS=OFF",
+  "-DBOOFCV_QR_BUILD_CLI=OFF",
+  "-DBOOFCV_QR_BUILD_PYTHON=ON",
+]
+wheel.packages = ["python/boofcv_qr"]

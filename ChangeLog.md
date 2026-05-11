@@ -1,5 +1,55 @@
 # ChangeLog
 
+## 2026-05-11 (later²⁰) — python: add PyBoof-compatible QR bindings
+
+Added native Python bindings for the BoofCV QR pipeline, packaged as
+`boofcv_qr` and shaped after PyBoof's QR detector subset.
+
+### Added
+
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  pybind11 module exposing `FactoryFiducial`, `ConfigQrCode`,
+  `QrCodeDetector`, `QrCode`, `Polygon2D`, `Point2D`, and
+  `load_single_band()`.
+- [python/boofcv_qr/](python/boofcv_qr/): import package, type stub, and
+  `py.typed` marker.
+- [pyproject.toml](pyproject.toml): `scikit-build-core` wheel build for the
+  native extension.
+- [tests/python/test_pyboof_compat.py](tests/python/test_pyboof_compat.py):
+  PyBoof-style compatibility smoke test using
+  `FactoryFiducial(np.uint8).qrcode()`.
+- [docs/decisions/08_python_pyboof_qr_subset.md](docs/decisions/08_python_pyboof_qr_subset.md):
+  documented why the package is named `boofcv_qr` while mirroring the PyBoof QR
+  subset.
+
+### Changed
+
+- [CMakeLists.txt](CMakeLists.txt): added `BOOFCV_QR_BUILD_PYTHON`,
+  `boofcv_qr_python`, position-independent core-library objects, install rules,
+  and a CTest Python compatibility test.
+- [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md),
+  [SMOKE_TESTS.md](SMOKE_TESTS.md), and [.github/workflows/ci.yml](.github/workflows/ci.yml):
+  documented and exercised the Python build/test path.
+- [.gitignore](.gitignore): ignored Python build and wheel artifacts.
+- [ResearchLog.md](ResearchLog.md): recorded the PyBoof subset compatibility
+  scope and package-name decision.
+
+### Verification
+
+- `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` -> PASS.
+- `cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests boofcv_qr_python -- -j`
+  -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `PYTHONPATH=build/python BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr python3 tests/python/test_pyboof_compat.py`
+  -> PASS.
+- `python3 -m pip wheel . -w /tmp/boofcv_qr_wheel` -> PASS.
+- Clean venv install from the built wheel plus
+  `BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr /tmp/boofcv_qr_venv/bin/python tests/python/test_pyboof_compat.py`
+  -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%, 3026 ms total elapsed.
+- `git diff --check` -> PASS.
+
 ## 2026-05-11 (later¹⁹) — docs: clarify Python usage status
 
 Clarified that `boofcv-qr-cpp` is not yet a native Python package.

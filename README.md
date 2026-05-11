@@ -24,22 +24,27 @@ implementation are maintained at <https://github.com/lessthanoptimal/BoofCV>.
 - CMake 3.16+
 - C++17 compiler
 - OpenCV 4.5+ with `core`, `calib3d`, `imgproc`, and `imgcodecs`
-- Python 3 for the regression scorer
+- Python 3 with development headers for the Python extension
+- NumPy for the Python compatibility test and package runtime
 
-GoogleTest is fetched by CMake when tests are enabled.
+GoogleTest and pybind11 are fetched by CMake when tests/bindings are enabled
+and pybind11 is not already installed.
 
 ## Build
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests -- -j
+cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests boofcv_qr_python -- -j
 ctest --test-dir build --output-on-failure
 ```
 
 Disable optional targets if needed:
 
 ```bash
-cmake -S . -B build -DBOOFCV_QR_BUILD_TESTS=OFF -DBOOFCV_QR_BUILD_CLI=OFF
+cmake -S . -B build \
+  -DBOOFCV_QR_BUILD_TESTS=OFF \
+  -DBOOFCV_QR_BUILD_CLI=OFF \
+  -DBOOFCV_QR_BUILD_PYTHON=OFF
 ```
 
 ## CLI Usage
@@ -63,30 +68,37 @@ benchmarks:
 QR_SCAN_THREADS=8 build/qr_scan /path/to/images /path/to/output
 ```
 
-## Python Status
+## Python Usage
 
-Native Python bindings are not included yet. The public C++ API is designed to
-be pybind11-friendly, but this repository currently does not build a Python
-extension module, wheel, or `import boofcv_qr` package.
-
-Python code can use the project today by invoking the `qr_scan` CLI and reading
-its JSON output:
+The Python package exposes a PyBoof-compatible QR subset under the
+`boofcv_qr` import name. It is not a full `pyboof` replacement: the binding
+currently supports BoofCV-style QR detection for GrayU8 / `numpy.uint8` images.
 
 ```python
-import json
-import subprocess
+import numpy as np
+import boofcv_qr as pb
 
-result = subprocess.run(
-    ["build/qr_scan", "image.png"],
-    check=True,
-    text=True,
-    capture_output=True,
-)
-record = json.loads(result.stdout)
+detector = pb.FactoryFiducial(np.uint8).qrcode()
+image = pb.load_single_band("image.png", np.uint8)
+
+detector.detect(image)
+for qr in detector.detections:
+    print(qr.message)
+    print(qr.bounds.convert_tuple())
 ```
 
-For in-process Python use, the next step is to add a pybind11 module that
-accepts `numpy`/`cv2` images and returns Python-native result dictionaries.
+Install from the checkout with:
+
+```bash
+python3 -m pip install .
+```
+
+For CMake builds, the in-tree package is available at `build/python` after
+building `boofcv_qr_python`:
+
+```bash
+PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
+```
 
 ## Regression Dataset
 

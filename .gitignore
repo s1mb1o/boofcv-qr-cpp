@@ -12,6 +12,10 @@ CMakeCache.txt
 CTestTestfile.cmake
 compile_commands.json
 Testing/
+dist/
+*.egg-info/
+_skbuild/
+wheelhouse/
 
 # OS / editor noise
 .DS_Store
