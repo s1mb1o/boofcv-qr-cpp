@@ -1,5 +1,32 @@
 # ChangeLog
 
+## 2026-05-11 (later⁶) — perf(contour): avoid coordinate division in `ContourTracer`
+
+First isolated perf target from the fresh bottleneck profile: keep the Chang contour-tracing algorithm identical, but remove avoidable arithmetic from the hottest contour-walk path.
+
+### Changed
+
+- [include/boofcv_qr/binary/contour_tracer.hpp](include/boofcv_qr/binary/contour_tracer.hpp) and [src/binary/contour_tracer.cpp](src/binary/contour_tracer.cpp): cache per-direction `(dx, dy)` tables alongside the existing linear-index offset tables, so `moveToNext()` updates coordinates directly instead of dividing/modding the linear binary index after every contour step.
+- `searchOne4()` / `searchOne8()` now wrap direction indices with `& 3` / `& 7` in the unrolled hot path. The invariant remains `dir in [0, ruleN)`.
+- [src/binary/linear_contour_label_chang2004.md](src/binary/linear_contour_label_chang2004.md): documents the representation-only optimisation and its parity invariants.
+
+### Performance
+
+Measured with `build/qr_scan --profile` on the two images used in the 2026-05-11 bottleneck profile:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 112.26 ms/iter | 107.65 ms/iter | -4.1% |
+| `lots/image005.jpg` (250 iters) | 142.15 ms/iter | 140.26 ms/iter | -1.3% |
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 428/428 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains 74.40%, with only the documented accepted residual categories out-of-band.
+
+---
+
 ## 2026-05-11 (later⁵) — perf(profile): compare current C++ vs BoofCV Java and identify bottlenecks
 
 Fresh performance pass on the BoofCV `qrcodes_v3` dataset, using a same-session Java reference run plus current C++ `qr_scan`.

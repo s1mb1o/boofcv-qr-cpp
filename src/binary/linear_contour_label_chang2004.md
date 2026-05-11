@@ -16,6 +16,8 @@ The algorithm is from Fu Chang, Chun-jen Chen, Chi-jen Lu, "A linear-time compon
 - **`LinearContourLabelChang2004` (this file).** Walks the binary image scan-line by scan-line, deciding at each foreground pixel whether to (1) start tracing a new external contour, (2) trace an internal hole contour, or (3) just propagate the left neighbour's label. This is the *driver*.
 - **`ContourTracer` (sibling file).** A Moore-neighbor 8-connected (or 4-connected) boundary follower. Given a seed pixel and an initial direction, it walks clockwise around the blob boundary until it returns to the start with the same direction, writing the blob's label into the label image and recording each boundary pixel into the packed-sets store.
 
+`ContourTracer` caches two parallel direction tables: linear pixel-index offsets for binary/labeled buffers, and `(dx, dy)` coordinate offsets for the same direction indices. The Java code recomputes `(x, y)` from the linear pixel index after each move; the C++ port updates `(x, y)` directly from the direction table so the hot contour-walk path avoids a division and modulo per boundary pixel. This is a representation-only optimisation: the direction order, seed directions, index updates, emitted contour points, and label writes are unchanged.
+
 ### Border padding
 
 Before scanning, the driver copies the input into a 1-pixel-zero-bordered buffer (`border = cv::Mat(H+2, W+2, CV_8UC1)`). This eliminates all bounds-checking inside the tracer's inner loop — neighbour lookups by precomputed pixel-index offsets simply walk into the zero border and immediately fail the `data[idx] == 1` test. Per the BoofCV comment this is ~25% faster than guarded access.
@@ -91,6 +93,15 @@ The per-pixel-ordering divergence is invisible to most consumers but propagates 
 - **`PolylineSplitMerge`** walks the contour pixel-by-pixel to fit corners; per-pixel ordering matters for the convex check, side-error filter, and corner-score-penalty filter, especially on small contours near the `minimumContour=40` floor.
 
 Aggregate cost on `qrcodes_v3`: ~0.4pp (5 borderline images on 562 total). Per-category: `monitor` -11.76pp, `glare` -3.77pp.
+
+### Contour-tracer micro-optimisation
+
+A 2026-05-11 profile pass after the `LinearContourLabelChang2004` port found `ContourTracer::searchOne8()` as the top C++ self-time function on noisy high-resolution images (`bright_spots/image012`: 35.6% of samples) and still a leading function on multi-QR images (`lots/image005`: 14.0%). The first safe optimisation keeps the algorithm identical but removes two avoidable arithmetic costs in that hot path:
+
+- Direction wrap in the unrolled 4- and 8-neighbour search uses bit masks (`& 3`, `& 7`) instead of `% 4` / `% 8`. `dir` is always in `[0, ruleN)`, so this is exactly equivalent.
+- `moveToNext()` updates `(x, y)` from precomputed coordinate deltas instead of recomputing them from the linear pixel index with division/modulo. Linear indices are still updated from the original stride-dependent offset tables, so label and binary writes hit the same pixels.
+
+Because this is algorithmic core, any future changes in this area must keep the JUnit-mirror contour tests and full `qrcodes_v3` regression green before commit.
 
 ### vs. classic flood-fill + boundary trace as separate passes
 

@@ -1,5 +1,66 @@
 # ResearchLog
 
+## 2026-05-11 — Target 1: contour-tracer arithmetic cleanup
+
+### Why
+
+The fresh bottleneck profile identified `ContourTracer::searchOne8()` as the top self-time function on `bright_spots/image012.jpg` (35.6% of samples) and a leading function on `lots/image005.jpg` (14.0%). The first target was intentionally narrow: remove arithmetic overhead from the contour-walk representation while preserving direction order, label writes, seed handling, and emitted contour points.
+
+### Change
+
+- Added coordinate-offset tables matching the existing direction-indexed linear-offset tables.
+- Changed `moveToNext()` to update `(x, y)` by the selected direction delta instead of recomputing `(x, y)` from `indexBinary` with division and modulo.
+- Changed unrolled neighbour direction wrap from `% 4` / `% 8` to `& 3` / `& 7`; the tracer invariant keeps `dir` in range, so this is exactly equivalent for the 4- and 8-connected rule sizes.
+
+### Commands
+
+Short noise check:
+
+```bash
+for img in \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg; do
+  for i in 1 2 3; do
+    build/qr_scan --profile "$img" 50
+  done
+done
+```
+
+Profile-count comparison:
+
+```bash
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+```
+
+### Result
+
+Short 50-iteration runs after the change:
+
+| image | runs ms/iter | best | median |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` | 107.22, 105.14, 105.46 | 105.14 | 105.46 |
+| `lots/image005.jpg` | 141.04, 140.77, 139.90 | 139.90 | 140.77 |
+
+Same iteration counts as the original profile:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 112.26 ms/iter | 107.65 ms/iter | -4.61 ms / -4.1% |
+| `lots/image005.jpg` (250 iters) | 142.15 ms/iter | 140.26 ms/iter | -1.89 ms / -1.3% |
+
+### Interpretation
+
+The change moves the contour-heavy high-resolution workload in the expected direction without changing detector output. The multi-QR workload improves only slightly because its cost is split between contour extraction and decoder-side transform / sampling work; that confirms the next target should be the small-matrix transform path rather than more contour-only cleanup unless a new profile says otherwise.
+
+### Verification
+
+`bash tools/cli/run_regression.sh` passed after the change. Aggregate C++ decode rate stayed byte-identical to the Java BoofCV baseline at 74.40%; the only out-of-band categories were the already documented accepted residuals (`bright_spots`, `glare`, `monitor`, `noncompliant`, `perspective`).
+
 ## 2026-05-11 — Fresh performance comparison and C++ bottleneck profile on `qrcodes_v3`
 
 ### Why

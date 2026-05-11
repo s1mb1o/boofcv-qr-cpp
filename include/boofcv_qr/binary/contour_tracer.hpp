@@ -99,6 +99,11 @@ private:
     // tables differ.
     std::array<int32_t, 8> offsetsBinary{};
     std::array<int32_t, 8> offsetsLabeled{};
+    // Coordinate deltas matching the same direction indices. Kept
+    // separate from linear offsets so `moveToNext()` avoids per-step
+    // division/modulo on the binary index.
+    std::array<int32_t, 8> offsetsX{};
+    std::array<int32_t, 8> offsetsY{};
     // Direction-of-search lookup: given the direction we travelled
     // into the current pixel, which direction should the next clockwise
     // search start from. Size = ruleN.

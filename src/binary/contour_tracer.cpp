@@ -34,6 +34,26 @@ void setOffsets4(std::array<int32_t, 8>& offsets, int32_t stride) {
     offsets[3] = -s;  // x =  0 y = -1
 }
 
+void setCoordinateOffsets8(std::array<int32_t, 8>& offsetX,
+                           std::array<int32_t, 8>& offsetY) {
+    offsetX[0] =  1; offsetY[0] =  0;
+    offsetX[1] =  1; offsetY[1] =  1;
+    offsetX[2] =  0; offsetY[2] =  1;
+    offsetX[3] = -1; offsetY[3] =  1;
+    offsetX[4] = -1; offsetY[4] =  0;
+    offsetX[5] = -1; offsetY[5] = -1;
+    offsetX[6] =  0; offsetY[6] = -1;
+    offsetX[7] =  1; offsetY[7] = -1;
+}
+
+void setCoordinateOffsets4(std::array<int32_t, 8>& offsetX,
+                           std::array<int32_t, 8>& offsetY) {
+    offsetX[0] =  1; offsetY[0] =  0;
+    offsetX[1] =  0; offsetY[1] =  1;
+    offsetX[2] = -1; offsetY[2] =  0;
+    offsetX[3] =  0; offsetY[3] = -1;
+}
+
 }  // namespace
 
 ContourTracer::ContourTracer(ConnectRule rule_)
@@ -45,9 +65,11 @@ ContourTracer::ContourTracer(ConnectRule rule_)
         // the square it came from is the opposite from the previous 'dir'
         for (int32_t i = 0; i < 8; i++)
             nextDirection[static_cast<std::size_t>(i)] = ((i + 4) % 8 + 2) % 8;
+        setCoordinateOffsets8(offsetsX, offsetsY);
     } else if (ConnectRule::FOUR == rule) {
         for (int32_t i = 0; i < 4; i++)
             nextDirection[static_cast<std::size_t>(i)] = ((i + 2) % 4 + 1) % 4;
+        setCoordinateOffsets4(offsetsX, offsetsY);
     } else {
         throw std::invalid_argument("Connectivity rule must be 4 or 8");
     }
@@ -132,44 +154,44 @@ bool ContourTracer::searchOne() {
 bool ContourTracer::searchOne4() {
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 4;
+    dir = (dir + 1) & 3;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 4;
+    dir = (dir + 1) & 3;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 4;
+    dir = (dir + 1) & 3;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 4;
+    dir = (dir + 1) & 3;
     return false;
 }
 
 bool ContourTracer::searchOne8() {
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     if (checkOne(indexBinary + offsetsBinary[static_cast<std::size_t>(dir)]))
         return true;
-    dir = (dir + 1) % 8;
+    dir = (dir + 1) & 7;
     return false;
 }
 
@@ -192,10 +214,8 @@ void ContourTracer::moveToNext() {
     // move to the next pixel using the precomputed pixel index offsets
     indexBinary += offsetsBinary[static_cast<std::size_t>(dir)];
     indexLabel += offsetsLabeled[static_cast<std::size_t>(dir)];
-    // compute the new pixel coordinate from the binary pixel index
-    int32_t a = indexBinary - binaryStartIndex;
-    x = a % binaryStride;
-    y = a / binaryStride;
+    x += offsetsX[static_cast<std::size_t>(dir)];
+    y += offsetsY[static_cast<std::size_t>(dir)];
 }
 
 void ContourTracer::add(int32_t x_, int32_t y_) {
