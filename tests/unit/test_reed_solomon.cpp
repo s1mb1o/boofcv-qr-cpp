@@ -156,6 +156,37 @@ TYPED_TEST(ReedSolomonCodesTyped, computeSyndromes) {
     }
 }
 
+TYPED_TEST(ReedSolomonCodesTyped, correct_noErrorsClearsPriorLocations) {
+    using WordT = TypeParam;
+    using RS = boofcv_qr::ReedSolomonCodesT<WordT>;
+
+    auto original = this->randomMessage(0xFF, 32);
+
+    for (int32_t base = 0; base < 2; base++) {
+        RS alg(8, primitive8, base);
+        alg.generator(10);
+
+        auto message = original;
+        std::vector<WordT> ecc;
+        alg.computeECC(message, ecc);
+
+        auto corrupted = message;
+        corrupted[5] = static_cast<WordT>(corrupted[5] ^ 0x12);
+        ASSERT_TRUE(alg.correct(corrupted, ecc));
+        EXPECT_EQ(message, corrupted);
+        EXPECT_GT(alg.getTotalErrors(), 0);
+
+        auto clean = message;
+        auto cleanEcc = ecc;
+        ASSERT_TRUE(alg.correct(clean, cleanEcc));
+        EXPECT_EQ(message, clean);
+        EXPECT_EQ(ecc, cleanEcc);
+        EXPECT_EQ(0, alg.getTotalErrors());
+        ASSERT_EQ(1u, alg.errorLocatorPoly.size());
+        EXPECT_EQ(1, alg.errorLocatorPoly[0]);
+    }
+}
+
 TYPED_TEST(ReedSolomonCodesTyped, generatorFamily0) {
     using WordT = TypeParam;
     using RS = boofcv_qr::ReedSolomonCodesT<WordT>;

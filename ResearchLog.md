@@ -1,5 +1,77 @@
 # ResearchLog
 
+## 2026-05-11 — Target 8: Reed-Solomon clean-codeword fast path
+
+### Why
+
+The refreshed `lots/image005` profile still showed
+`GaliosFieldTableOps::multiply()` at roughly 1.7% of samples through the
+Reed-Solomon correction path. A previous inline table-access trial failed the
+perf gate, so this pass targeted a narrower no-op path: QR blocks whose
+syndromes produce the trivial Berlekamp-Massey locator.
+
+Before this change, `correct()` always ran Chien search across the whole block
+and then entered Forney setup even when the locator polynomial was degree zero.
+That preserved output, but spent Galois table operations to discover no
+locations and correct nothing.
+
+### Change
+
+- After `findErrorLocatorPolynomialBM()`, `correct()` checks
+  `errorLocatorPoly.size() == 1`.
+- On that clean-codeword path, it clears `errorLocations` so
+  `getTotalErrors()` cannot report stale positions from a previous correction,
+  then returns `true`.
+- The corrupted-codeword path is unchanged: non-trivial locators still go
+  through brute-force Chien search and Forney correction.
+- Added a typed regression test that first corrects a corrupted message, then
+  runs a clean correction on the same decoder and verifies message/ECC
+  stability plus zero reported errors for both generator bases.
+
+The check is placed after BM instead of directly after syndromes so the public
+`errorLocatorPoly` workspace still reflects the stage result (`[1]`) for
+diagnostics and manual pipeline composition.
+
+### Commands
+
+```bash
+cmake --build build --target boofcv_qr_tests qr_scan -- -j
+ctest --test-dir build --output-on-failure -R 'ReedSolomon|Galois|QrCodeDecoderBits'
+ctest --test-dir build --output-on-failure
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+bash tools/cli/run_regression.sh
+```
+
+### Result
+
+Focused Reed-Solomon/Galois/decoder-bit tests passed 37/37, and the full unit
+suite passed 435/435.
+
+Fixed-count profile comparison against target 7:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `lots/image005.jpg` (250 iters) | 117.68 ms/iter | 116.30 ms/iter | -1.38 ms / -1.2% |
+| `bright_spots/image012.jpg` (300 iters) | 97.74 ms/iter | 96.98 ms/iter | -0.76 ms / -0.8% |
+
+Full regression:
+
+| metric | target 7 | target 8 | delta |
+|---|---:|---:|---:|
+| `summary.total_elapsed_ms` | 17457 ms | 17351 ms | -0.6% |
+| aggregate mean ms | 22.55 | 22.53 | -0.1% |
+| `bright_spots` mean ms | 67.90 ms | 67.12 ms | -1.1% |
+
+The category means remain noisy at this small target size, but both fixed
+probes and full-run total elapsed moved in the right direction. Quality is
+unchanged: regression PASS, aggregate decode rate remains byte-identical to
+the BoofCV Java baseline at **74.40%**.
+
 ## 2026-05-11 — Target 7: in-bounds fast path for `ContourEdgeIntensity`
 
 ### Why

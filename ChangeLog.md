@@ -1,5 +1,45 @@
 # ChangeLog
 
+## 2026-05-11 (later¹⁴) — perf(rs): skip Chien/Forney on clean codewords
+
+Implemented the low-priority Reed-Solomon/Galois target from the refreshed
+`lots` profile. Clean RS blocks still compute syndromes and the
+Berlekamp-Massey locator, but now return as soon as the locator is degree zero
+instead of running a no-op Chien search and Forney setup.
+
+### Changed
+
+- [include/boofcv_qr/reed_solomon.hpp](include/boofcv_qr/reed_solomon.hpp):
+  `ReedSolomonCodesT::correct()` clears stale `errorLocations` and returns
+  success when `errorLocatorPoly` is the trivial `[1]` no-error locator.
+- [tests/unit/test_reed_solomon.cpp](tests/unit/test_reed_solomon.cpp): added
+  typed coverage that a clean correction after a prior real correction leaves
+  the message/ECC unchanged and reports zero errors for both generator bases.
+- [src/reed_solomon/reed_solomon.md](src/reed_solomon/reed_solomon.md) and
+  [ResearchLog.md](ResearchLog.md): documented the clean-codeword fast path and
+  perf gate results.
+
+### Performance
+
+Compared against the post-edge target:
+
+| image / run | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 97.74 ms/iter | 96.98 ms/iter | -0.8% |
+| `lots/image005.jpg` (250 iters) | 117.68 ms/iter | 116.30 ms/iter | -1.2% |
+| Full regression `total_elapsed_ms` | 17.457 s | 17.351 s | -0.6% |
+| Aggregate detector mean | 22.55 ms | 22.53 ms | -0.1% |
+
+Quality is unchanged.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure -R 'ReedSolomon|Galois|QrCodeDecoderBits'` -> 37/37 PASS.
+- `ctest --test-dir build --output-on-failure` -> 435/435 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains
+  74.40%, with only the documented accepted residual categories out-of-band.
+
 ## 2026-05-11 (later¹³) — perf(edge): use in-bounds contour edge sampling
 
 Implemented the remaining edge-scoring part of the polyline/edge target. The

@@ -30,6 +30,10 @@ The decoder is a textbook BCH-form Reed-Solomon following the Wikiversity tutori
          Λ(x) = T(x)
      ```
    - The stored `B`/`b`/`m` mirror Java exactly. The commented-out `L` and `m` in the source are kept commented because the upstream did the same — they're load-bearing only for reference, the live algorithm reuses `B.size()` to track shift.
+   - If BM returns the trivial degree-zero locator `[1]`, `correct()` clears
+     `errorLocations` and returns success immediately. This is the clean
+     codeword fast path: syndromes/BM still ran, but Chien search and Forney
+     correction would be no-ops.
 
 3. **`findErrorLocations_BruteForce(errorLocator, messageLength, locations)`** — Chien search
    - Evaluate `Λ(α^i)` for `i = 0 .. messageLength`. Each root indicates an error at position `messageLength - i - 1`.
@@ -57,7 +61,7 @@ The decoder is a textbook BCH-form Reed-Solomon following the Wikiversity tutori
 
 - **Berlekamp-Massey vs Peterson-Gorenstein-Zierler.** PGZ requires Gaussian elimination on a `t×t` matrix where `t` is the number of errors — fine when `t` is fixed and known, but RS for QR doesn't know `t` ahead of time and the worst case is `t = (N-K)/2 ≈ 14` (QR version-40, level H). BM is `O(N²)`, branchless, and gracefully truncates when the actual error count is below the budget. Standard choice for software RS decoders.
 
-- **Chien search by brute force.** We loop `i = 0 .. N` evaluating `Λ(α^i)`. Faster alternatives exist (Horner-style update for Chien) but the loop runs at most a few hundred iterations per QR — not a hot path, and parity with Java matters more than micro-speed.
+- **Chien search by brute force.** We loop `i = 0 .. N` evaluating `Λ(α^i)`. Faster alternatives exist (Horner-style update for Chien) but the loop runs at most a few hundred iterations per QR. Clean codewords now skip this stage after BM emits `[1]`; corrupted codewords stay on the same brute-force search for Java parity.
 
 - **Forney over direct inversion.** Once the error locator is known, computing magnitudes via Forney avoids inverting the locator polynomial (which would be expensive and error-prone). The denominator `err_loc_prime` is the formal derivative of the error locator at each `X_i`; Forney pre-computes the contribution of every other `X_j ≠ i`.
 
@@ -72,6 +76,9 @@ The decoder is a textbook BCH-form Reed-Solomon following the Wikiversity tutori
 - **`computeECC` mutates `input`** then restores it. Not thread-safe on the same buffer; copy first if calling concurrently.
 - **`generatorBase` outside `{0, 1}`** throws at construction. We don't validate the primitive polynomial — passing a reducible one would silently produce a non-field, and tests would fail with garbage.
 - **`correct()` does not signal which positions were corrected** through its return — call `getTotalErrors()` afterwards or read `errorLocations` directly. The latter is public for that reason.
+- **Clean codewords report zero errors** by clearing `errorLocations` before
+  the fast return. This matters because decoder instances reuse workspace
+  across blocks.
 - **`generator_` member is named with a trailing underscore** to avoid clashing with the `generator(int degree)` member function. The Java original has both as `generator` because Java separates field/method namespaces. Keep this in mind when grepping across languages.
 - **Magnitude correction is XOR-applied to message-positions only** — if the error landed in the ECC region the syndrome still cleared it from the locator, but `correctErrors` skips writing it back. Side effect: the *message* is recovered but the ECC bytes you got back may still hold the corrupted values. QR decoding only consumes the message portion so this is harmless.
 - **`generatorBase = 1` magnitude path** (`magnitude *= X_i^-1`) is exercised by the `correct_random` Aztec config but not by QR's runtime path. Don't break it.

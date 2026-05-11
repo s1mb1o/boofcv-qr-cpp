@@ -55,14 +55,15 @@ public:
     bool correct(std::vector<WordT>& input, std::vector<WordT>& ecc) {
         computeSyndromes(input, ecc, syndromes);
         findErrorLocatorPolynomialBM(syndromes, errorLocatorPoly);
+        if (errorLocatorPoly.size() == 1) {
+            errorLocations.clear();
+            return true;
+        }
         if (!findErrorLocations_BruteForce(
                 errorLocatorPoly,
                 static_cast<int32_t>(input.size() + ecc.size()),
                 errorLocations))
             return false;
-
-        // see if there are no errors
-        // if (errorLocations.size() == 0) return true;
 
         correctErrors(input,
                       static_cast<int32_t>(input.size() + ecc.size()),
