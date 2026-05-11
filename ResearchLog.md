@@ -1,5 +1,160 @@
 # ResearchLog
 
+## 2026-05-11 — Post-target performance profile and rejected image-line trial
+
+### Why
+
+Targets 3-8 banked the remaining items from the refreshed bottleneck list:
+packed contour storage reuse, compact mixed line-DLT SVD, sliding Otsu local
+histograms, polyline corner/list pooling, in-bounds contour edge sampling, and
+the Reed-Solomon clean-codeword fast path. This pass checks the current tree
+against the locked BoofCV Java timing baseline and refreshes the bottleneck map
+before choosing any new target.
+
+### Commands
+
+Current full regression timing and parity gate:
+
+```bash
+bash tools/cli/run_regression.sh
+```
+
+Fixed-count probes:
+
+```bash
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+```
+
+Sampling profiles:
+
+```bash
+mkdir -p /tmp/qr_boofcv_post_targets_20260511
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  10000
+sample <pid> 10 -file /tmp/qr_boofcv_post_targets_20260511/sample_bright_spots_image012.txt
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  10000
+sample <pid> 10 -file /tmp/qr_boofcv_post_targets_20260511/sample_lots_image005.txt
+```
+
+### Current performance
+
+Quality is unchanged: regression PASS, aggregate decode rate remains
+byte-identical to the BoofCV Java baseline at **74.40%**.
+
+Current C++ versus locked BoofCV Java detector-core timing:
+
+| metric | BoofCV Java baseline | current C++ | C++ / Java |
+|---|---:|---:|---:|
+| Detector-core mean/image | 15.41 ms | 22.53 ms | 1.46x slower |
+| Detector-core p50 | 5.36 ms | 10.04 ms | 1.87x slower |
+| Detector-core p95 | 66.38 ms | 89.47 ms | 1.35x slower |
+
+The current C++ regression run wrote
+`tests/regression/baseline_cpp/summary.json` with `17351 ms total` for the
+562-image scan. The earlier same-session Java batch timing recorded in this log
+was `25841 ms total`, so the C++ CLI remains faster end-to-end while still
+slower in detector-core per-image accounting.
+
+Largest weighted detector-core contributors versus Java:
+
+| category | Java mean | C++ mean | ratio | C++ weighted | extra vs Java |
+|---|---:|---:|---:|---:|---:|
+| `close` | 20.39 ms | 34.35 ms | 1.68x | 1374 ms | +558 ms |
+| `bright_spots` | 50.07 ms | 67.12 ms | 1.34x | 2148 ms | +545 ms |
+| `curved` | 16.71 ms | 27.28 ms | 1.63x | 1364 ms | +528 ms |
+| `brightness` | 38.42 ms | 55.85 ms | 1.45x | 1564 ms | +488 ms |
+| `glare` | 9.33 ms | 17.24 ms | 1.85x | 862 ms | +396 ms |
+| `blurred` | 17.83 ms | 26.20 ms | 1.47x | 1179 ms | +377 ms |
+
+### Fresh bottleneck samples
+
+`bright_spots/image012.jpg`, 10-second `sample`, 8489 samples:
+
+| function / cluster | samples | share |
+|---|---:|---:|
+| Finder / square detector total | 6937 | 81.7% |
+| `DetectPolygonFromContour::process()` subtree | 6572 | 77.4% |
+| `ContourTracer::searchOne8()` | 2929 | 34.5% |
+| `ThresholdBlockOtsu::computeStatistics()` | 889 | 10.5% |
+| `ContourTracer::trace()` | 480 | 5.7% |
+| `ThresholdBlockOtsu::thresholdBlock()` | 461 | 5.4% |
+| `ThresholdBlockOtsu::applyThreshold()` | 94 | 1.1% |
+| `ImageLineIntegral::compute()` | 42 | 0.5% |
+| `PolylineSplitMerge::computeSideError()` | 42 | 0.5% |
+| `ContourEdgeIntensity::process()` | 39 | 0.5% |
+
+`lots/image005.jpg`, 10-second `sample`, 8551 samples:
+
+| function | samples | share |
+|---|---:|---:|
+| `ContourTracer::searchOne8()` | 1248 | 14.6% |
+| `ThresholdBlockOtsu::computeStatistics()` | 632 | 7.4% |
+| `ThresholdBlockOtsu::thresholdBlock()` | 569 | 6.7% |
+| `QrCodeBinaryGridReader::readBitIntensity()` | 334 | 3.9% |
+| `PolylineSplitMerge::computeSideError()` | 328 | 3.8% |
+| `ImageLineIntegral::compute()` | 325 | 3.8% |
+| `cv::JacobiSVDImpl_<double>()` | 304 | 3.6% |
+| `ContourEdgeIntensity::process()` | 196 | 2.3% |
+| `GaliosFieldTableOps::multiply()` | 160 | 1.9% |
+
+### Rejected follow-up trial
+
+Trial: inline `ImageLineIntegral::isInside()` in the header and replace
+`pixel()`'s `cv::Mat::at<uint8_t>(y, x)` with `image_.ptr<uint8_t>(y)[x]`.
+Rationale was the current `lots` sample's 3.8% `ImageLineIntegral::compute()`
+island.
+
+Correctness was fine:
+
+```bash
+ctest --test-dir build --output-on-failure -R 'ImageLineIntegral|SnapToLineEdge|RefinePolygonToGray|DetectPolygonBinaryGrayRefine|QrCodePositionPatternDetector'
+```
+
+Result: 26/26 PASS, but fixed probes regressed and the edit was reverted before
+commit.
+
+| image | before | trial | delta |
+|---|---:|---:|---:|
+| `lots/image005.jpg` (250 iters) | 116.30 ms/iter | 121.74 ms/iter | +4.7% |
+| `bright_spots/image012.jpg` (300 iters) | 96.98 ms/iter | 101.88 ms/iter | +5.1% |
+
+Do not retry this exact helper-inline / row-pointer edit without a better
+microbenchmark explaining the regression. The likely explanation is that the
+compiler/OpenCV release path already inlines `at()` well enough, while moving
+`isInside()` into the header increased code size in refinement-heavy loops.
+
+### Best next targets
+
+1. **Contour tracer / labeler core remains the main bottleneck.**
+   `ContourTracer::searchOne8()` is still the top leaf on both representative
+   images, especially noisy high-resolution input. The easy arithmetic and
+   packed-storage wins are already banked; another useful contour target likely
+   needs a deeper row-scan or representation change with a dedicated parity
+   audit.
+2. **`ThresholdBlockOtsu` remains the broadest cross-category island.** The
+   sliding local-histogram target helped the aggregate, but statistics +
+   thresholding still account for ~12-16% on the sampled 4MP images. Any next
+   Otsu change is parity-sensitive because this stage is also the documented
+   source of monitor/glare residuals.
+3. **The `lots` workload is now split across several 3-4% islands:**
+   `readBitIntensity`, polyline side scoring, image-line integral, and residual
+   mixed line-DLT SVD. These are too small for speculative edits; each needs
+   the same fixed-probe + full-regression gate used above. The image-line
+   helper shortcut already failed that gate.
+4. **Reed-Solomon/Galois is still visible but low leverage.** The clean-block
+   tail skip banked the safe no-op case. Remaining samples are inside syndrome
+   computation, BM, Chien on genuinely non-trivial locators, and generator
+   setup, so further RS changes are unlikely to move end-to-end QR detection
+   unless the workload becomes much more decode-heavy.
+
 ## 2026-05-11 — Target 8: Reed-Solomon clean-codeword fast path
 
 ### Why

@@ -1,5 +1,28 @@
 # ChangeLog
 
+## 2026-05-11 (later¹⁵) — docs(perf): refresh post-target bottleneck profile
+
+Pure research close-out after targets 3-8. Re-ran the BoofCV dataset
+regression timing comparison, sampled the two representative slow images, and
+recorded one rejected follow-up trial.
+
+### Changed
+
+- [ResearchLog.md](ResearchLog.md): added the post-target performance state,
+  current C++ vs locked BoofCV Java timing comparison, fresh `sample` bottleneck
+  tables for `bright_spots/image012` and `lots/image005`, and the rejected
+  `ImageLineIntegral` row-pointer/inline trial.
+
+### Result
+
+- Quality remains byte-identical to the BoofCV Java baseline: aggregate decode
+  rate 74.40%.
+- Current C++ full regression elapsed is 17.351 s. Detector-core mean is
+  22.53 ms/image, now 1.46x slower than the Java detector-core mean but still
+  faster end-to-end than the same-session Java batch timing recorded earlier.
+- No new source target was banked after RS: the `ImageLineIntegral` helper
+  trial regressed both fixed probes and was reverted.
+
 ## 2026-05-11 (later¹⁴) — perf(rs): skip Chien/Forney on clean codewords
 
 Implemented the low-priority Reed-Solomon/Galois target from the refreshed
