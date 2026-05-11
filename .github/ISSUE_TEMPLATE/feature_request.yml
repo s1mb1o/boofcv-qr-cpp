@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a new API, packaging target, or QR pipeline capability.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the desired behavior or API shape.
+    validations:
+      required: true
+  - type: textarea
+    id: parity
+    attributes:
+      label: BoofCV parity impact
+      description: Note whether this should preserve upstream behavior or intentionally diverge.

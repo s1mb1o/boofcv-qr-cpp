@@ -1,5 +1,62 @@
 # ChangeLog
 
+## 2026-05-11 (later²¹) — release: harden Python API and GitHub packaging
+
+Prepared the repository for a first GitHub release and expanded the Python
+surface beyond single-image smoke usage.
+
+### Added
+
+- Python `scan_batch(paths, threads=0, config=None)` API with image-level
+  parallelism and per-image `ScanResult` records.
+- [examples/python/scan_qr.py](examples/python/scan_qr.py) and
+  [examples/python/batch_scan.py](examples/python/batch_scan.py).
+- [tools/python/profile_python.py](tools/python/profile_python.py) for Python
+  single-image and batch timing checks.
+- [docs/python_api.md](docs/python_api.md) and
+  [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md).
+- GitHub issue templates, pull request template, README badges, and release
+  artifact workflow for Python 3.10-3.14 wheels.
+
+### Changed
+
+- [.github/workflows/ci.yml](.github/workflows/ci.yml): expanded CI to an
+  Ubuntu/macOS and Python 3.10-3.14 matrix, including wheel build/install smoke
+  tests.
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  added path-like support for `load_single_band()`, clearer dtype/color-image
+  errors for `detect()`, and GIL-released batch path scanning with per-image
+  exception capture.
+- [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md),
+  [SMOKE_TESTS.md](SMOKE_TESTS.md), [CLAUDE.md](CLAUDE.md),
+  [pyproject.toml](pyproject.toml), and [ResearchLog.md](ResearchLog.md):
+  documented the expanded Python and release workflow.
+- GitHub repository metadata now has a public description and topics:
+  `boofcv`, `opencv`, `qrcode`, `qr-code`, `cpp`, `python`, and
+  `computer-vision`.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests boofcv_qr_python -- -j`
+  -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `PYTHONPATH=build/python BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr python3 tests/python/test_pyboof_compat.py`
+  -> PASS.
+- `PYTHONPATH=build/python python3 tools/python/profile_python.py tests/fixtures/qr/full_v1_L_M000.png --iters 1000 --batch-size 32 --threads 8`
+  -> PASS; single 0.159 ms/image, batch 0.039 ms/image.
+- `PYTHONPATH=build/python python3 examples/python/scan_qr.py tests/fixtures/qr/full_v1_L_M000.png`
+  -> PASS.
+- `PYTHONPATH=build/python python3 examples/python/batch_scan.py tests/fixtures/qr --threads 2`
+  -> PASS.
+- `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 1000` ->
+  PASS; CLI mean 0.15 ms/image.
+- `python3 -m pip wheel . --no-deps -w /tmp/boofcv_qr_dist_check` -> PASS.
+- Clean venv install from `/tmp/boofcv_qr_dist_check/` plus
+  `BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr /tmp/boofcv_qr_venv3/bin/python tests/python/test_pyboof_compat.py`
+  -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%, 13174 ms total elapsed.
+
 ## 2026-05-11 (later²⁰) — python: add PyBoof-compatible QR bindings
 
 Added native Python bindings for the BoofCV QR pipeline, packaged as

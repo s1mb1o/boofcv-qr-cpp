@@ -15,6 +15,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +25,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -121,6 +125,14 @@ struct QrCode {
     std::vector<std::uint8_t> rawCodewords;
     std::vector<std::int32_t> rsErrorLocations;
     std::vector<std::string> blockStatus;
+};
+
+struct ScanResult {
+    std::string path;
+    std::vector<QrCode> detections;
+    std::vector<QrCode> failures;
+    std::string error;
+    double elapsed_ms = 0.0;
 };
 
 bool dtypeIsUint8(const py::object& dtype) {
@@ -246,6 +258,18 @@ boofcv_qr::QrCodeDecoderImage::Config toCppConfig(const ConfigQrCode& pyConfig) 
     return cfg;
 }
 
+std::string pathToString(const py::object& path) {
+    py::module_ os = py::module_::import("os");
+    py::object filesystemPath = os.attr("fspath")(path);
+    if (py::isinstance<py::bytes>(filesystemPath))
+        return filesystemPath.cast<std::string>();
+    return py::str(filesystemPath).cast<std::string>();
+}
+
+cv::Mat loadGrayFromPath(const std::string& path) {
+    return cv::imread(path, cv::IMREAD_GRAYSCALE | cv::IMREAD_IGNORE_ORIENTATION);
+}
+
 QrCode toPythonQrCode(const boofcv_qr::QrCode& qr) {
     QrCode out;
     out.version = qr.version;
@@ -279,6 +303,23 @@ ImageMat imageFromObject(const py::object& image) {
     if (image.is_none())
         throw py::type_error("Input is None");
 
+    if (!py::isinstance<py::array>(image))
+        throw py::type_error("Expected image to be a uint8 numpy.ndarray");
+
+    py::array raw = py::reinterpret_borrow<py::array>(image);
+    py::buffer_info rawInfo = raw.request();
+    if (rawInfo.itemsize != static_cast<py::ssize_t>(sizeof(std::uint8_t)) ||
+        rawInfo.format != py::format_descriptor<std::uint8_t>::format()) {
+        throw py::type_error(
+            "Expected GrayU8 image with dtype numpy.uint8; use "
+            "load_single_band() or convert the array before detect()");
+    }
+    if (rawInfo.ndim == 3 && (rawInfo.shape[2] == 3 || rawInfo.shape[2] == 4)) {
+        throw py::type_error(
+            "Expected a single-band GrayU8 image, not an RGB/BGR/RGBA image; "
+            "convert to grayscale first or use load_single_band()");
+    }
+
     py::array_t<std::uint8_t, py::array::c_style> arr =
         py::array_t<std::uint8_t, py::array::c_style>::ensure(image);
     if (!arr)
@@ -297,7 +338,9 @@ ImageMat imageFromObject(const py::object& image) {
         cv::Mat view(rows, cols, CV_8UC1, arr.mutable_data());
         return ImageMat{view.clone()};
     }
-    throw py::type_error("Expected GrayU8 image with shape (height, width)");
+    throw py::type_error(
+        "Expected GrayU8 image with shape (height, width) or "
+        "(height, width, 1)");
 }
 
 py::array_t<std::uint8_t> matToArray(const cv::Mat& mat) {
@@ -313,8 +356,8 @@ py::array_t<std::uint8_t> matToArray(const cv::Mat& mat) {
 
 class DetectorPipeline {
 public:
-    explicit DetectorPipeline(const ConfigQrCode& config)
-        : orchestrator_(toCppConfig(config)) {
+    explicit DetectorPipeline(boofcv_qr::QrCodeDecoderImage::Config config)
+        : orchestrator_(std::move(config)) {
         boofcv_qr::ConfigPolylineSplitMerge polyCfg;
         polyCfg.minimumSides = 4;
         polyCfg.maximumSides = 4;
@@ -371,7 +414,7 @@ class QrCodeDetector {
 public:
     explicit QrCodeDetector(ConfigQrCode config = ConfigQrCode{})
         : config_(std::move(config)),
-          pipeline_(std::make_unique<DetectorPipeline>(config_)) {}
+          pipeline_(std::make_unique<DetectorPipeline>(toCppConfig(config_))) {}
 
     void detect(const py::object& image) {
         ImageMat input = imageFromObject(image);
@@ -418,18 +461,121 @@ private:
     py::object imageType_;
 };
 
-py::array_t<std::uint8_t> loadSingleBand(const std::string& path,
+void markRemainingBatchErrors(const std::vector<std::string>& inputPaths,
+                              std::vector<ScanResult>& results,
+                              std::atomic<std::size_t>& next,
+                              const std::string& message) {
+    while (true) {
+        std::size_t index = next.fetch_add(1);
+        if (index >= inputPaths.size())
+            break;
+        ScanResult result;
+        result.path = inputPaths[index];
+        result.error = message;
+        results[index] = std::move(result);
+    }
+}
+
+py::array_t<std::uint8_t> loadSingleBand(py::object path,
                                          py::object dtype = py::none()) {
     if (!dtypeIsUint8(dtype)) {
         throw py::type_error(
             "Only np.uint8 / BoofCV GrayU8 images are supported");
     }
-    cv::Mat gray = cv::imread(path,
-                              cv::IMREAD_GRAYSCALE |
-                                  cv::IMREAD_IGNORE_ORIENTATION);
+    std::string pathString = pathToString(path);
+    cv::Mat gray = loadGrayFromPath(pathString);
     if (gray.empty())
-        throw py::value_error("Failed to load image: " + path);
+        throw py::value_error("Failed to load image: " + pathString);
     return matToArray(gray);
+}
+
+std::vector<ScanResult> scanBatch(py::object paths,
+                                  int32_t threads,
+                                  py::object config) {
+    ConfigQrCode pyConfig;
+    if (!config.is_none())
+        pyConfig = config.cast<ConfigQrCode>();
+    boofcv_qr::QrCodeDecoderImage::Config cppConfig = toCppConfig(pyConfig);
+
+    std::vector<std::string> inputPaths;
+    for (py::handle item : paths)
+        inputPaths.push_back(pathToString(py::reinterpret_borrow<py::object>(item)));
+
+    std::vector<ScanResult> results(inputPaths.size());
+    for (std::size_t i = 0; i < inputPaths.size(); i++)
+        results[i].path = inputPaths[i];
+    if (inputPaths.empty())
+        return results;
+
+    std::size_t workerCount = 1;
+    if (threads > 0) {
+        workerCount = static_cast<std::size_t>(threads);
+    } else {
+        unsigned int detected = std::thread::hardware_concurrency();
+        workerCount = detected == 0 ? 1 : static_cast<std::size_t>(detected);
+    }
+    if (workerCount > inputPaths.size())
+        workerCount = inputPaths.size();
+
+    {
+        py::gil_scoped_release release;
+        std::atomic<std::size_t> next{0};
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount);
+        for (std::size_t worker = 0; worker < workerCount; worker++) {
+            workers.emplace_back([&]() {
+                try {
+                    DetectorPipeline pipeline(cppConfig);
+                    while (true) {
+                        std::size_t index = next.fetch_add(1);
+                        if (index >= inputPaths.size())
+                            break;
+
+                        ScanResult result;
+                        result.path = inputPaths[index];
+                        auto t0 = std::chrono::steady_clock::now();
+                        try {
+                            cv::Mat gray = loadGrayFromPath(result.path);
+                            if (gray.empty()) {
+                                result.error = "Failed to load image: " + result.path;
+                            } else {
+                                pipeline.run(gray);
+                                for (const boofcv_qr::QrCode& qr :
+                                     pipeline.successes())
+                                    result.detections.push_back(toPythonQrCode(qr));
+                                for (const boofcv_qr::QrCode& qr :
+                                     pipeline.failures())
+                                    result.failures.push_back(toPythonQrCode(qr));
+                            }
+                        } catch (const cv::Exception& e) {
+                            result.error = std::string("OpenCV error: ") + e.what();
+                        } catch (const std::exception& e) {
+                            result.error = e.what();
+                        } catch (...) {
+                            result.error = "Unknown error while scanning";
+                        }
+                        auto t1 = std::chrono::steady_clock::now();
+                        result.elapsed_ms =
+                            std::chrono::duration<double, std::milli>(t1 - t0).count();
+                        results[index] = std::move(result);
+                    }
+                } catch (const cv::Exception& e) {
+                    markRemainingBatchErrors(
+                        inputPaths, results, next,
+                        std::string("OpenCV worker error: ") + e.what());
+                } catch (const std::exception& e) {
+                    markRemainingBatchErrors(inputPaths, results, next, e.what());
+                } catch (...) {
+                    markRemainingBatchErrors(inputPaths, results, next,
+                                             "Unknown worker error");
+                }
+            });
+        }
+        for (std::thread& worker : workers)
+            worker.join();
+    }
+
+    return results;
 }
 
 }  // namespace
@@ -501,6 +647,14 @@ PYBIND11_MODULE(_boofcv_qr, m) {
         .def_readwrite("rsErrorLocations", &QrCode::rsErrorLocations)
         .def_readwrite("blockStatus", &QrCode::blockStatus);
 
+    py::class_<ScanResult>(m, "ScanResult")
+        .def(py::init<>())
+        .def_readwrite("path", &ScanResult::path)
+        .def_readwrite("detections", &ScanResult::detections)
+        .def_readwrite("failures", &ScanResult::failures)
+        .def_readwrite("error", &ScanResult::error)
+        .def_readwrite("elapsed_ms", &ScanResult::elapsed_ms);
+
     py::class_<QrCodeDetector>(m, "QrCodeDetector")
         .def(py::init<ConfigQrCode>(), py::arg("config") = ConfigQrCode{})
         .def("detect", &QrCodeDetector::detect)
@@ -515,4 +669,7 @@ PYBIND11_MODULE(_boofcv_qr, m) {
 
     m.def("load_single_band", &loadSingleBand,
           py::arg("path"), py::arg("dtype") = py::none());
+    m.def("scan_batch", &scanBatch,
+          py::arg("paths"), py::arg("threads") = 0,
+          py::arg("config") = py::none());
 }

@@ -196,6 +196,27 @@ When unsure, default to verbatim.
 - Do NOT make a stage callable only through the top-level `QrCodeDetector`. Each stage in steps 1–8 must be reachable as a public entry point so downstream recovery pipelines can compose differently — see "Public API design".
 - Do NOT bake retailer-specific or domain-specific knowledge into this library. Domain dialects live in the consumer.
 
+## Common Mistakes
+
+### Python binding image input
+
+Wrong:
+
+```python
+detector.detect(rgb_image)  # shape (height, width, 3)
+```
+
+Right:
+
+```python
+gray = boofcv_qr.load_single_band(path, np.uint8)
+detector.detect(gray)
+```
+
+The binding intentionally accepts only GrayU8 / `numpy.uint8` single-band
+images, matching the ported QR pipeline. Keep color conversion explicit at the
+call site so Python behavior stays aligned with the C++ detector.
+
 ## Test harness contract
 
 ### Layer 1 — Component unit tests (GoogleTest)

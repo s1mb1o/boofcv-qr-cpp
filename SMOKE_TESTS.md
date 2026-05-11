@@ -28,7 +28,21 @@ PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
 ```
 
 Expected: `FactoryFiducial(np.uint8).qrcode()` detects the fixture QR code and
-exposes PyBoof-style detection fields.
+exposes PyBoof-style detection fields, path-like image loading, color-array
+rejection, and `scan_batch()` path scanning.
+
+## Python Timing Smoke
+
+```bash
+PYTHONPATH=build/python python3 tools/python/profile_python.py \
+  tests/fixtures/qr/full_v1_L_M000.png \
+  --iters 1000 \
+  --batch-size 32 \
+  --threads 8
+```
+
+Expected: the script prints single-image and batch timing lines with non-zero
+detection counts.
 
 ## BoofCV Regression Dataset
 

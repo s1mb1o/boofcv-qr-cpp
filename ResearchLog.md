@@ -1,5 +1,40 @@
 # ResearchLog
 
+## 2026-05-11 — Python batch API and release-readiness pass
+
+### Why
+
+After adding the first Python binding, check the API and packaging surface that
+public users will hit: in-process batch scanning, CI coverage, release
+artifacts, and Python overhead versus the CLI.
+
+### Findings
+
+The Python single-image path is effectively at parity with the CLI on the
+committed 100x100 fixture:
+
+| path | command | mean |
+|---|---|---:|
+| CLI profile | `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 1000` | 0.15 ms/image |
+| Python detector loop | `tools/python/profile_python.py ... --iters 1000` | 0.159 ms/image |
+| Python `scan_batch` | `tools/python/profile_python.py ... --batch-size 32 --threads 8` | 0.039 ms/image |
+
+The tiny fixture mostly measures binding overhead and scheduling, not
+real-world QR difficulty, but it confirms the binding does not add visible
+single-image overhead and that `scan_batch()` releases the GIL enough to use
+image-level parallelism.
+
+Full BoofCV dataset regression after the API/docs/CI changes remained
+unchanged at **74.40%** aggregate decode rate with `QR_SCAN_THREADS=8` and
+`13174 ms` total elapsed on this final run.
+
+### Release packaging note
+
+The wheel build succeeds locally, but it is a native wheel linked against the
+OpenCV discovered by CMake. Until OpenCV bundling/audit strategy is decided,
+release wheels should be treated as environment-specific GitHub artifacts, not
+general PyPI wheels.
+
 ## 2026-05-11 — PyBoof-compatible Python QR subset
 
 ### Why

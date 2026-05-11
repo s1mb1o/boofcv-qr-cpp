@@ -18,6 +18,14 @@ For the package build:
 python3 -m pip wheel . -w /tmp/boofcv_qr_wheel
 ```
 
+For Python API edits:
+
+```bash
+PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
+PYTHONPATH=build/python python3 tools/python/profile_python.py \
+  tests/fixtures/qr/full_v1_L_M000.png --iters 1000 --batch-size 32 --threads 8
+```
+
 If you have the BoofCV QR regression dataset locally:
 
 ```bash

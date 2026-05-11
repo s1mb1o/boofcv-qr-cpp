@@ -1,5 +1,10 @@
 # boofcv-qr-cpp
 
+[![CI](https://github.com/s1mb1o/boofcv-qr-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/s1mb1o/boofcv-qr-cpp/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](pyproject.toml)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](CMakeLists.txt)
+
 Unofficial C++17/OpenCV port of BoofCV's QR code detector and decoder.
 
 This project ports the QR pipeline from BoofCV's
@@ -12,6 +17,7 @@ OpenCV-native C++ APIs for applications that need stage-level control.
 
 - Core QR detector/decoder pipeline is implemented as a static C++ library.
 - `qr_scan` CLI can scan one image or a directory of images.
+- `boofcv_qr` Python package exposes a PyBoof-compatible QR subset.
 - Unit coverage mirrors the ported Java components.
 - Regression scoring compares against a locked BoofCV Java baseline.
 - License is Apache-2.0, matching upstream BoofCV.
@@ -24,7 +30,7 @@ implementation are maintained at <https://github.com/lessthanoptimal/BoofCV>.
 - CMake 3.16+
 - C++17 compiler
 - OpenCV 4.5+ with `core`, `calib3d`, `imgproc`, and `imgcodecs`
-- Python 3 with development headers for the Python extension
+- Python 3.10+ with development headers for the Python extension
 - NumPy for the Python compatibility test and package runtime
 
 GoogleTest and pybind11 are fetched by CMake when tests/bindings are enabled
@@ -87,6 +93,26 @@ for qr in detector.detections:
     print(qr.bounds.convert_tuple())
 ```
 
+Batch scan image paths in parallel:
+
+```python
+results = pb.scan_batch(["frame001.png", "frame002.png"], threads=8)
+for result in results:
+    for qr in result.detections:
+        print(result.path, qr.message)
+```
+
+The main exposed QR types are:
+
+| PyBoof-style type | Purpose |
+|---|---|
+| `FactoryFiducial(np.uint8).qrcode()` | Construct a GrayU8 QR detector |
+| `ConfigQrCode` | QR decode options such as encoding and transposed-bit handling |
+| `QrCodeDetector.detect(image)` | Detect QR codes in one `numpy.uint8` grayscale image |
+| `scan_batch(paths, threads=0)` | Scan image paths in parallel using one pipeline per worker |
+| `QrCode` | Message, geometry, QR metadata, raw codewords, and RS status |
+| `Point2D` / `Polygon2D` | PyBoof-like geometry wrappers |
+
 Install from the checkout with:
 
 ```bash
@@ -99,6 +125,9 @@ building `boofcv_qr_python`:
 ```bash
 PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
 ```
+
+See [docs/python_api.md](docs/python_api.md) and [examples/python/](examples/python/)
+for more Python examples.
 
 ## Regression Dataset
 

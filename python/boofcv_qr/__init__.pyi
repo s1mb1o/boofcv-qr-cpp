@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from os import PathLike
 
 import numpy as np
 
@@ -55,6 +56,14 @@ class QrCode:
     blockStatus: list[str]
     def __init__(self) -> None: ...
 
+class ScanResult:
+    path: str
+    detections: list[QrCode]
+    failures: list[QrCode]
+    error: str
+    elapsed_ms: float
+    def __init__(self) -> None: ...
+
 class QrCodeDetector:
     detections: list[QrCode]
     failures: list[QrCode]
@@ -66,4 +75,9 @@ class FactoryFiducial:
     def __init__(self, image_type: Any) -> None: ...
     def qrcode(self, config: ConfigQrCode | None = None) -> QrCodeDetector: ...
 
-def load_single_band(path: str, dtype: Any = None) -> np.ndarray[Any, np.dtype[np.uint8]]: ...
+def load_single_band(path: str | PathLike[str], dtype: Any = None) -> np.ndarray[Any, np.dtype[np.uint8]]: ...
+def scan_batch(
+    paths: list[str | PathLike[str]],
+    threads: int = 0,
+    config: ConfigQrCode | None = None,
+) -> list[ScanResult]: ...

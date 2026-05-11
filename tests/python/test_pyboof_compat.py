@@ -15,7 +15,8 @@ def fixture_path(name: str) -> Path:
 
 def main() -> None:
     detector = pb.FactoryFiducial(np.uint8).qrcode()
-    image = pb.load_single_band(str(fixture_path("full_v1_L_M000.png")), np.uint8)
+    image_path = fixture_path("full_v1_L_M000.png")
+    image = pb.load_single_band(image_path, np.uint8)
 
     assert image.dtype == np.uint8
     assert image.ndim == 2
@@ -53,6 +54,37 @@ def main() -> None:
         pass
     else:
         raise AssertionError("FactoryFiducial should reject non-uint8 image types")
+
+    try:
+        detector.detect(np.zeros((10, 10), dtype=np.float32))
+    except TypeError as exc:
+        assert "numpy.uint8" in str(exc)
+    else:
+        raise AssertionError("detect() should reject non-uint8 arrays")
+
+    try:
+        detector.detect(np.zeros((10, 10, 3), dtype=np.uint8))
+    except TypeError as exc:
+        assert "RGB" in str(exc)
+    else:
+        raise AssertionError("detect() should reject color arrays")
+
+    batch = pb.scan_batch([image_path, str(image_path)], threads=2)
+    assert len(batch) == 2
+    for result in batch:
+        assert result.path.endswith("full_v1_L_M000.png")
+        assert result.error == ""
+        assert result.elapsed_ms >= 0.0
+        assert len(result.detections) == 1
+        assert result.detections[0].message == "01234567"
+        assert len(result.failures) == 0
+
+    missing = pb.scan_batch([fixture_path("does_not_exist.png")], threads=1)
+    assert len(missing) == 1
+    assert missing[0].detections == []
+    assert "Failed to load image" in missing[0].error
+
+    assert pb.scan_batch([], threads=8) == []
 
 
 if __name__ == "__main__":

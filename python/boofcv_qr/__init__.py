@@ -8,8 +8,10 @@ from ._boofcv_qr import (  # noqa: F401
     Polygon2D,
     QrCode,
     QrCodeDetector,
+    ScanResult,
     __version__,
     load_single_band,
+    scan_batch,
 )
 
 __all__ = [
@@ -20,6 +22,8 @@ __all__ = [
     "Polygon2D",
     "QrCode",
     "QrCodeDetector",
+    "ScanResult",
     "__version__",
     "load_single_band",
+    "scan_batch",
 ]
