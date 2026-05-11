@@ -49,6 +49,8 @@ Crucially, **the mark is only on pixels examined-and-rejected**, not on pixels t
 - `packedPoints` (a `PackedSetsPoint2D_I32`): block-allocated `int[]` buffers storing (x,y) pairs. Each "set" is one contour. The order of sets in `packedPoints` is *not* per-blob — internal contours of blob A may sit between blob B's external and blob C's external. Callers must walk `contours[i].externalIndex` and `contours[i].internalIndexes[j]` to find the right sets.
 - **Contour discard.** If a contour exceeds `maxContourLengthPixels` OR falls below `minContourLengthPixels`, its set is replaced with an empty set (`removeTail()` then `grow()` again). The contour's *existence* is still recorded in the `contours` list — only the points are dropped. This matters for the driver's step-2 dispatch, which needs the blob to still be present in the labeled image even when its boundary is too long to record.
 
+The packed point store preserves allocated blocks across `reset()` calls using a logical active-block count. This follows Java's reusable-array intent while avoiding per-frame block shrink/reallocation on images with many or long contours. `appendSetTo()` materialises one contour into a caller vector block-by-block; it emits the same `(x,y)` sequence as `SetIterator`, but avoids per-point division/modulo in the polygon-detector bridge.
+
 ### Why CW external / CCW internal
 
 Java's seed directions (external=7, internal=3 for 8-conn) produce specific windings:
@@ -102,6 +104,16 @@ A 2026-05-11 profile pass after the `LinearContourLabelChang2004` port found `Co
 - `moveToNext()` updates `(x, y)` from precomputed coordinate deltas instead of recomputing them from the linear pixel index with division/modulo. Linear indices are still updated from the original stride-dependent offset tables, so label and binary writes hit the same pixels.
 
 Because this is algorithmic core, any future changes in this area must keep the JUnit-mirror contour tests and full `qrcodes_v3` regression green before commit.
+
+### Packed-set materialisation micro-optimisation
+
+A later 2026-05-11 profile pass showed remaining contour-stage allocation and packed-set copy cost after the tracer arithmetic cleanup. The safe representation change keeps every emitted contour point and contour header identical:
+
+- `PackedSetsPoint2D_I32::reset()` keeps allocated block buffers and resets only logical state.
+- `grow()` / `removeTail()` / `addPointToTail()` reuse those inactive blocks before allocating new ones.
+- `DetectPolygonFromContour::buildContoursFromPort()` calls `appendSetTo()` so external and internal contours are copied in block spans instead of through the generic iterator.
+
+This is intentionally narrower than full `Contour` object reuse. A broader slot-reuse trial improved `bright_spots` but regressed `lots`, so it was not committed.
 
 ### vs. classic flood-fill + boundary trace as separate passes
 

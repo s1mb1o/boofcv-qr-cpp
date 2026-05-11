@@ -281,3 +281,29 @@ TEST(LinearContourLabelChang2004, checkInnerOuterContour) {
     ASSERT_EQ(static_cast<std::size_t>(1), c.internalIndexes.size());
     ASSERT_EQ(4, alg.getPackedPoints().sizeOfSet(c.externalIndex + 1));
 }
+
+TEST(PackedSetsPoint2D_I32, resetReusesLogicalFirstBlock) {
+    PackedSetsPoint2D_I32 packed(4);
+    packed.grow();
+    for (int32_t i = 0; i < 5; i++) {
+        packed.addPointToTail(i, i + 10);
+    }
+
+    std::vector<cv::Point2i> points;
+    packed.appendSetTo(0, points);
+    ASSERT_EQ(5u, points.size());
+    EXPECT_EQ(cv::Point2i(4, 14), points.back());
+
+    packed.reset();
+    packed.grow();
+    packed.addPointToTail(7, 8);
+
+    ASSERT_EQ(1, packed.size());
+    ASSERT_EQ(1, packed.sizeOfSet(0));
+
+    PackedSetsPoint2D_I32::SetIterator iter = packed.createIterator();
+    iter.setup(0);
+    ASSERT_TRUE(iter.hasNext());
+    EXPECT_EQ(cv::Point2i(7, 8), iter.next());
+    EXPECT_FALSE(iter.hasNext());
+}

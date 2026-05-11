@@ -1,5 +1,34 @@
 # ChangeLog
 
+## 2026-05-11 (later⁹) — perf(contour): reuse packed contour blocks across frames
+
+Implemented the next contour-stage memory/materialisation target from the refreshed profile. The first broader reuse attempt also recycled polygon `Contour` and `DetectedInfo` slots, but it regressed the `lots` category, so this commit keeps the smaller change that improved both representative probes.
+
+### Changed
+
+- [include/boofcv_qr/binary/packed_sets_point2d_i32.hpp](include/boofcv_qr/binary/packed_sets_point2d_i32.hpp): `reset()` now keeps previously allocated point blocks behind a logical active-block count instead of shrinking to the first block, and new `appendSetTo()` copies a contour block-by-block without the iterator's per-point division/modulo.
+- [src/polygon/detect_polygon_from_contour.cpp](src/polygon/detect_polygon_from_contour.cpp): `buildContoursFromPort()` uses `appendSetTo()` when materialising external and internal contours.
+- [tests/unit/test_linear_contour_label_chang2004.cpp](tests/unit/test_linear_contour_label_chang2004.cpp): added coverage for reset-after-multiple-block reuse and iterator correctness.
+- [src/binary/linear_contour_label_chang2004.md](src/binary/linear_contour_label_chang2004.md), [src/polygon/detect_polygon_from_contour.md](src/polygon/detect_polygon_from_contour.md), and [ResearchLog.md](ResearchLog.md): documented the representation-only optimisation and perf results.
+
+### Performance
+
+Measured against the refreshed post-target-2 profile:
+
+| image / run | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 107.19 ms/iter | 103.81 ms/iter | -3.2% |
+| `lots/image005.jpg` (250 iters) | 128.77 ms/iter | 127.11 ms/iter | -1.3% |
+| Full regression `total_elapsed_ms` | 18.873 s | 17.827 s | -5.5% |
+| Aggregate detector mean | 24.73 ms | 23.18 ms | -6.3% |
+| `lots` mean | 117.66 ms | 115.22 ms | -2.1% |
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 430/430 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains 74.40%, with only the documented accepted residual categories out-of-band.
+
 ## 2026-05-11 (later⁸) — perf(research): refresh C++ vs BoofCV Java bottleneck profile after first two targets
 
 Re-ran the current C++ detector against the BoofCV `qrcodes_v3` regression set and refreshed `sample` profiles for the same two representative slow images after the contour-tracer and grid-transform perf commits.

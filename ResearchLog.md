@@ -1,5 +1,53 @@
 # ResearchLog
 
+## 2026-05-11 — Target 3: packed contour block reuse and block-wise materialisation
+
+### Why
+
+The refreshed profile after targets 1 and 2 still showed contour extraction as the largest remaining cost on noisy high-resolution images. `ContourTracer::searchOne8()` remained the top leaf, while `PackedSetsPoint2D_I32::addPointToTail/grow` and contour materialisation were visible around it. This target keeps Chang contour tracing unchanged and trims allocation/indexing overhead in the packed point representation.
+
+### Change
+
+- `PackedSetsPoint2D_I32::reset()` now preserves allocated point blocks behind a logical `activeBlocks` count instead of resizing the backing vector back to a single block on every image.
+- `grow()`, `removeTail()`, and `addPointToTail()` update that logical active count while reusing already allocated block buffers when possible.
+- Added `PackedSetsPoint2D_I32::appendSetTo()`, which copies one stored contour block-by-block into a `std::vector<cv::Point2i>` and avoids the iterator path's per-point division/modulo.
+- `DetectPolygonFromContour::buildContoursFromPort()` now uses `appendSetTo()` for external and internal contour materialisation.
+- A broader trial also reused `DetectPolygonFromContour`'s per-frame `Contour` and `DetectedInfo` vector slots. It improved `bright_spots/image012` but regressed `lots/image005` and the full-regression `lots` category, so that part was dropped before commit.
+
+### Commands
+
+```bash
+cmake --build build --target boofcv_qr_tests qr_scan -- -j
+ctest --test-dir build --output-on-failure
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+bash tools/cli/run_regression.sh
+```
+
+### Result
+
+Fixed-count profile comparison against the refreshed post-target-2 baseline:
+
+| image | refreshed baseline | target 3 | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 107.19 ms/iter | 103.81 ms/iter | -3.38 ms / -3.2% |
+| `lots/image005.jpg` (250 iters) | 128.77 ms/iter | 127.11 ms/iter | -1.66 ms / -1.3% |
+
+Full regression timing stayed directionally positive and quality remained unchanged:
+
+| metric | refreshed baseline | target 3 | delta |
+|---|---:|---:|---:|
+| `summary.total_elapsed_ms` | 18873 ms | 17827 ms | -1046 ms / -5.5% |
+| aggregate mean ms | 24.73 | 23.18 | -6.3% |
+| `bright_spots` mean ms | 74.73 | 68.72 | -8.0% |
+| `lots` mean ms | 117.66 | 115.22 | -2.1% |
+
+Regression PASS: aggregate decode rate remains byte-identical to the BoofCV Java baseline at **74.40%**, with only the documented accepted residual categories out-of-band.
+
 ## 2026-05-11 — Post-target performance comparison and refreshed bottleneck profile
 
 ### Why

@@ -342,20 +342,18 @@ void DetectPolygonFromContour::buildContoursFromPort() {
     // downstream stages don't see phantom 0-point contours.
     const auto& cps = contourLabeller_.getContours();
     const auto& packed = contourLabeller_.getPackedPoints();
-    auto iter = packed.createIterator();
 
     contours_.reserve(cps.size());
     for (std::size_t i = 0; i < cps.size(); i++) {
         const ContourPacked& cp = cps[i];
 
-        Contour c;
-
         int32_t extSize = packed.sizeOfSet(cp.externalIndex);
         if (extSize == 0) continue;  // wiped: too long or too short
 
+        Contour c;
+
         c.external.reserve(static_cast<std::size_t>(extSize));
-        iter.setup(cp.externalIndex);
-        while (iter.hasNext()) c.external.push_back(iter.next());
+        packed.appendSetTo(cp.externalIndex, c.external);
 
         if (saveInternalContours_) {
             c.internal.reserve(cp.internalIndexes.size());
@@ -364,8 +362,7 @@ void DetectPolygonFromContour::buildContoursFromPort() {
                 int32_t innerSize = packed.sizeOfSet(innerIdx);
                 std::vector<cv::Point2i> inner;
                 inner.reserve(static_cast<std::size_t>(innerSize));
-                iter.setup(innerIdx);
-                while (iter.hasNext()) inner.push_back(iter.next());
+                packed.appendSetTo(innerIdx, inner);
                 c.internal.push_back(std::move(inner));
             }
         }

@@ -15,7 +15,7 @@
 // Only the methods exercised by `LinearContourLabelChang2004` and
 // `TestLinearContourLabelChang2004` are exposed:
 //   reset, grow, removeTail, addPointToTail, size, sizeOfSet,
-//   sizeOfTail, createIterator + SetIterator::{setup, hasNext, next}.
+//   sizeOfTail, appendSetTo, createIterator + SetIterator::{setup, hasNext, next}.
 // Unused Java conveniences (`totalPoints`, `getSet`, `writeOverSet`,
 // `setToStart`) are intentionally omitted — plumbing-adjacent per
 // CLAUDE.md, not needed for the algorithmic core or the JUnit-mirror
@@ -26,6 +26,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
@@ -57,11 +58,7 @@ public:
     // Discards all previously stored points but does not free memory.
     void reset() {
         tailBlockSize = 0;
-        // DogArray.reset() resets size to 0 but does not shrink the
-        // backing array — we replicate by clearing logical state while
-        // preserving the first block, then re-growing one block.
-        blocks.resize(1);
-        // Re-establishing the first block is implicit (still allocated).
+        activeBlocks = 1;
         sets.clear();
     }
 
@@ -69,12 +66,15 @@ public:
     void grow() {
         if (tailBlockSize >= blockLength) {
             tailBlockSize = 0;
-            blocks.emplace_back();
-            blocks.back().resize(static_cast<std::size_t>(blockLength));
+            if (activeBlocks == static_cast<int32_t>(blocks.size())) {
+                blocks.emplace_back();
+                blocks.back().resize(static_cast<std::size_t>(blockLength));
+            }
+            activeBlocks++;
         }
 
         BlockIndexLength s;
-        s.block = static_cast<int32_t>(blocks.size()) - 1;
+        s.block = activeBlocks - 1;
         s.start = tailBlockSize;
         s.length = 0;
         sets.push_back(s);
@@ -83,8 +83,8 @@ public:
     // Removes the current point set from the end.
     void removeTail() {
         BlockIndexLength& tail = sets.back();
-        while (static_cast<int32_t>(blocks.size()) - 1 != tail.block)
-            blocks.pop_back();
+        while (activeBlocks - 1 != tail.block)
+            activeBlocks--;
         tailBlockSize = tail.start;
         sets.pop_back();
     }
@@ -99,11 +99,14 @@ public:
 
         int32_t blockIndex = tail.block + index / blockLength;
         std::vector<int32_t>* block;
-        if (blockIndex == static_cast<int32_t>(blocks.size())) {
+        if (blockIndex == activeBlocks) {
             tailBlockSize = 0;
-            blocks.emplace_back();
-            blocks.back().resize(static_cast<std::size_t>(blockLength));
-            block = &blocks.back();
+            if (activeBlocks == static_cast<int32_t>(blocks.size())) {
+                blocks.emplace_back();
+                blocks.back().resize(static_cast<std::size_t>(blockLength));
+            }
+            block = &blocks[static_cast<std::size_t>(activeBlocks)];
+            activeBlocks++;
         } else {
             block = &blocks[static_cast<std::size_t>(blockIndex)];
         }
@@ -126,6 +129,27 @@ public:
     // Returns the size of the set at the tail, or 0 if no tail exists.
     int32_t sizeOfTail() const {
         return sets.empty() ? 0 : sets.back().length;
+    }
+
+    void appendSetTo(int32_t which, std::vector<cv::Point2i>& output) const {
+        const BlockIndexLength& set = sets[static_cast<std::size_t>(which)];
+        int32_t remaining = set.length;
+        int32_t blockIndex = set.block;
+        int32_t index = set.start;
+
+        while (remaining > 0) {
+            const std::vector<int32_t>& block =
+                blocks[static_cast<std::size_t>(blockIndex)];
+            int32_t pointsInBlock = std::min(remaining, (blockLength - index) / 2);
+            for (int32_t i = 0; i < pointsInBlock; i++) {
+                output.emplace_back(block[static_cast<std::size_t>(index)],
+                                    block[static_cast<std::size_t>(index + 1)]);
+                index += 2;
+            }
+            remaining -= pointsInBlock;
+            blockIndex++;
+            index = 0;
+        }
     }
 
     // Iterator over the points in a particular set without making a copy.
@@ -168,6 +192,8 @@ private:
     int32_t blockLength = 0;
     // arrays which store the points.
     std::vector<std::vector<int32_t>> blocks;
+    // number of allocated blocks currently participating in the logical tail.
+    int32_t activeBlocks = 1;
     // describes where the data for each set is stored.
     std::vector<BlockIndexLength> sets;
     // length/size of the last block.
