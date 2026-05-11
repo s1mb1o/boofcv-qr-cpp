@@ -1,5 +1,44 @@
 # ResearchLog
 
+## 2026-05-11 — Batch thread-count performance spot check
+
+### Why
+
+Verify the image-level parallel `qr_scan` batch mode after commit `9168a8d`
+and check whether the default `hardware_concurrency()` worker count is still
+the best local Apple Silicon setting under current load.
+
+### Commands
+
+```bash
+bash tools/cli/run_regression.sh
+QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh
+QR_SCAN_THREADS=1 bash tools/cli/run_regression.sh
+```
+
+### Results
+
+BoofCV dataset regression, 562 images:
+
+| mode | workers | `summary.total_elapsed_ms` | aggregate decode | status |
+|---|---:|---:|---:|---|
+| default | 12 | 3,108 ms | 74.40% | PASS |
+| override | 8 | 2,612 ms | 74.40% | PASS |
+| forced serial | 1 | 17,834 ms | 74.40% | PASS |
+
+The 8-worker override was the fastest sampled mode in this check: 6.8x faster
+than serial and 16.0% faster than the 12-worker default. The earlier default
+run immediately after implementation reached 2,603 ms, so the 12-worker path is
+load/thermal/scheduler sensitive on this machine. For repeatable local Apple
+Silicon throughput, prefer:
+
+```bash
+QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh
+```
+
+Quality is unchanged: all modes passed the regression gate and aggregate decode
+rate remained byte-identical to the BoofCV Java baseline at **74.40%**.
+
 ## 2026-05-11 — Image-level parallel qr_scan batch mode
 
 ### Why

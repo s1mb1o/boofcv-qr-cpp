@@ -1,5 +1,25 @@
 # ChangeLog
 
+## 2026-05-11 (later¹⁷) — docs(perf): record batch thread-count spot check
+
+Recorded a fresh post-parallelization BoofCV regression timing check across
+default, 8-worker, and serial batch modes.
+
+### Changed
+
+- [ResearchLog.md](ResearchLog.md): added the current batch thread-count
+  performance table and the local recommendation to use `QR_SCAN_THREADS=8`
+  for repeatable Apple Silicon throughput.
+
+### Result
+
+- All checked modes passed the BoofCV regression gate with aggregate decode
+  rate unchanged at 74.40%.
+- Current run timings: default 12 workers = 3.108 s, `QR_SCAN_THREADS=8` =
+  2.612 s, `QR_SCAN_THREADS=1` = 17.834 s.
+- The 8-worker override was the fastest sampled mode in this check, 6.8x faster
+  than serial and 16.0% faster than the 12-worker default under current load.
+
 ## 2026-05-11 (later¹⁶) — perf(cli): parallelize qr_scan batch mode
 
 Implemented image-level parallelism for `qr_scan` batch mode. Each worker owns
