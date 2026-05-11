@@ -1,5 +1,23 @@
 # ChangeLog
 
+## 2026-05-11 (later⁸) — perf(research): refresh C++ vs BoofCV Java bottleneck profile after first two targets
+
+Re-ran the current C++ detector against the BoofCV `qrcodes_v3` regression set and refreshed `sample` profiles for the same two representative slow images after the contour-tracer and grid-transform perf commits.
+
+### Result
+
+- Regression remains PASS: aggregate decode rate stays byte-identical to the BoofCV Java baseline at **74.40%**.
+- Full batch wall time: BoofCV Java baseline **25.841 s**, current C++ **18.873 s**.
+- Detector-core mean/image: Java **15.41 ms**, C++ **24.73 ms** (**1.61x slower** inside the detector).
+- Fixed-count profiles: `bright_spots/image012` **107.19 ms/iter** (was 112.26 in the fresh pre-target profile), `lots/image005` **128.77 ms/iter** (was 142.15).
+- Refreshed sample bottlenecks: `bright_spots` still dominated by `ContourTracer::searchOne8()`; `lots` now splits across contour tracing, `ThresholdBlockOtsu`, residual `setTransformFromLinesSquare()` SVD, polyline/edge scoring, and bit-intensity sampling.
+
+### Changed
+
+- [ResearchLog.md](ResearchLog.md): added the refreshed comparison, weighted per-category timing table, profile paths, hotspot shares, and next-target ranking.
+
+---
+
 ## 2026-05-11 (later⁷) — perf(sampler): replace repeated point-DLT SVD with fixed 9×9 eigensolve
 
 Second isolated perf target from the fresh bottleneck profile: the repeated pure-point QR grid-transform solve on multi-QR workloads.

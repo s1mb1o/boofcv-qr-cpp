@@ -1,5 +1,116 @@
 # ResearchLog
 
+## 2026-05-11 — Post-target performance comparison and refreshed bottleneck profile
+
+### Why
+
+After landing the contour-tracer arithmetic cleanup and the pure-point grid-transform eigensolve, refresh the C++ vs original BoofCV Java comparison on the BoofCV `qrcodes_v3` dataset and re-sample the representative slow images. The goal is to verify that quality held, quantify the new perf state, and identify the next bottlenecks after the first two targets moved.
+
+### Commands
+
+Regression and scoring against the locked BoofCV Java 1.3.0 baseline:
+
+```bash
+cmake --build build --target qr_scan boofcv_qr_tests -- -j
+bash tools/cli/run_regression.sh
+```
+
+Fixed-count image profiles:
+
+```bash
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+```
+
+Sampling profiles:
+
+```bash
+OUT=/tmp/qr_boofcv_perf_again_20260511_130522
+build/qr_scan --profile detection/bright_spots/image012.jpg 10000 &
+sample <pid> 10 -file "$OUT/sample_bright_spots_image012.txt"
+build/qr_scan --profile detection/lots/image005.jpg 10000 &
+sample <pid> 10 -file "$OUT/sample_lots_image005.txt"
+```
+
+### Result
+
+Quality is unchanged: regression PASS, aggregate decode rate remains byte-identical to the BoofCV Java baseline at **74.40%**. The only out-of-band categories are the existing accepted residuals (`bright_spots`, `glare`, `monitor`, `noncompliant`, `perspective`).
+
+Performance comparison:
+
+| metric | BoofCV Java baseline | current C++ | C++ vs Java |
+|---|---:|---:|---:|
+| Full batch wall time (`total_elapsed_ms`) | 25.841 s | 18.873 s | C++ 1.37x faster |
+| Detector-core mean/image | 15.41 ms | 24.73 ms | C++ 1.61x slower |
+| Detector-core p50 | 5.36 ms | 10.61 ms | C++ 1.98x slower |
+| Detector-core p95 | 66.38 ms | 97.55 ms | C++ 1.47x slower |
+
+Weighted category contributors, sorted by current C++ time:
+
+| category | Java mean | C++ mean | ratio | C++ weighted | extra vs Java |
+|---|---:|---:|---:|---:|---:|
+| `bright_spots` | 50.07 ms | 74.73 ms | 1.49x | 2391 ms | +789 ms |
+| `brightness` | 38.42 ms | 62.21 ms | 1.62x | 1742 ms | +666 ms |
+| `close` | 20.39 ms | 39.66 ms | 1.94x | 1586 ms | +771 ms |
+| `curved` | 16.71 ms | 29.82 ms | 1.78x | 1491 ms | +655 ms |
+| `blurred` | 17.83 ms | 29.09 ms | 1.63x | 1309 ms | +507 ms |
+| `glare` | 9.33 ms | 18.35 ms | 1.97x | 918 ms | +451 ms |
+| `lots` | 110.90 ms | 117.66 ms | 1.06x | 824 ms | +47 ms |
+| `nominal` | 8.93 ms | 12.28 ms | 1.38x | 798 ms | +218 ms |
+
+Fixed-count profiles on the two sampled images:
+
+| image | original profile | after target 2 | refreshed current | delta vs original |
+|---|---:|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 112.26 ms/iter | 107.04 ms/iter | 107.19 ms/iter | -4.5% |
+| `lots/image005.jpg` (250 iters) | 142.15 ms/iter | 127.47 ms/iter | 128.77 ms/iter | -9.4% |
+
+### Refreshed bottlenecks
+
+#### `bright_spots/image012.jpg`
+
+10-second `sample`: 8556 samples.
+
+| cluster / function | samples | share |
+|---|---:|---:|
+| Finder / square detector total | 7060 | 82.5% |
+| `DetectPolygonFromContour` / contour extraction | 6694 | 78.2% |
+| `ContourTracer::searchOne8()` | 2831 | 33.1% |
+| `ThresholdBlockOtsu::computeStatistics()` | 821 | 9.6% |
+| `ThresholdBlockOtsu::thresholdBlock()` | 559 | 6.5% |
+| `ContourTracer::trace()` | 526 | 6.1% |
+
+Interpretation: the noisy high-resolution case is still contour-tracer dominated. Target 1 trimmed arithmetic overhead but did not change the basic cost shape; remaining contour wins likely need deeper representation/memory work, not another small `%`/division cleanup.
+
+#### `lots/image005.jpg`
+
+10-second `sample`: 8530 samples.
+
+| function | samples | share |
+|---|---:|---:|
+| `ContourTracer::searchOne8()` | 1171 | 13.7% |
+| `ThresholdBlockOtsu::thresholdBlock()` | 628 | 7.4% |
+| `ThresholdBlockOtsu::computeStatistics()` | 581 | 6.8% |
+| `cv::JacobiSVDImpl_<double>()` | 458 | 5.4% |
+| `PolylineSplitMerge::computeSideError()` | 301 | 3.5% |
+| `QrCodeBinaryGridReader::readBitIntensity()` | 293 | 3.4% |
+| `ImageLineIntegral::compute()` | 287 | 3.4% |
+| `GaliosFieldTableOps::multiply()` | 144 | 1.7% |
+
+Interpretation: target 2 removed the previous N-point `cv::SVD::solveZ` hotspot, but `cv::JacobiSVDImpl_<double>()` remains through `QrCodeBinaryGridToPixel::setTransformFromLinesSquare()` during unknown-version setup. The residual SVD island is much smaller than before (13.4% -> 5.4% on this sample) and is now comparable to Otsu/polyline/edge scoring.
+
+### Best next targets
+
+1. **Contour-stage memory/representation work.** `searchOne8()` is still the dominant leaf, and the samples show visible `PackedSetsPoint2D_I32::addPointToTail/grow` and contour-build cost. The next meaningful contour attempt should target point-storage reuse or reducing contour materialisation overhead, with full regression gating.
+2. **`setTransformFromLinesSquare()` SVD.** The pure-point transform path is improved, but the line-correspondence unknown-version path still uses OpenCV SVD. A replacement needs a tighter numeric parity gate than the point path because the previous normal-equation trial caused measurable rotated-line fixture drift.
+3. **`ThresholdBlockOtsu`.** Still 14-16% on 4MP images. Prior micro-cleanup failed the fixed-count gate, so useful gains likely require a broader histogram/data-layout or parallel-block strategy and must be treated as parity-sensitive.
+4. **Polyline / edge-scoring allocation and scan cost.** Individually smaller than contour/Otsu but now prominent on `lots`; the previous invariant-hoist trial failed the perf gate, so object reuse or reducing saved-polyline allocation is a better angle.
+5. **Reed-Solomon / Galois.** Still visible at ~1.7% on `lots`, but an inline table-access trial failed the perf gate. Keep it low priority unless the workload becomes decode-heavy with many QRs per frame.
+
 ## 2026-05-11 — Target 2: pure-point grid-transform null-space solve
 
 ### Why
