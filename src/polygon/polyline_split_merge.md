@@ -82,10 +82,14 @@ QR finder-pattern detection sets `loops=true`, `convex=true`, `maxSides=4`, `min
 
 ## What changed vs Java
 
-- **`DogLinkedList<Corner>`** → a small in-house `CornerList` wrapping `std::list<Corner*>`. Iterators provide pointer-stable element handles; `Element<Corner>` becomes `CornerList::Iter`. The Java field-access style `e.object`/`e.next`/`e.prev` becomes the helper methods `objectAt(it)`, `iterNext(it)`, `iterPrev(it)` to keep the algorithmic core readable. The wrap-around `next()`/`previous()` methods are unchanged.
-- **`DogArray<Corner>`** → a small `CornerPool` that owns `std::unique_ptr<Corner>`. Stable identities across pool resizes. Marked `// TODO(perf): recycle` to revisit.
+- **`DogLinkedList<Corner>`** → a small in-house `CornerList` over recycled linked-list nodes. Iterators provide pointer-stable element handles; `Element<Corner>` becomes `CornerList::Iter`. The wrap-around `next()`/`previous()` methods are unchanged.
+- **`DogArray<Corner>`** → a small `CornerPool` that owns `std::unique_ptr<Corner>` and keeps a logical active size across `reset()`. Stable identities survive pool growth, and repeated contour fits reuse both the `Corner` objects and the list nodes.
 - **`DogArray<CandidatePolyline>`** → `std::vector<CandidatePolyline>` (value-typed; matches Java's `DogArray<CandidatePolyline>` which stores values, not pointers). Public surface is `const std::vector<CandidatePolyline>&` for `getPolylines()` and `std::optional<CandidatePolyline>` by value for `getBestPolyline()` per CLAUDE.md "Public API design".
 - **`ConfigLength`** is ported to a tiny local struct (`ConfigLength`) with `compute(double)` and `computeI(double)`. The full BoofCV `ConfigLength` lives in a different module we don't pull in.
 - **Inlined geometric helpers**: `lineParametricDistanceSq`, `lineSegmentDistanceSq`, `isPositiveZ`, `circularIndexDistanceP`, `circularIndexPlusPOffset`, `circularIndexMinusPOffset`. Each cites its georegression / boofcv-ip origin and is byte-for-byte the same formula.
 - **`SplitSelector`** is a small abstract base with `MaximumLineDistance` as the only concrete implementation (matches BoofCV's only QR-relevant subclass).
 - **Exceptions**: BoofCV throws `RuntimeException("Egads")` and `RuntimeException("Should be impossible")` in unreachable branches. We throw `std::runtime_error` for parity — these are programmer errors, not control flow.
+
+## Performance note
+
+The 2026-05-11 target-6 perf pass changed only the container representation around the verbatim split/merge algorithm. Reusing the corner pool alone did not clear the aggregate gate because `std::list` was still allocating one node per active corner per contour fit. Pooling the list nodes too improved the multi-QR fixed probe (`lots/image005`) by 125.52 → 120.58 ms/iter and the full `qrcodes_v3` regression total by 17.799 → 17.460 s, with aggregate decode unchanged at 74.40%.

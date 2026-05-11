@@ -7,11 +7,12 @@
 // Per CLAUDE.md type mappings:
 //   Point2D_I32 -> cv::Point2i
 //   DogArray<Corner> -> CornerPool over std::vector<unique_ptr<Corner>>
-//                       (stable Corner pointers; CornerList holds Corner*)
+//                       with logical active size (stable Corner pointers;
+//                       CornerList holds Corner*)
 //   DogArray<CandidatePolyline> -> std::vector<CandidatePolyline> (value
 //                       typed; matches Java's DogArray<CandidatePolyline>
 //                       which stores values, not pointers)
-//   DogLinkedList<Corner> -> in-house CornerList over std::list<Corner*>
+//   DogLinkedList<Corner> -> in-house CornerList with recycled nodes
 //   ConfigLength -> nested ConfigLength struct
 //   LineParametric2D_F64 -> nested LineParametric2D struct
 //   LineSegment2D_F64 -> nested LineSegment2D struct (kept local; the
@@ -25,7 +26,6 @@
 #include <opencv2/core.hpp>
 
 #include <cstdint>
-#include <list>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -163,58 +163,125 @@ public:
 
     using SplitResults = SplitSelector::Results;
 
-    // Mirrors DogArray<Corner>: stable Corner pointers, freshly grown.
-    // // TODO(perf): recycle.
+    // Mirrors DogArray<Corner>: stable Corner pointers, recycled across reset().
     class CornerPool {
     public:
         Corner* grow();
         void reset();
-        std::size_t size() const { return storage_.size(); }
+        std::size_t size() const { return activeSize_; }
         Corner* get(std::size_t i) const { return storage_[i].get(); }
 
     private:
         std::vector<std::unique_ptr<Corner>> storage_;
+        std::size_t activeSize_ = 0;
     };
 
-    // Mirrors DogLinkedList<Corner>. We hold Corner* in a std::list for
-    // pointer stability of the corners themselves; iterators give the
-    // Element<Corner> handle. end() is the "null Element" sentinel.
+    // Mirrors DogLinkedList<Corner>. We hold Corner* in a small linked list
+    // with pooled nodes; iterators give the Element<Corner> handle. end() is
+    // the "null Element" sentinel.
     class CornerList {
+        struct Node {
+            Corner* value = nullptr;
+            Node* prev = nullptr;
+            Node* next = nullptr;
+        };
+
     public:
-        using Iter = std::list<Corner*>::iterator;
+        class Iter {
+        public:
+            Iter() = default;
+
+            Corner*& operator*() const { return node_->value; }
+
+            Iter& operator++() {
+                node_ = node_->next;
+                return *this;
+            }
+
+            Iter& operator--() {
+                node_ = node_->prev;
+                return *this;
+            }
+
+            bool operator==(const Iter& other) const {
+                return node_ == other.node_;
+            }
+
+            bool operator!=(const Iter& other) const {
+                return node_ != other.node_;
+            }
+
+        private:
+            friend class CornerList;
+
+            explicit Iter(Node* node) : node_(node) {}
+
+            Node* node_ = nullptr;
+        };
 
         Iter pushTail(Corner* c) {
-            data_.push_back(c);
-            auto it = data_.end();
-            --it;
-            return it;
+            Node* n = growNode(c);
+            n->prev = tail_;
+            n->next = nullptr;
+            if (tail_ != nullptr) {
+                tail_->next = n;
+            } else {
+                head_ = n;
+            }
+            tail_ = n;
+            listSize_++;
+            return Iter(n);
         }
         Iter insertAfter(Iter where, Corner* c) {
-            // std::list::insert(it, value) inserts BEFORE it; we want AFTER.
-            auto next_it = where;
-            ++next_it;
-            return data_.insert(next_it, c);
+            Node* w = where.node_;
+            Node* n = growNode(c);
+            n->prev = w;
+            n->next = w->next;
+            if (w->next != nullptr) {
+                w->next->prev = n;
+            } else {
+                tail_ = n;
+            }
+            w->next = n;
+            listSize_++;
+            return Iter(n);
         }
-        void remove(Iter it) { data_.erase(it); }
-        void reset() { data_.clear(); }
-        std::size_t size() const { return data_.size(); }
+        void remove(Iter it) {
+            Node* n = it.node_;
+            if (n->prev != nullptr) {
+                n->prev->next = n->next;
+            } else {
+                head_ = n->next;
+            }
+            if (n->next != nullptr) {
+                n->next->prev = n->prev;
+            } else {
+                tail_ = n->prev;
+            }
+            n->value = nullptr;
+            n->prev = nullptr;
+            n->next = nullptr;
+            listSize_--;
+        }
+        void reset() {
+            head_ = nullptr;
+            tail_ = nullptr;
+            activeSize_ = 0;
+            listSize_ = 0;
+        }
+        std::size_t size() const { return listSize_; }
 
-        Iter getHead() { return data_.begin(); }
-        Iter getTail() {
-            auto it = data_.end();
-            if (data_.empty()) return it;
-            --it;
-            return it;
-        }
-        Iter end() { return data_.end(); }
+        Iter getHead() { return Iter(head_); }
+        Iter getTail() { return Iter(tail_); }
+        Iter end() { return Iter(); }
 
         // Mirrors DogLinkedList.find(T): returns iterator pointing at the
         // element whose Corner* matches, or end() if not found.
         Iter find(const Corner* c) {
-            for (auto it = data_.begin(); it != data_.end(); ++it) {
-                if (*it == c) return it;
+            for (Node* n = head_; n != nullptr; n = n->next) {
+                if (n->value == c) return Iter(n);
             }
-            return data_.end();
+            return end();
         }
 
         // Mirrors DogLinkedList.getElement(int index, boolean forward).
@@ -222,29 +289,40 @@ public:
         // (BoofCV uses this for fast access on either side).
         Iter getElement(int32_t index, bool forward) {
             if (forward) {
-                auto it = data_.begin();
-                for (int32_t k = 0; k < index; k++) ++it;
-                return it;
+                Node* n = head_;
+                for (int32_t k = 0; k < index; k++) n = n->next;
+                return Iter(n);
             } else {
-                auto it = data_.end();
-                --it;
-                for (int32_t k = 0; k < index; k++) --it;
-                return it;
+                Node* n = tail_;
+                for (int32_t k = 0; k < index; k++) n = n->prev;
+                return Iter(n);
             }
         }
 
         // True if the iterator points at the head.
-        bool isHead(Iter it) const { return it == data_.begin(); }
+        bool isHead(Iter it) const { return it.node_ == head_; }
         // True if the iterator points at the tail (last real element).
         bool isTail(Iter it) const {
-            if (data_.empty()) return false;
-            auto last = data_.end();
-            --last;
-            return it == last;
+            return tail_ != nullptr && it.node_ == tail_;
         }
 
     private:
-        std::list<Corner*> data_;
+        Node* growNode(Corner* c) {
+            if (activeSize_ == storage_.size()) {
+                storage_.push_back(std::make_unique<Node>());
+            }
+            Node* n = storage_[activeSize_++].get();
+            n->value = c;
+            n->prev = nullptr;
+            n->next = nullptr;
+            return n;
+        }
+
+        std::vector<std::unique_ptr<Node>> storage_;
+        std::size_t activeSize_ = 0;
+        std::size_t listSize_ = 0;
+        Node* head_ = nullptr;
+        Node* tail_ = nullptr;
     };
 
     // ---- configuration getters/setters (mirror @Getter/@Setter) ------

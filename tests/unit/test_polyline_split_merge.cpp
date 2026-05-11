@@ -648,6 +648,67 @@ TEST(PolylineSplitMerge, addCorner) {
     EXPECT_EQ(4, (*alg.list().getElement(1, true))->index);
 }
 
+TEST(PolylineSplitMerge, cornerPool_resetReusesAndClearsCorners) {
+    PolylineSplitMerge alg;
+
+    Corner* a = alg.corners().grow();
+    Corner* b = alg.corners().grow();
+    a->index = 12;
+    a->sideError = 3.5;
+    a->splitLocation = 9;
+    a->splitError0 = 1.0;
+    a->splitError1 = 2.0;
+    a->splitable = false;
+    b->index = 21;
+
+    EXPECT_EQ(2u, alg.corners().size());
+    alg.corners().reset();
+    EXPECT_EQ(0u, alg.corners().size());
+
+    Corner* reusedA = alg.corners().grow();
+    Corner* reusedB = alg.corners().grow();
+    EXPECT_EQ(a, reusedA);
+    EXPECT_EQ(b, reusedB);
+    EXPECT_EQ(2u, alg.corners().size());
+
+    EXPECT_EQ(-1, reusedA->index);
+    EXPECT_EQ(-1.0, reusedA->sideError);
+    EXPECT_EQ(-1, reusedA->splitLocation);
+    EXPECT_EQ(-1.0, reusedA->splitError0);
+    EXPECT_EQ(-1.0, reusedA->splitError1);
+    EXPECT_TRUE(reusedA->splitable);
+}
+
+TEST(PolylineSplitMerge, cornerList_resetClearsOldLinks) {
+    PolylineSplitMerge alg;
+
+    Corner* a = alg.corners().grow();
+    Corner* b = alg.corners().grow();
+    Corner* c = alg.corners().grow();
+
+    alg.list().pushTail(a);
+    alg.list().pushTail(b);
+    alg.list().pushTail(c);
+    alg.list().remove(alg.list().find(b));
+    alg.list().reset();
+
+    alg.list().pushTail(c);
+    alg.list().pushTail(a);
+
+    EXPECT_EQ(2u, alg.list().size());
+    auto e = alg.list().getHead();
+    EXPECT_EQ(c, *e);
+    ++e;
+    EXPECT_EQ(a, *e);
+    ++e;
+    EXPECT_EQ(alg.list().end(), e);
+
+    e = alg.list().getTail();
+    EXPECT_EQ(a, *e);
+    --e;
+    EXPECT_EQ(c, *e);
+}
+
 TEST(PolylineSplitMerge, setSplitVariables) {
     std::vector<cv::Point2i> contour = make_rect(5, 6, 12, 20);
 

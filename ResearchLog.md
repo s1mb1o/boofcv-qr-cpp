@@ -1,5 +1,67 @@
 # ResearchLog
 
+## 2026-05-11 — Target 6: pooled polyline corner/list storage
+
+### Why
+
+The refreshed `lots/image005` profile still showed the polygon corner-finder
+cluster: `PolylineSplitMerge::computeSideError()` at roughly 3.5%,
+`MaximumLineDistance::selectSplitPoint()` around 2.6%, and
+`ContourEdgeIntensity::process()` around 2.5%. A previous invariant-hoist trial
+failed the perf gate, so this pass targeted allocation overhead around the
+verbatim split/merge algorithm instead of changing scoring math.
+
+### Change
+
+- `CornerPool::reset()` now preserves allocated `Corner` objects and resets only
+  the logical active size. `grow()` returns a reset retained object when
+  available.
+- Replaced the internal `std::list<Corner*>` with a small linked list over
+  recycled nodes. The iterator contract used by the BoofCV-port code is
+  unchanged: `end()` is still the null-element sentinel, and `next()` /
+  `previous()` keep their wrap-around behaviour.
+- Added tests for corner-pool state clearing and list reset link cleanup.
+- A corner-object-only trial passed correctness but was noisy/mixed on the
+  aggregate timing gate. The retained change includes list-node pooling because
+  `std::list` node allocation was still happening for every contour fit.
+
+### Commands
+
+```bash
+cmake --build build --target boofcv_qr_tests qr_scan -- -j
+ctest --test-dir build --output-on-failure -R PolylineSplitMerge
+ctest --test-dir build --output-on-failure
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+bash tools/cli/run_regression.sh
+```
+
+### Result
+
+Fixed-count profile comparison against target 5:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `lots/image005.jpg` (250 iters) | 125.52 ms/iter | 120.58 ms/iter | -4.94 ms / -3.9% |
+| `bright_spots/image012.jpg` (300 iters) | 101.73 ms/iter | 99.74 ms/iter | -1.99 ms / -2.0% |
+
+Full regression timing:
+
+| metric | target 5 | target 6 | delta |
+|---|---:|---:|---:|
+| `summary.total_elapsed_ms` | 17799 ms | 17460 ms | -339 ms / -1.9% |
+| aggregate mean ms | 23.10 | 22.62 | -2.1% |
+| `brightness` mean ms | 57.43 | 56.57 | -1.5% |
+| `curved` mean ms | 28.01 | 27.11 | -3.2% |
+| `lots` mean ms | 111.66 | 107.24 | -4.0% |
+
+Quality is unchanged: regression PASS, aggregate decode rate remains
+byte-identical to the BoofCV Java baseline at **74.40%**.
+
 ## 2026-05-11 — Target 5: sliding local histograms in `ThresholdBlockOtsu`
 
 ### Why

@@ -185,12 +185,16 @@ int32_t MaximumLineDistance::compareScore(double scoreA, double scoreB) {
 // ============================================================================
 
 PolylineSplitMerge::Corner* PolylineSplitMerge::CornerPool::grow() {
-    storage_.push_back(std::make_unique<Corner>());
-    return storage_.back().get();
+    if (activeSize_ == storage_.size()) {
+        storage_.push_back(std::make_unique<Corner>());
+    }
+    Corner* c = storage_[activeSize_++].get();
+    c->reset();
+    return c;
 }
 
 void PolylineSplitMerge::CornerPool::reset() {
-    storage_.clear();
+    activeSize_ = 0;
 }
 
 // ============================================================================
@@ -462,7 +466,6 @@ void PolylineSplitMerge::ensureTriangleOrder(const std::vector<cv::Point2i>& con
 
 PolylineSplitMerge::CornerList::Iter PolylineSplitMerge::addCorner(int32_t where) {
     Corner* c = corners_.grow();
-    c->reset();
     c->index = where;
     list_.pushTail(c);
     return list_.getTail();
@@ -481,7 +484,6 @@ bool PolylineSplitMerge::increaseNumberOfSidesByOne(
     (*selected)->sideError = (*selected)->splitError0;
     // split the selected side and add a new corner
     Corner* c = corners_.grow();
-    c->reset();
     c->index = (*selected)->splitLocation;
     c->sideError = (*selected)->splitError1;
     CornerList::Iter cornerE = list_.insertAfter(selected, c);

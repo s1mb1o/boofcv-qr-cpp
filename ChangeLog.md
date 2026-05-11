@@ -1,5 +1,40 @@
 # ChangeLog
 
+## 2026-05-11 (later¹²) — perf(polyline): recycle corner and list-node pools
+
+Implemented the next polyline allocation target. The first corner-object-only
+trial was too noisy on the aggregate regression gate, so the committed change
+also removes the remaining `std::list` node allocation churn in the same
+corner-finder loop.
+
+### Changed
+
+- [include/boofcv_qr/polyline/polyline_split_merge.hpp](include/boofcv_qr/polyline/polyline_split_merge.hpp): `CornerPool::reset()` now keeps allocated `Corner` objects behind a logical active size, and `CornerList` is now a small linked list with recycled nodes instead of `std::list<Corner*>`.
+- [src/polygon/polyline_split_merge.cpp](src/polygon/polyline_split_merge.cpp): `CornerPool::grow()` reuses and resets retained corners; `addCorner()` and split insertion rely on that reset path.
+- [tests/unit/test_polyline_split_merge.cpp](tests/unit/test_polyline_split_merge.cpp): added focused coverage for corner-pool reuse/reset and pooled-list reset link cleanup.
+- [src/polygon/polyline_split_merge.md](src/polygon/polyline_split_merge.md) and [ResearchLog.md](ResearchLog.md): documented the allocation-only optimisation and perf gate results.
+
+### Performance
+
+Compared against the post-Otsu target:
+
+| image / run | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 101.73 ms/iter | 99.74 ms/iter | -2.0% |
+| `lots/image005.jpg` (250 iters) | 125.52 ms/iter | 120.58 ms/iter | -3.9% |
+| Full regression `total_elapsed_ms` | 17.799 s | 17.460 s | -1.9% |
+| Aggregate detector mean | 23.10 ms | 22.62 ms | -2.1% |
+| `lots` mean | 111.66 ms | 107.24 ms | -4.0% |
+
+Quality is unchanged.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure -R PolylineSplitMerge` -> 40/40 PASS.
+- `ctest --test-dir build --output-on-failure` -> 433/433 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains 74.40%, with only the documented accepted residual categories out-of-band.
+
 ## 2026-05-11 (later¹¹) — perf(otsu): slide local block histograms
 
 Implemented the next `ThresholdBlockOtsu` target without changing the Otsu math or threshold decisions. The change keeps per-block histogram values exact, but avoids rebuilding each 3×3 local histogram from scratch.
