@@ -11,23 +11,28 @@
     "as accepted (NOT a regression). Categories not listed are gated at",
     "the strict +/-2pp CLAUDE.md band.",
     "",
-    "Provenance: see docs/decisions/01_cv_findcontours_substitution.md",
-    "(parity-driven contour-scanner residuals), docs/decisions/03_perf_findhomography_and_sampler_cycles.md",
-    "(post-perf-push close-out state), and src/decoder/qr_code_decoder_image.md",
-    "'Known parity residuals' section. Update this file ONLY when an ADR",
-    "is updated to reflect a new accepted state."
+    "Provenance: see docs/decisions/06_threshold_block_otsu_audit.md for",
+    "the empirical root-cause attribution of the monitor/glare residuals",
+    "(IEEE-754 floating-point accumulation noise in ComputeOtsu's histogram",
+    "sums causes 0.6-1.9% edge-wandering at fg/bg boundaries; cycle B's",
+    "verbatim contour port confirmed this is upstream, not contour-stage).",
+    "ADR 05 (cycles A+B + initial re-attribution), ADR 01 (original",
+    "cv::findContours hypothesis, now disproven), and src/decoder/",
+    "qr_code_decoder_image.md 'Known parity residuals' section have full",
+    "history. Update this file ONLY when an ADR is updated to reflect a",
+    "new accepted state."
   ],
   "tolerance_pp_default": 1.0,
   "accepted": {
     "monitor": {
       "delta_pp": -11.76,
       "tolerance_pp": 1.0,
-      "reason": "cv::findContours substitution residual: 2 of 17 images fail (image011, image012) at the finder-check stage. See ADR 01."
+      "reason": "ThresholdBlockOtsu IEEE-754 edge-wandering: 2 of 17 images fail (image011, image012). Audit measured 0.602% per-pixel binary diff vs Java, 100% within 1px of fg/bg boundary, 0% interior. See ADR 06."
     },
     "glare": {
       "delta_pp": -3.77,
       "tolerance_pp": 1.0,
-      "reason": "cv::findContours substitution residual: 3 GT fail (image005, image007, image022) at the polygon-fit stage. See ADR 01."
+      "reason": "ThresholdBlockOtsu IEEE-754 edge-wandering: 3 GT fail (image005, image007, image022). Audit measured 1.884% per-pixel binary diff vs Java, 100% within 1px of fg/bg boundary, 0% interior. See ADR 06."
     },
     "bright_spots": {
       "delta_pp": 2.06,

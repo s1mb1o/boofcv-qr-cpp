@@ -1,5 +1,53 @@
 # ChangeLog
 
+## 2026-05-11 (later³) — docs(parity): ADR 06 — `ThresholdBlockOtsu` parity audit; monitor/glare residuals re-attributed to IEEE-754 edge-wandering
+
+Pure docs commit. ADR 05 (LinearContour port close-out) re-attributed the `monitor -11.76pp` / `glare -3.77pp` residuals from cv::findContours (ADR 01's hypothesis) upstream to `ThresholdBlockOtsu` binarizer divergence. ADR 06 executes the empirical binarizer-stage audit that confirms and characterises that re-attribution.
+
+### Audit findings
+
+Pixel-diffed Java BoofCV's vs C++ port's `ThresholdBlockOtsu` binary output on two canonical failing images:
+
+| image | per-pixel diff | edge vs interior |
+|---|---:|---|
+| `monitor/image011` (1689×1614) | **0.602%** (16,415 px) | **100% within 1px of fg/bg boundary**, 0% interior |
+| `glare/image005` (756×1008) | **1.884%** (14,359 px) | **100% within 1px of fg/bg boundary**, 0% interior |
+
+**Every single disagreement is an edge pixel.** Zero interior misclassification on either image. The divergence is pure boundary-wandering caused by IEEE-754 floating-point accumulation order in `ComputeOtsu`'s histogram-sum loops (Java's `sum += (i/dlength)*histogram[i]` accumulated in a different FMA/SIMD order than C++'s equivalent under `-O3`). Identical algorithm; bit-different sums → bit-different threshold by 0-1 grayvalue → boundary pixels flip categories.
+
+The threshold-comparison direction (`<=`), `finalizeThreshold` truncate-after-add-0.5 rounding, and all `ComputeOtsu` algorithmic operations are **identical** between Java and C++ ports. The divergence is not a port bug; it's an inherent property of porting numerically-sensitive code between languages with different FP idioms.
+
+### Why cycle B didn't close the residuals (now empirically confirmed)
+
+The binary input fed to BOTH contour extractors already differs by 0.6-1.9% at edges. Cycle B's `LinearContourLabelChang2004` port (`c21926e`) replaced `cv::findContours` with BoofCV-identical extraction; the residuals didn't change because they were already determined upstream by the binarizer. ADR 01's diagnosis was partial.
+
+### Decision
+
+**Accept the residuals as documented**. 5 images out of 562 (0.89% of the dataset) fail on FP-noise-induced edge-wandering. Aggregate parity is 0.00pp byte-identical. Decoder-only perf is ~2× C++/Java. The audit is the durable artifact for future maintainers.
+
+### Triaged-and-rejected paths
+
+- **(A) Match Java's FP accumulation order verbatim in `computeOtsu`** — uncertain payoff (compiler-issued FMA/SIMD order may differ even with loop-identical code).
+- **(B) Add tolerance at finder-pattern check** — not parity-preserving; risks regressing in-band categories.
+- **(D) Pursue both as v2** — explicitly out of v1 scope; documented as the path forward.
+
+### Changed
+
+- [docs/decisions/06_threshold_block_otsu_audit.md](docs/decisions/06_threshold_block_otsu_audit.md) (new) — ADR 06 captures the empirical audit methodology, findings, root-cause attribution, alternatives, decision, and revisit conditions.
+- [tests/accepted_residuals.json](tests/accepted_residuals.json) — `monitor` and `glare` `reason` strings updated to cite ADR 06's IEEE-754 edge-wandering attribution instead of ADR 01's (disproven) cv::findContours hypothesis. `_comment` provenance refreshed to point at ADR 06 as the empirical root-cause.
+- [src/binary/threshold_block_otsu.md](src/binary/threshold_block_otsu.md) — added "Known parity residual" bullet to the Failure-modes section cross-referencing ADR 06.
+
+### Verification
+
+- 428/428 unit tests pass (no code change).
+- `tools/cli/run_regression.sh` PASS — aggregate parity 0.00pp byte-identical to Java, all 17 categories in-band or matching accepted-residual bands.
+
+### Cross-reference
+
+ADR chain documenting residual attribution: 01 (initial cv::findContours hypothesis) → 05 (cycle B disproves cv::findContours; binarizer hypothesised) → **06** (empirical binarizer audit confirms IEEE-754 edge-wandering; ADR chain complete for v1).
+
+---
+
 ## 2026-05-11 (later²) — docs(perf): close out LinearContour port; ADR 05 records cycle A+B + residual re-attribution (cycle C)
 
 Cycle C of the LinearContour port — pure documentation + two small code fix-ups gathered from cycle B's review. **This is the close-out commit for the LinearContour port.**

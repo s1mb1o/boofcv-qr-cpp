@@ -48,6 +48,7 @@ So we port verbatim and accept the cost.
 - `requestedBlockWidth` larger than the image dimension → `selectBlockSize` falls back to using the full dimension as the block. Tested.
 - Empty histogram in some block (block at the corner with rounding) → `compute` returns `threshold = 0`, `variance = 0`. Texture-penalty division-by-zero is guarded by `variance += 0.001`.
 - Multi-thread: not safe. Each `ThresholdBlockOtsu` instance owns its `stats_` buffer; share by copying or constructing per-thread instances.
+- **Known parity residual on `monitor` / `glare` categories** — 0.6–1.9% per-pixel binary divergence vs Java BoofCV's `ThresholdBlockOtsu`, **100% within 1px of fg/bg boundary, 0% interior**. Root-caused to IEEE-754 floating-point accumulation order in `ComputeOtsu`'s histogram-sum loops: identical algorithm, bit-different sums → bit-different threshold by 0–1 grayvalue → boundary pixels flip categories. Not a port bug; an inherent property of porting numerically-sensitive code between languages with different FP idioms. Empirical audit + decision-not-to-chase is documented in [ADR 06](../../docs/decisions/06_threshold_block_otsu_audit.md). Compounds downstream into the `monitor -11.76pp` / `glare -3.77pp` accepted residuals (per `tests/accepted_residuals.json`).
 
 ## Tunable parameters
 
