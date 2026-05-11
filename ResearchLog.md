@@ -1,5 +1,226 @@
 # ResearchLog
 
+## 2026-05-11 — Fresh performance comparison and C++ bottleneck profile on `qrcodes_v3`
+
+### Why
+
+Compare current C++ performance against the original BoofCV Java reference on the same BoofCV `qrcodes_v3` dataset, then profile representative slow C++ images after the `LinearContourLabelChang2004` port reshaped the old `cv::findContours` bottleneck.
+
+### Commands
+
+Fresh Java reference:
+
+```bash
+JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
+  ./gradlew --no-daemon --quiet run \
+  --args="/Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes /tmp/qr_boofcv_perf_20260511_121749/java"
+```
+
+Fresh C++ run and scoring:
+
+```bash
+build/qr_scan \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes \
+  /tmp/qr_boofcv_perf_20260511_121749/cpp
+python3 tests/regression/score.py /tmp/qr_boofcv_perf_20260511_121749/java/summary.json /tmp/qr_boofcv_perf_20260511_121749/java_score.json --iou 0.5
+python3 tests/regression/score.py /tmp/qr_boofcv_perf_20260511_121749/cpp/summary.json /tmp/qr_boofcv_perf_20260511_121749/cpp_score.json --iou 0.5
+```
+
+Sampling profiles:
+
+```bash
+build/qr_scan --profile detection/bright_spots/image012.jpg 300
+sample <pid> 10 -file /tmp/qr_boofcv_perf_20260511_121749/sample_bright_spots_image012.txt
+
+build/qr_scan --profile detection/lots/image005.jpg 250
+sample <pid> 10 -file /tmp/qr_boofcv_perf_20260511_121749/sample_lots_image005.txt
+```
+
+### Headline results
+
+There are two different performance stories depending on what is being measured:
+
+| metric | Java BoofCV | current C++ | C++ vs Java |
+|---|---:|---:|---:|
+| Full batch wall time (`summary.total_elapsed_ms`) | 24.976 s | 18.627 s | C++ 1.34x faster |
+| Detector-core sum (`sum elapsed_ms`) | 8.319 s | 13.908 s | C++ 1.67x slower |
+| Detector-core mean/image | 14.80 ms | 24.75 ms | C++ 1.67x slower |
+| Harness overhead | 16.657 s | 4.719 s | C++ 3.53x less overhead |
+
+The full C++ CLI run is faster because the Java reference harness spends most of its wall time outside `detector.process()` - image IO, sidecar parsing, Jackson pretty JSON, and keeping all records before writing `summary.json`. The library-level comparison is the detector-core number: current C++ is still about **1.67x slower than Java** on this dataset.
+
+Quality stayed unchanged from the parity run: aggregate decode rate is 74.40% on both sides.
+
+### Per-category detector-core comparison
+
+Sorted by current C++ detector time contribution:
+
+| category | images | Java mean ms | C++ mean ms | ratio | C++ weighted ms | extra vs Java ms |
+|---|---:|---:|---:|---:|---:|---:|
+| `bright_spots` | 32 | 46.84 | 75.18 | 1.60x | 2406 | +907 |
+| `brightness` | 28 | 37.54 | 62.91 | 1.68x | 1762 | +710 |
+| `close` | 40 | 19.96 | 38.06 | 1.91x | 1522 | +724 |
+| `curved` | 50 | 16.43 | 29.63 | 1.80x | 1481 | +660 |
+| `blurred` | 45 | 17.09 | 27.64 | 1.62x | 1244 | +475 |
+| `glare` | 50 | 9.32 | 18.55 | 1.99x | 927 | +461 |
+| `lots` | 7 | 111.86 | 129.76 | 1.16x | 908 | +125 |
+| `nominal` | 65 | 6.08 | 12.61 | 2.07x | 820 | +425 |
+| `monitor` | 17 | 25.91 | 42.81 | 1.65x | 728 | +287 |
+| `high_version` | 33 | 12.38 | 17.08 | 1.38x | 564 | +155 |
+| `rotations` | 44 | 6.93 | 12.37 | 1.78x | 544 | +239 |
+| `damaged` | 37 | 5.89 | 11.68 | 1.98x | 432 | +214 |
+| `shadows` | 14 | 12.04 | 21.11 | 1.75x | 295 | +127 |
+| `noncompliant` | 16 | 3.86 | 7.53 | 1.95x | 120 | +59 |
+| `perspective` | 35 | 1.44 | 2.96 | 2.06x | 104 | +53 |
+| `decoding` | 26 | 2.83 | 1.43 | 0.50x | 37 | -36 |
+| `pathological` | 23 | 0.42 | 0.57 | 1.37x | 13 | +4 |
+
+The extra detector time is distributed; `bright_spots`, `close`, `brightness`, `curved`, `blurred`, `glare`, and `nominal` are the largest aggregate contributors. `lots` has high absolute latency but small regression-set weight and only a 1.16x ratio.
+
+### Slowest current C++ images
+
+Top C++ elapsed images are the 60-QR `lots` images, then high-resolution `bright_spots` / `brightness` images:
+
+| image | C++ ms | Java ms | ratio | detections | failures |
+|---|---:|---:|---:|---:|---:|
+| `detection/lots/image005.jpg` | 137.98 | 149.55 | 0.92x | 60 | 395 |
+| `detection/lots/image006.jpg` | 135.18 | 117.72 | 1.15x | 60 | 393 |
+| `detection/lots/image003.jpg` | 131.23 | 100.44 | 1.31x | 60 | 397 |
+| `detection/lots/image004.jpg` | 130.71 | 101.88 | 1.28x | 59 | 396 |
+| `detection/lots/image007.jpg` | 128.16 | 109.16 | 1.17x | 60 | 385 |
+| `detection/bright_spots/image012.jpg` | 110.81 | 78.38 | 1.41x | 2 | 3 |
+| `detection/bright_spots/image008.jpg` | 109.61 | 76.96 | 1.42x | 2 | 6 |
+| `detection/bright_spots/image011.jpg` | 109.53 | 76.80 | 1.43x | 1 | 5 |
+
+### C++ bottleneck profiles
+
+#### `bright_spots/image012.jpg` - noisy high-resolution image
+
+Profile loop: 3024x4032 image, 300 iterations, 112.26 ms/iter.
+
+Stage-level sample split from `sample`:
+
+| stage / function cluster | samples | share |
+|---|---:|---:|
+| Finder / square detector total | 7015 / 8470 | 82.8% |
+| `DetectPolygonFromContour::process` / contour extraction | 6664 / 8470 | 78.7% |
+| `ThresholdBlockOtsu` total | 1368 / 8470 | 16.2% |
+| `QrCodeDecoderImage` decode path | 16 / 8470 | 0.2% |
+
+Top collapsed stacks:
+
+| function | samples | share |
+|---|---:|---:|
+| `ContourTracer::searchOne8()` | 3018 | 35.6% |
+| `ThresholdBlockOtsu::computeStatistics()` | 810 | 9.6% |
+| `ThresholdBlockOtsu::thresholdBlock()` | 532 | 6.3% |
+| `ContourTracer::trace()` | 428 | 5.1% |
+| `PolylineSplitMerge::computeSideError()` | 44 | 0.5% |
+
+Interpretation: on noisy high-resolution images, the current bottleneck is the BoofCV contour tracer, not QR decode. This is the expected post-`cv::findContours` shape: the expensive region moved from OpenCV's contour implementation to the verbatim C++ contour port. The hot inner loop is `ContourTracer::searchOne8()`.
+
+#### `lots/image005.jpg` - 60 QR codes plus hundreds of failures
+
+Profile loop: 4032x3024 image, 250 iterations, 142.15 ms/iter.
+
+Stage-level sample split:
+
+| stage / function cluster | samples | share |
+|---|---:|---:|
+| Finder / square detector total | 4767 / 8553 | 55.7% |
+| Decoder / orchestrator total | 2516 / 8553 | 29.4% |
+| `ThresholdBlockOtsu` total | 1127 / 8553 | 13.2% |
+
+Top collapsed stacks:
+
+| function | samples | share |
+|---|---:|---:|
+| `ContourTracer::searchOne8()` | 1200 | 14.0% |
+| `cv::JacobiSVDImpl_<double>()` | 1144 | 13.4% |
+| `LinearContourLabelChang2004::process()` | 1104 | 12.9% |
+| `ThresholdBlockOtsu::thresholdBlock()` | 568 | 6.6% |
+| `ThresholdBlockOtsu::computeStatistics()` | 535 | 6.3% |
+| `PolylineSplitMerge::computeSideError()` | 308 | 3.6% |
+| `ImageLineIntegral::compute()` | 278 | 3.3% |
+| `QrCodeBinaryGridReader::readBitIntensity()` | 271 | 3.2% |
+| `MaximumLineDistance::selectSplitPoint()` | 221 | 2.6% |
+| `ContourEdgeIntensity::process()` | 212 | 2.5% |
+| `GaliosFieldTableOps::multiply()` | 138 | 1.6% |
+
+Interpretation: multi-QR workloads split between contour extraction and decoder-side transform / sampling work. The largest decoder hot path is still small-matrix SVD during repeated grid transforms (`QrCodeBinaryGridToPixel::computeTransform()` / `setTransformFromLinesSquare()`), followed by bit-intensity sampling and RS/Galois work.
+
+### Bottleneck ranking and likely next levers
+
+1. **Contour tracing (`ContourTracer::searchOne8`, `LinearContourLabelChang2004`)**
+   - Dominates noisy high-resolution images and remains a large share on multi-QR images.
+   - Candidate levers: remove `% 8` from the unrolled `searchOne8` path, avoid `moveToNext()` division/modulo per contour pixel by tracking `(dx,dy)` for each direction, and audit `PackedSetsPoint2D_I32` block reuse. This is algorithmic core, so any change needs Java-state parity fixtures plus full regression.
+
+2. **`ThresholdBlockOtsu`**
+   - Stable 13-16% on the profiled 4MP images.
+   - Candidate levers: row-pointer and histogram reuse are already in place; further gains likely require parallel block processing, vectorised histogram updates, or integral/histogram reshaping. This is parity-sensitive and is also the root of the `monitor` / `glare` accepted residuals, so it should be treated as a parity-audit task, not a casual optimisation.
+
+3. **Small-matrix SVD in QR grid transforms**
+   - `cv::JacobiSVDImpl_<double>` is 13.4% on `lots/image005`, due repeated DLT solves across many detections/failures.
+   - Candidate levers: fixed-size stack-allocated DLT/SVD path, cheaper null-space solver for known 14x9 / small Nx9 matrices, cache/reuse transforms within a decode attempt, or fail earlier before invoking transform-heavy decode. Must preserve the pure-DLT behaviour that fixed parity in ADR 03.
+
+4. **Polyline / edge-scoring cleanup**
+   - `PolylineSplitMerge::computeSideError`, `MaximumLineDistance::selectSplitPoint`, `ContourEdgeIntensity`, and `ImageLineIntegral` are individually small but add up on `lots`.
+   - Candidate levers: object pooling for polyline corner structures and precomputed contour metrics. Lower priority than contour tracing and SVD.
+
+5. **Reed-Solomon / Galois**
+   - Visible but not primary (`GaliosFieldTableOps::multiply` 1.6% in `lots`).
+   - Candidate levers: reuse/capacity for temporary vectors, table-access inlining, or specialised U8 QR path. Low priority unless downstream workloads are decode-only / many-QR.
+
+### Decision
+
+No code change in this pass. The next worthwhile perf cycle should start with contour-tracer micro-optimisations or a fixed-size SVD replacement, not broad refactoring. Because the top two hotspots are parity-sensitive algorithmic core, each candidate should be isolated behind one measurable commit and gated by `tools/cli/run_regression.sh`.
+
+## 2026-05-11 — Fresh C++ vs BoofCV Java parity check on `qrcodes_v3`
+
+### Why
+
+Re-run the existing C++ port against the original BoofCV Java reference numbers using the BoofCV `qrcodes_v3` dataset, after the contour-port and `ThresholdBlockOtsu` residual-audit work. The goal was to verify the current tree still matches the original QR BoofCV results at the aggregate level and only differs in documented accepted-residual categories.
+
+### Command
+
+```bash
+bash tools/cli/run_regression.sh
+```
+
+Dataset root: `/Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes`
+
+### Result
+
+`PASS: no new regressions; all out-of-band categories are documented residuals within their accepted-tolerance bands.`
+
+Aggregate quality is byte-identical to the Java BoofCV 1.3.0 baseline:
+
+| metric | Java baseline | current C++ | delta |
+|---|---:|---:|---:|
+| images | 562 | 562 | 0 |
+| GT codes | 1258 | 1258 | 0 |
+| detections | 945 | 945 | 0 |
+| matches @ IoU >= 0.5 | 936 | 936 | 0 |
+| decode success | 936 | 936 | 0 |
+| precision | 99.05% | 99.05% | +0.00pp |
+| decode rate | 74.40% | 74.40% | +0.00pp |
+
+### Per-category residuals
+
+All other categories are exactly in-band / byte-identical on decode rate. Non-zero deltas are the already accepted residuals:
+
+| category | Java | current C++ | delta | status |
+|---|---:|---:|---:|---|
+| `bright_spots` | 27/97 (27.84%) | 29/97 (29.90%) | +2.06pp | accepted |
+| `glare` | 17/53 (32.08%) | 15/53 (28.30%) | -3.77pp | accepted |
+| `monitor` | 14/17 (82.35%) | 12/17 (70.59%) | -11.76pp | accepted |
+| `noncompliant` | 1/26 (3.85%) | 2/26 (7.69%) | +3.85pp | accepted |
+| `perspective` | 28/35 (80.00%) | 29/35 (82.86%) | +2.86pp | accepted |
+
+### Performance note
+
+The fresh C++ run wrote `tests/regression/baseline_cpp/summary.json` with `18698 ms total` for the 562-image scan. Scored per-image detector timing in `score.json` was mean `24.79 ms`, p50 `10.92 ms`, p95 `99.11 ms`. The Java baseline file records mean `15.41 ms`, p50 `5.36 ms`, p95 `66.38 ms`; timing is not the parity gate, but the current C++ run remains roughly in the same measured performance band documented after the contour-port close-out.
+
 ## 2026-05-09 — BoofCV 1.3.0 Java baseline on `qrcodes_v3`
 
 ### Why

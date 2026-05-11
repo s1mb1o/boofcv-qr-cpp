@@ -1,5 +1,57 @@
 # ChangeLog
 
+## 2026-05-11 (later⁵) — perf(profile): compare current C++ vs BoofCV Java and identify bottlenecks
+
+Fresh performance pass on the BoofCV `qrcodes_v3` dataset, using a same-session Java reference run plus current C++ `qr_scan`.
+
+### Result
+
+- Full batch wall time: Java **24.976 s**, C++ **18.627 s**. C++ is faster end-to-end because the CLI harness has much lower non-detector overhead.
+- Detector-core time: Java **8.319 s**, C++ **13.908 s**. The current C++ detector is still **1.67x slower** than BoofCV Java inside `process()`.
+- Detector-core mean/image: Java **14.80 ms**, C++ **24.75 ms**.
+- C++ quality stayed unchanged: aggregate decode rate **74.40%**, matching the Java baseline.
+
+### Bottlenecks
+
+Sampling profiles on `bright_spots/image012.jpg` and `lots/image005.jpg` show:
+
+- Noisy high-resolution image (`bright_spots/image012`): finder / square detector dominates at **82.8%** of samples; `DetectPolygonFromContour` / `LinearContourLabelChang2004` is **78.7%**; top function is `ContourTracer::searchOne8()` at **35.6%**.
+- Multi-QR image (`lots/image005`): finder / square detector **55.7%**, decoder/orchestrator **29.4%**, `ThresholdBlockOtsu` **13.2%**. Top functions are `ContourTracer::searchOne8()` (**14.0%**) and OpenCV `cv::JacobiSVDImpl_<double>()` from repeated QR grid-transform DLT solves (**13.4%**).
+
+### Changed
+
+- [ResearchLog.md](ResearchLog.md) records the commands, timing comparison, per-category detector ratios, slowest images, profile summaries, and recommended next perf levers.
+
+### Verification
+
+- Fresh Java reference run completed on 562 images.
+- Fresh C++ run completed on 562 images.
+- Both outputs scored with `tests/regression/score.py --iou 0.5`.
+- `sample` profiles captured for two representative slow C++ workloads.
+
+---
+
+## 2026-05-11 (later⁴) — test(parity): fresh C++ vs BoofCV Java comparison on `qrcodes_v3`
+
+Re-ran the current C++ port against the BoofCV `qrcodes_v3` dataset via `tools/cli/run_regression.sh`, using the locked BoofCV Java 1.3.0 baseline in `tests/baseline.json`.
+
+### Result
+
+- Aggregate decode rate remains **74.40%**, byte-identical to the Java baseline (**+0.00pp**).
+- Aggregate detections / matches also match exactly: 945 detections, 936 matches at IoU >= 0.5, 936 decode successes out of 1258 GT codes.
+- All out-of-band categories are the documented accepted residuals: `bright_spots +2.06pp`, `glare -3.77pp`, `monitor -11.76pp`, `noncompliant +3.85pp`, `perspective +2.86pp`.
+- No generated regression-output drift after the run.
+
+### Changed
+
+- [ResearchLog.md](ResearchLog.md) records the fresh command, aggregate comparison, residual table, and timing note.
+
+### Verification
+
+- `bash tools/cli/run_regression.sh` -> PASS.
+
+---
+
 ## 2026-05-11 (later³) — docs(parity): ADR 06 — `ThresholdBlockOtsu` parity audit; monitor/glare residuals re-attributed to IEEE-754 edge-wandering
 
 Pure docs commit. ADR 05 (LinearContour port close-out) re-attributed the `monitor -11.76pp` / `glare -3.77pp` residuals from cv::findContours (ADR 01's hypothesis) upstream to `ThresholdBlockOtsu` binarizer divergence. ADR 06 executes the empirical binarizer-stage audit that confirms and characterises that re-attribution.
@@ -1417,4 +1469,3 @@ Java's `decodeByte` / `decodeKanji` invoke `new String(bytes, "Shift_JIS")` (and
 - Sidecar `.txt` files in the dataset use **two** layouts. `nominal/`, `noncompliant/` etc. use `SETS\n<8 floats per line>`; `close/`, `monitor/`, `perspective/`, `pathological/`, `high_version/` etc. use raw `x\ny\nx\ny\n…` (4 lines per QR). The `decoding/` subset stores plain payload text with no markers. Parser in `Baseline.java` handles all three.
 - BoofCV's `getDetections()` only returns *fully decoded* codes; partial detections (polygon found, decode failed) live in `getFailures()`. The current scorer ignores failures, so detection-set "decode rate" equals "detection rate" by construction. Failure-aware scoring (locate-only vs decode-success split) is a planned follow-up.
 - Build env: macOS arm64, OpenJDK 21 (Gradle 8.12.1 doesn't yet support Java 25, which is the system default); BoofCV 1.3.0 from Maven Central; Python 3.14 + Shapely 2.1.
-
