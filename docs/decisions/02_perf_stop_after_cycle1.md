@@ -166,7 +166,7 @@ The two slowest categories (`bright_spots` 11.65×, `brightness` 7.02×) are exa
 
 - C++ port is still **5.73× slower than Java** in aggregate decoder time. Two categories sit above 7× (`brightness` 7.02×, `bright_spots` 11.65×).
 - The slow categories are exactly the ones with high contour counts — i.e. real-world noisy inputs (low-contrast, glare, motion blur, low-resolution captures) will see the same ratio.
-- A downstream consumer like `pricetag-vision` doing video / multi-frame fusion will pay this cost per frame.
+- A downstream consumer doing video / multi-frame fusion will pay this cost per frame.
 
 ## When to revisit
 

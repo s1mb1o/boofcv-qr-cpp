@@ -34,7 +34,7 @@ The table comes from ZXing — BoofCV's comment notes that the publicly-availabl
 
 ## Why this approach
 
-- **No actual charset decoding.** Implementing iconv-like multi-byte→Unicode conversion in-house for 30+ encodings is out of scope and not where the QR pipeline's value is. The label gets stored on the result; the consumer (pricetag-vision) can do `boost::locale::conv::to_utf<char>(rawBytes, label)` or equivalent if it cares.
+- **No actual charset decoding.** Implementing iconv-like multi-byte→Unicode conversion in-house for 30+ encodings is out of scope and not where the QR pipeline's value is. The label gets stored on the result; consumers can do `boost::locale::conv::to_utf<char>(rawBytes, label)` or equivalent if they need decoded text.
 - **`isValidUTF8` is a heuristic, not a parser.** It treats every byte that fits the UTF-8 byte structure as valid even if the resulting codepoint is in a private-use area or otherwise weird. Good enough for "is this UTF-8 vs Latin-1?" — the actual question we're answering.
 - **No error-recovery on invalid UTF-8.** A single mid-string byte error fails the whole check. That matches Java; tests expect it (`damaged[2] |= 0xC0`).
 

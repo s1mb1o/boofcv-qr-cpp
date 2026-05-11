@@ -7,8 +7,7 @@
 // failures-with-cause.
 //
 // Per CLAUDE.md type mappings: ImageGray<T> -> cv::Mat CV_8UC1
-// (template <T> dropped). Lens distortion not ported (deferred —
-// downstream pricetag-vision pipeline doesn't use it).
+// (template <T> dropped). Lens distortion is not ported yet.
 //
 // CLAUDE.md "Public API design" mandates that land here:
 //   1. Stage-isolation public entry points (find_finders,

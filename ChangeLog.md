@@ -1,5 +1,38 @@
 # ChangeLog
 
+## 2026-05-11 (later¹⁸) — docs: prepare public GitHub publication
+
+Prepared the repository for public GitHub publication under the recommended
+name `boofcv-qr-cpp`.
+
+### Changed
+
+- Added [README.md](README.md), [LICENSE](LICENSE), [NOTICE](NOTICE),
+  [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+  [SMOKE_TESTS.md](SMOKE_TESTS.md).
+- Added GitHub Actions CI in [.github/workflows/ci.yml](.github/workflows/ci.yml)
+  for Ubuntu build and unit-test coverage.
+- Renamed public CMake project metadata from `qr-boofcv-cpp` to
+  `boofcv-qr-cpp`; the library target remains `boofcv_qr`.
+- Made `tools/cli/run_regression.sh` use `BOOFCV_QR_DATASET_ROOT` instead of a
+  local absolute dataset path.
+- Sanitized tracked docs and baseline metadata to remove private local paths
+  and project-specific downstream names.
+- Added [docs/decisions/07_public_project_name.md](docs/decisions/07_public_project_name.md)
+  documenting the repository name decision.
+
+### Verification
+
+- `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` -> PASS, no developer
+  warnings after adding `DOWNLOAD_EXTRACT_TIMESTAMP`.
+- `cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests -- -j` ->
+  PASS.
+- `ctest --test-dir build --output-on-failure` -> 435/435 PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%, 2.858 s total elapsed.
+- `build/qr_scan tests/fixtures/qr/full_v1_L_M000.png` -> PASS, valid JSON
+  single-image smoke output.
+
 ## 2026-05-11 (later¹⁷) — docs(perf): record batch thread-count spot check
 
 Recorded a fresh post-parallelization BoofCV regression timing check across

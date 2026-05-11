@@ -4,7 +4,7 @@
 
 Port BoofCV's QR code detection and decoding module (Java) to C++ on top of OpenCV. Source upstream: https://github.com/lessthanoptimal/BoofCV — primary package `boofcv.alg.fiducial.qrcode` plus its supporting code in `boofcv.alg.shapes`, `boofcv.alg.filter.binary`, and the `georegression` math library.
 
-Deliverable: a standalone C++17 library `qr-boofcv-cpp` exposing a `QrCodeDetector` class with `cv::Mat` input, plus a CLI tool and a regression test harness. License: Apache-2.0 (matches upstream; preserve attribution in `NOTICE`).
+Deliverable: a standalone C++17 library `boofcv-qr-cpp` exposing a `QrCodeDetector` class with `cv::Mat` input, plus a CLI tool and a regression test harness. License: Apache-2.0 (matches upstream; preserve attribution in `NOTICE`).
 
 ## Goals (in priority order)
 
@@ -16,9 +16,9 @@ Do NOT prioritize code beauty over correctness. Do NOT invent algorithms. Do NOT
 
 ## Public API design — for downstream recovery pipelines
 
-This library is consumed by **pricetag-vision** (the Lenta-hackathon price-tag CV pipeline), which builds custom QR recovery on top of standard decode. That use case is non-negotiable and shapes the public surface from day 1.
+This library is intended for downstream computer-vision pipelines that build custom QR recovery on top of standard decode. That use case is non-negotiable and shapes the public surface from day 1.
 
-The recovery techniques pricetag-vision plans to layer on top — known-prefix Reed-Solomon decoding, clipped-QR fallback, multi-frame codeword fusion, alignment-pattern-missing fallback, retailer-specific format dialects — **all require owning the post-binarization chain**: calling individual stages in isolation, swapping specific algorithms, and reading raw intermediate output. The API must support that without forking the library.
+The recovery techniques those pipelines may layer on top — known-prefix Reed-Solomon decoding, clipped-QR fallback, multi-frame codeword fusion, alignment-pattern-missing fallback, and application-specific format dialects — **all require owning the post-binarization chain**: calling individual stages in isolation, swapping specific algorithms, and reading raw intermediate output. The API must support that without forking the library.
 
 Concrete requirements:
 
@@ -27,7 +27,7 @@ Concrete requirements:
 - **Polygon-only / detection-only mode.** Best-frame selection over video calls detection many times per full decode. Expose `detect_polygons_only()` that stops after the alignment-pattern stage and returns candidate quadrilaterals + finder triplets, without paying RS / mode-decode cost.
 - **Raw codewords and erasure positions exposed in the result.** After bit sampling but before mode decoding, the public result must include raw codeword bytes, RS error/erasure positions used, and per-block decode status. Downstream may re-decode with custom RS parameters, apply known-prefix recovery, or fuse codewords across frames before mode-decoding.
 - **Stay single-frame.** No multi-frame state, no temporal voting, no panorama logic in this library. That is the consumer's responsibility. The library exposes enough per-frame intermediate state that the consumer can build it on top.
-- **No tag-style or domain knowledge.** The port understands ISO/IEC 18004 QR codes only. Retailer-specific dialects (e.g. Lenta's 24-bit prefix) live in the consumer, built on top of the codeword stream this library exposes.
+- **No tag-style or domain knowledge.** The port understands ISO/IEC 18004 QR codes only. Application-specific dialects live in the consumer, built on top of the codeword stream this library exposes.
 - **`cv::Mat` at boundaries, no global state, value-semantic config.** Detector instances are reentrant. Config passed by value at construction. No singletons, no thread-locals, no `init()` calls.
 - **pybind11-friendly from day 1.** Public APIs return owned types (`std::vector`, `std::optional`); no raw pointers in public signatures. `cv::Mat` round-trips through cv2's buffer protocol cleanly. Python bindings are out of v1 scope but the surface must not require an API rewrite to add them.
 
@@ -194,7 +194,7 @@ When unsure, default to verbatim.
 - Do NOT include `<bits/stdc++.h>` ever.
 - Do NOT commit an algorithmic source file without its companion `.md` algorithm doc — the doc is part of the port, not a follow-up.
 - Do NOT make a stage callable only through the top-level `QrCodeDetector`. Each stage in steps 1–8 must be reachable as a public entry point so downstream recovery pipelines can compose differently — see "Public API design".
-- Do NOT bake retailer-specific or domain-specific knowledge (Lenta prefix, any specific tag style) into this library. Domain dialects live in the consumer.
+- Do NOT bake retailer-specific or domain-specific knowledge into this library. Domain dialects live in the consumer.
 
 ## Test harness contract
 
@@ -226,7 +226,7 @@ Same hook signatures on the Java side via a small reference tool in `tools/java_
 ## Repository layout
 
 ```
-qr-boofcv-cpp/
+boofcv-qr-cpp/
 ├── CMakeLists.txt
 ├── CLAUDE.md                  # this file
 ├── README.md

@@ -1,7 +1,7 @@
 {
   "iou_threshold": 0.5,
   "boofcv_version": "1.3.0",
-  "dataset_root": "/Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes",
+  "dataset_root": "external BoofCV qrcodes_v3/qrcodes directory; set BOOFCV_QR_DATASET_ROOT for local runs",
   "total_elapsed_ms": 25841,
   "warmup_images": 5,
   "aggregate": {

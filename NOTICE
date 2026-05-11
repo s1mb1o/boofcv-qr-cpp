@@ -1,0 +1,13 @@
+boofcv-qr-cpp
+Copyright 2026 Alexander Shmelev
+
+This project is an unofficial C++17/OpenCV port of the QR code detector and
+decoder from BoofCV.
+
+Portions of this work are derived from BoofCV, Copyright Peter Abeles and the
+BoofCV contributors, licensed under the Apache License, Version 2.0.
+
+Upstream project:
+  https://github.com/lessthanoptimal/BoofCV
+
+The upstream version used for this port is recorded in UPSTREAM_VERSION.

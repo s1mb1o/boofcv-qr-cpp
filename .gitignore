@@ -7,6 +7,11 @@
 build/
 .gradle/
 cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+compile_commands.json
+Testing/
 
 # OS / editor noise
 .DS_Store
@@ -19,3 +24,7 @@ cmake-build-*/
 # only the aggregated tests/baseline.json is committed.
 tests/regression/baseline_java/
 tests/regression/baseline_cpp/
+
+# Local copies of the BoofCV regression dataset.
+data/external/
+boofcv-qrcodes/

@@ -252,7 +252,7 @@ step-9 deliverable, with explicit test tasks per item.
 input → std::vector<QrCode> output`, plus the public stage-level API
 listed above with isolated gtests for each entry point. New
 `tools/cli/` binary that runs the full
-`pricetag-vision-datasets/data/external/boofcv-qrcodes` regression
+`boofcv-qrcodes` regression
 set and emits a summary JSON in the same shape as
 `tools/java_reference/Baseline.java` so `tests/regression/score.py`
 can compare them. CI gate per CLAUDE.md: per-category read rate

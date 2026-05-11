@@ -162,7 +162,7 @@ The team-lead's checklist specifically flagged the `-1`-vs-`0xFF` sentinel. Audi
 
 Per CLAUDE.md "Public API design", stages must be reachable in isolation. This stage is exposed via the public header `boofcv_qr/binary/linear_contour_label_chang2004.hpp`. Concrete uses by downstream recovery pipelines:
 
-- **Custom blob-filtering.** Call `process(binary, labeled)`, walk `getContours()` manually, ignore the polygon-fitting downstream. Useful for pricetag-vision's "is this region a price tag at all?" pre-filter.
+- **Custom blob-filtering.** Call `process(binary, labeled)`, walk `getContours()` manually, ignore the polygon-fitting downstream. Useful for application-specific region pre-filters.
 - **Topology debugging.** `labeled` (`CV_32SC1`) is a per-pixel blob-id map. Save as PNG (scale by 255/max-id) for visual inspection — matches BoofCV's `tools/java_reference` dump output byte-for-byte.
 - **Internal-contour-only walk.** `c.internalIndexes` enumerates holes; useful for nested-finder-pattern detection if the consumer wants to bypass the polygon detector entirely.
 

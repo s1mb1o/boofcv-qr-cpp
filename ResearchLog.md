@@ -1,5 +1,38 @@
 # ResearchLog
 
+## 2026-05-11 — Public repository naming and publication readiness
+
+### Why
+
+Prepare the project for public GitHub publication and choose a repository name
+that is discoverable without implying official BoofCV ownership.
+
+### Findings
+
+`boofcv-qr-cpp` is the best name for this repository:
+
+- It leads with `boofcv`, which is the upstream lineage users will search for.
+- It scopes the repository to QR code detection/decoding instead of implying a
+  full C++ port of all BoofCV.
+- It ends with `cpp`, matching common naming for C++ ports and the existing
+  library/include naming (`boofcv_qr`).
+- A web search for exact `boofcv-qr-cpp` / `qr-boofcv-cpp` names did not surface
+  an existing public repository with that exact name. The main collision risk is
+  conceptual rather than literal: the README and NOTICE must say this is an
+  unofficial port and link to upstream BoofCV.
+
+### Publication checklist result
+
+- Missing public files: README, LICENSE, NOTICE, CONTRIBUTING, SECURITY, and
+  SMOKE_TESTS were added.
+- GitHub Actions CI was added for Ubuntu build/unit-test coverage.
+- Local absolute dataset paths were removed from executable scripts and tracked
+  baseline metadata.
+- Project-specific downstream names were replaced with generic downstream
+  consumer language.
+- Regression data remains external and is selected through
+  `BOOFCV_QR_DATASET_ROOT`.
+
 ## 2026-05-11 — Batch thread-count performance spot check
 
 ### Why
@@ -117,10 +150,10 @@ Fixed-count probes:
 
 ```bash
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 ```
 
@@ -129,11 +162,11 @@ Sampling profiles:
 ```bash
 mkdir -p /tmp/qr_boofcv_post_targets_20260511
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   10000
 sample <pid> 10 -file /tmp/qr_boofcv_post_targets_20260511/sample_bright_spots_image012.txt
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   10000
 sample <pid> 10 -file /tmp/qr_boofcv_post_targets_20260511/sample_lots_image005.txt
 ```
@@ -288,10 +321,10 @@ cmake --build build --target boofcv_qr_tests qr_scan -- -j
 ctest --test-dir build --output-on-failure -R 'ReedSolomon|Galois|QrCodeDecoderBits'
 ctest --test-dir build --output-on-failure
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 bash tools/cli/run_regression.sh
 ```
@@ -352,10 +385,10 @@ cmake --build build --target boofcv_qr_tests qr_scan -- -j
 ctest --test-dir build --output-on-failure -R 'ContourEdgeIntensity|DetectPolygonFromContour|QrCodePositionPatternDetector'
 ctest --test-dir build --output-on-failure
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 bash tools/cli/run_regression.sh
 ```
@@ -413,10 +446,10 @@ cmake --build build --target boofcv_qr_tests qr_scan -- -j
 ctest --test-dir build --output-on-failure -R PolylineSplitMerge
 ctest --test-dir build --output-on-failure
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 bash tools/cli/run_regression.sh
 ```
@@ -464,10 +497,10 @@ cmake --build build --target boofcv_qr_tests qr_scan -- -j
 ctest --test-dir build --output-on-failure -R ThresholdBlockOtsu
 ctest --test-dir build --output-on-failure
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 bash tools/cli/run_regression.sh
 ```
@@ -512,10 +545,10 @@ Same-session pre-change fixed probes:
 
 ```bash
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 ```
 
@@ -526,10 +559,10 @@ cmake --build build --target boofcv_qr_tests qr_scan -- -j
 ctest --test-dir build --output-on-failure -R 'QrCodeBinaryGridToPixel|SetTransformFromLinesSquare'
 ctest --test-dir build --output-on-failure
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 bash tools/cli/run_regression.sh
 ```
@@ -567,10 +600,10 @@ The refreshed profile after targets 1 and 2 still showed contour extraction as t
 cmake --build build --target boofcv_qr_tests qr_scan -- -j
 ctest --test-dir build --output-on-failure
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 bash tools/cli/run_regression.sh
 ```
@@ -614,10 +647,10 @@ Fixed-count image profiles:
 
 ```bash
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 ```
 
@@ -725,8 +758,8 @@ Short noise check:
 
 ```bash
 for img in \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg; do
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg; do
   for i in 1 2 3; do
     build/qr_scan --profile "$img" 50
   done
@@ -737,10 +770,10 @@ Profile-count comparison:
 
 ```bash
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 ```
 
@@ -800,8 +833,8 @@ Short noise check:
 
 ```bash
 for img in \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg; do
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg; do
   for i in 1 2 3; do
     build/qr_scan --profile "$img" 50
   done
@@ -812,10 +845,10 @@ Profile-count comparison:
 
 ```bash
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/bright_spots/image012.jpg \
   300
 build/qr_scan --profile \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  ${BOOFCV_QR_DATASET_ROOT}/detection/lots/image005.jpg \
   250
 ```
 
@@ -856,14 +889,14 @@ Fresh Java reference:
 ```bash
 JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
   ./gradlew --no-daemon --quiet run \
-  --args="/Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes /tmp/qr_boofcv_perf_20260511_121749/java"
+  --args="${BOOFCV_QR_DATASET_ROOT} /tmp/qr_boofcv_perf_20260511_121749/java"
 ```
 
 Fresh C++ run and scoring:
 
 ```bash
 build/qr_scan \
-  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes \
+  ${BOOFCV_QR_DATASET_ROOT} \
   /tmp/qr_boofcv_perf_20260511_121749/cpp
 python3 tests/regression/score.py /tmp/qr_boofcv_perf_20260511_121749/java/summary.json /tmp/qr_boofcv_perf_20260511_121749/java_score.json --iou 0.5
 python3 tests/regression/score.py /tmp/qr_boofcv_perf_20260511_121749/cpp/summary.json /tmp/qr_boofcv_perf_20260511_121749/cpp_score.json --iou 0.5
@@ -1030,7 +1063,7 @@ Re-run the existing C++ port against the original BoofCV Java reference numbers 
 bash tools/cli/run_regression.sh
 ```
 
-Dataset root: `/Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes`
+Dataset root: `${BOOFCV_QR_DATASET_ROOT}`
 
 ### Result
 
@@ -1075,7 +1108,7 @@ Before porting any code we need a reference number per category that the C++ por
 - BoofCV 1.3.0 release artifact from Maven Central: `org.boofcv:boofcv-recognition:1.3.0` + `boofcv-io:1.3.0`.
 - Detector: high-level factory `FactoryFiducial.qrcode(null, GrayU8.class)` with default `ConfigQrCode`. Returns a `QrCodePreciseDetector<GrayU8>`.
 - Image loading: `UtilImageIO.loadImage(path, GrayU8.class)` — converts JPEG/PNG to greyscale internally.
-- Dataset: `/Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/` — 562 images, 1232 detection-set + 26 decoding-set ground-truth codes.
+- Dataset: `${BOOFCV_QR_DATASET_ROOT}/` — 562 images, 1232 detection-set + 26 decoding-set ground-truth codes.
 - Warmup: 5 images processed without recording before timed runs (so first-image JIT cost doesn't dominate the p95).
 - Host: macOS arm64, OpenJDK 21.0.10, default Gradle JVM args + `-Xmx4g`.
 

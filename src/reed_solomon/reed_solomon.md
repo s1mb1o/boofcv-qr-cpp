@@ -95,7 +95,7 @@ The decoder is a textbook BCH-form Reed-Solomon following the Wikiversity tutori
 
 ## Integration points for downstream recovery
 
-These are the named injection points pricetag-vision (and any future consumer) may want to hook:
+These are the named injection points downstream recovery consumers may want to hook:
 
 - **`computeSyndromes`** — replace to inject erasure positions or known-prefix syndromes before BM runs.
 - **`findErrorLocatorPolynomialBM`** — replace to use a different error locator algorithm (e.g. Sugiyama's Euclidean-algorithm variant that handles erasures in one shot).

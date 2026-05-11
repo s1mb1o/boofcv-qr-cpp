@@ -85,7 +85,7 @@ difference is amplified into a parity-affecting outcome:
    tip the corner finder from "fit a 4-corner polygon" to "rejected".
 
 ## Empirical cost (measured at step-9b close-out, dataset
-`pricetag-vision-datasets/data/external/boofcv-qrcodes`)
+`boofcv-qrcodes`)
 
 5 borderline images out of 562 fail in C++ but succeed in Java:
 
@@ -204,7 +204,7 @@ accepts it. The finder polygon never enters the candidate list at all.
 Reopen this decision if any of the following are true:
 
 1. **Downstream consumer's input distribution shifts toward the
-   borderline cases.** E.g. pricetag-vision encounters a shelf-photo
+   borderline cases.** For example, a downstream consumer encounters a shelf-photo
    scenario where reflective glare on plastic price tags makes the
    `glare`-style failure mode dominant. At that point, the cost of
    porting `LinearContourLabelChang2004` (one-time) is amortised

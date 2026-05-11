@@ -3,8 +3,8 @@
 # the BoofCV qrcodes_v3 dataset, scores via tests/regression/score.py,
 # and prints the per-category delta vs tests/baseline.json.
 #
-# Usage:  ./run_regression.sh
-#         (no args; paths are pinned)
+# Usage:
+#   BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes ./run_regression.sh
 #
 # CLAUDE.md mandates the parity gate is "per-category read rate within
 # ~2% of the Java baseline". This script is the gate's invocation.
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATASET_ROOT="/Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes"
+DATASET_ROOT="${BOOFCV_QR_DATASET_ROOT:-${REPO_ROOT}/data/external/boofcv-qrcodes/qrcodes}"
 BUILD_DIR="${REPO_ROOT}/build"
 CPP_OUTPUT_DIR="${REPO_ROOT}/tests/regression/baseline_cpp"
 SCORE_OUT="${REPO_ROOT}/tests/regression/baseline_cpp/score.json"
@@ -22,6 +22,7 @@ SCORE_PY="${REPO_ROOT}/tests/regression/score.py"
 
 if [[ ! -d "${DATASET_ROOT}" ]]; then
     echo "Dataset not found: ${DATASET_ROOT}" >&2
+    echo "Set BOOFCV_QR_DATASET_ROOT to the extracted BoofCV qrcodes_v3/qrcodes directory." >&2
     exit 2
 fi
 
