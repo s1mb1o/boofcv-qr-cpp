@@ -107,17 +107,23 @@ float ContourEdgeIntensity::sample(float x, float y) const {
     if (y > static_cast<float>(imageHeight_ - 1))
         y = static_cast<float>(imageHeight_ - 1);
 
-    int32_t x0 = static_cast<int32_t>(std::floor(x));
-    int32_t y0 = static_cast<int32_t>(std::floor(y));
+    return sampleInside(x, y);
+}
+
+float ContourEdgeIntensity::sampleInside(float x, float y) const {
+    int32_t x0 = static_cast<int32_t>(x);
+    int32_t y0 = static_cast<int32_t>(y);
     int32_t x1 = std::min(x0 + 1, imageWidth_ - 1);
     int32_t y1 = std::min(y0 + 1, imageHeight_ - 1);
     float ax = x - static_cast<float>(x0);
     float ay = y - static_cast<float>(y0);
 
-    float v00 = static_cast<float>(image_.at<uint8_t>(y0, x0));
-    float v10 = static_cast<float>(image_.at<uint8_t>(y0, x1));
-    float v01 = static_cast<float>(image_.at<uint8_t>(y1, x0));
-    float v11 = static_cast<float>(image_.at<uint8_t>(y1, x1));
+    const uint8_t* row0 = image_.ptr<uint8_t>(y0);
+    const uint8_t* row1 = image_.ptr<uint8_t>(y1);
+    float v00 = static_cast<float>(row0[x0]);
+    float v10 = static_cast<float>(row0[x1]);
+    float v01 = static_cast<float>(row1[x0]);
+    float v11 = static_cast<float>(row1[x1]);
 
     float v0 = v00 + (v10 - v00) * ax;
     float v1 = v01 + (v11 - v01) * ax;
@@ -129,12 +135,16 @@ void ContourEdgeIntensity::process(const std::vector<cv::Point2i>& contour,
     if (imageWidth_ == 0)
         throw std::runtime_error("You didn't call setImage()");
 
+    const int32_t contourSize = static_cast<int32_t>(contour.size());
+    const float maxX = static_cast<float>(imageWidth_ - 1);
+    const float maxY = static_cast<float>(imageHeight_ - 1);
+
     // How many pixels along the contour it will step between samples
     int32_t step;
-    if (static_cast<int32_t>(contour.size()) <= contourSamples_)
+    if (contourSize <= contourSamples_)
         step = 1;
     else
-        step = static_cast<int32_t>(contour.size()) / contourSamples_;
+        step = contourSize / contourSamples_;
 
     // Want the local tangent. How many contour points forward it will sample to get the tangent
     int32_t sample = std::max(1, std::min(step / 2, 5));
@@ -144,10 +154,10 @@ void ContourEdgeIntensity::process(const std::vector<cv::Point2i>& contour,
     int32_t totalOutside = 0;
 
     // traverse the contour
-    for (int32_t i = 0; i < static_cast<int32_t>(contour.size()); i += step) {
+    for (int32_t i = 0; i < contourSize; i += step) {
         const cv::Point2i& a = contour[static_cast<std::size_t>(i)];
         const cv::Point2i& b = contour[static_cast<std::size_t>(
-            (i + sample) % static_cast<int32_t>(contour.size()))];
+            (i + sample) % contourSize)];
 
         // compute the tangent using the two points
         float dx = static_cast<float>(b.x - a.x);
@@ -163,17 +173,15 @@ void ContourEdgeIntensity::process(const std::vector<cv::Point2i>& contour,
 
             x = static_cast<float>(a.x) + length * dy;
             y = static_cast<float>(a.y) - length * dx;
-            if (x >= 0 && y >= 0 && x <= static_cast<float>(imageWidth_ - 1) &&
-                y <= static_cast<float>(imageHeight_ - 1)) {
-                edgeOutsideAverage_ += this->sample(x, y);
+            if (x >= 0 && y >= 0 && x <= maxX && y <= maxY) {
+                edgeOutsideAverage_ += sampleInside(x, y);
                 totalOutside++;
             }
 
             x = static_cast<float>(a.x) - length * dy;
             y = static_cast<float>(a.y) + length * dx;
-            if (x >= 0 && y >= 0 && x <= static_cast<float>(imageWidth_ - 1) &&
-                y <= static_cast<float>(imageHeight_ - 1)) {
-                edgeInsideAverage_ += this->sample(x, y);
+            if (x >= 0 && y >= 0 && x <= maxX && y <= maxY) {
+                edgeInsideAverage_ += sampleInside(x, y);
                 totalInside++;
             }
         }

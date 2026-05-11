@@ -1,5 +1,39 @@
 # ChangeLog
 
+## 2026-05-11 (later¹³) — perf(edge): use in-bounds contour edge sampling
+
+Implemented the remaining edge-scoring part of the polyline/edge target. The
+algorithm still samples the same tangent-normal locations and uses the same
+bilinear interpolation math, but avoids redundant clamping/flooring and
+`cv::Mat::at()` inside the already-bounds-checked path.
+
+### Changed
+
+- [src/polygon/detect_polygon_from_contour.cpp](src/polygon/detect_polygon_from_contour.cpp): added `ContourEdgeIntensity::sampleInside()` using positive-coordinate truncation and row-pointer image access; `process()` now calls it only after the existing in-bounds checks. The public behaviour of the clamped private `sample()` helper is preserved by forwarding through the same fast bilinear core after clamping.
+- [include/boofcv_qr/polygon/detect_polygon_from_contour.hpp](include/boofcv_qr/polygon/detect_polygon_from_contour.hpp): declared the in-bounds helper.
+- [src/polygon/detect_polygon_from_contour.md](src/polygon/detect_polygon_from_contour.md) and [ResearchLog.md](ResearchLog.md): documented the in-bounds invariant and perf results.
+
+### Performance
+
+Compared against the post-polyline-pool target:
+
+| image / run | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 99.74 ms/iter | 97.74 ms/iter | -2.0% |
+| `lots/image005.jpg` (250 iters) | 120.58 ms/iter | 117.68 ms/iter | -2.4% |
+| Full regression `total_elapsed_ms` | 17.460 s | 17.457 s | flat |
+| Aggregate detector mean | 22.62 ms | 22.55 ms | -0.3% |
+
+The fixed probes improved clearly; full-regression category timing stayed mostly
+within noise. Quality is unchanged.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure -R 'ContourEdgeIntensity|DetectPolygonFromContour|QrCodePositionPatternDetector'` -> 19/19 PASS.
+- `ctest --test-dir build --output-on-failure` -> 433/433 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains 74.40%, with only the documented accepted residual categories out-of-band.
+
 ## 2026-05-11 (later¹²) — perf(polyline): recycle corner and list-node pools
 
 Implemented the next polyline allocation target. The first corner-object-only

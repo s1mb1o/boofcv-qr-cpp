@@ -217,6 +217,8 @@ private:
 
     // EXTENDED-border bilinear sample.
     float sample(float x, float y) const;
+    // Bilinear sample for callers that already proved the point is in image bounds.
+    float sampleInside(float x, float y) const;
 };
 
 // Detects black-blob polygons of a given side count in a binarised

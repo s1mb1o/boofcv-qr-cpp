@@ -1,5 +1,65 @@
 # ResearchLog
 
+## 2026-05-11 — Target 7: in-bounds fast path for `ContourEdgeIntensity`
+
+### Why
+
+The post-target-6 profile cluster still included edge scoring in the
+polyline/edge bucket. `ContourEdgeIntensity::process()` already rejects tangent
+samples outside the image before sampling, but the private bilinear sampler then
+repeated the border clamp, used `std::floor()`, and fetched pixels through
+`cv::Mat::at()`.
+
+### Change
+
+- Added `sampleInside()`, a bilinear sampler for coordinates already known to
+  satisfy `0 <= x <= width - 1` and `0 <= y <= height - 1`.
+- Kept the existing clamped `sample()` helper semantics by forwarding to
+  `sampleInside()` after clamping.
+- Switched the process hot path to call `sampleInside()` only inside the
+  existing bounds checks.
+- Hoisted the contour size and image max bounds out of the loop.
+
+This preserves sample positions and interpolation weights. Positive-coordinate
+`static_cast<int32_t>` is equivalent to `floor()` for the in-bounds calls, and
+the `x1/y1 = min(x0/y0 + 1, max)` edge behaviour is unchanged.
+
+### Commands
+
+```bash
+cmake --build build --target boofcv_qr_tests qr_scan -- -j
+ctest --test-dir build --output-on-failure -R 'ContourEdgeIntensity|DetectPolygonFromContour|QrCodePositionPatternDetector'
+ctest --test-dir build --output-on-failure
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+bash tools/cli/run_regression.sh
+```
+
+### Result
+
+Fixed-count profile comparison against target 6:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `lots/image005.jpg` (250 iters) | 120.58 ms/iter | 117.68 ms/iter | -2.90 ms / -2.4% |
+| `bright_spots/image012.jpg` (300 iters) | 99.74 ms/iter | 97.74 ms/iter | -2.00 ms / -2.0% |
+
+Full regression timing was near-flat but directionally positive on detector
+mean:
+
+| metric | target 6 | target 7 | delta |
+|---|---:|---:|---:|
+| `summary.total_elapsed_ms` | 17460 ms | 17457 ms | flat |
+| aggregate mean ms | 22.62 | 22.55 | -0.3% |
+| `bright_spots` mean ms | 68.79 | 67.90 | -1.3% |
+
+Quality is unchanged: regression PASS, aggregate decode rate remains
+byte-identical to the BoofCV Java baseline at **74.40%**.
+
 ## 2026-05-11 — Target 6: pooled polyline corner/list storage
 
 ### Why
