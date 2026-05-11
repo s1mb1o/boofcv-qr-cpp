@@ -1,5 +1,47 @@
 # ChangeLog
 
+## 2026-05-11 (later¹⁶) — perf(cli): parallelize qr_scan batch mode
+
+Implemented image-level parallelism for `qr_scan` batch mode. Each worker owns
+its own pipeline instance, claims image indices atomically, and stores results
+by sorted input index so per-image JSON and `summary.json` stay deterministic.
+
+### Changed
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): added batch worker selection,
+  per-worker `Pipeline` instances, atomic work distribution, synchronized
+  progress logging, deterministic post-processing writes, and the
+  `QR_SCAN_THREADS=N` environment override.
+- [ResearchLog.md](ResearchLog.md): recorded the batch-parallel perf results
+  and validation commands.
+
+### Performance
+
+BoofCV dataset regression, 562 images:
+
+| mode | total elapsed | aggregate decode | notes |
+|---|---:|---:|---|
+| `QR_SCAN_THREADS=1` | 17.523 s | 74.40% | serial compatibility path |
+| `QR_SCAN_THREADS=8` | 2.774 s | 74.40% | Apple Silicon performance-core-sized run |
+| default (`hardware_concurrency`, 12 workers here) | 2.603 s | 74.40% | final rebuilt binary |
+
+Default batch wall time improved 6.7x versus the one-worker path on this local
+Apple Silicon run. Per-image `meanMs` values in the score output now include
+multi-threaded contention and are no longer comparable to serial detector-core
+timings; `summary.total_elapsed_ms` is the relevant batch metric.
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_tests -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure -R 'QrCodePositionPatternDetector|DetectPolygon|QrCodeDecoderImage|QrCodeDecoderBits'` -> 50/50 PASS.
+- `ctest --test-dir build --output-on-failure` -> 435/435 PASS.
+- `QR_SCAN_THREADS=1 bash tools/cli/run_regression.sh` -> PASS, 17.523 s,
+  aggregate decode rate 74.40%.
+- `QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh` -> PASS, 2.774 s,
+  aggregate decode rate 74.40%.
+- `bash tools/cli/run_regression.sh` -> PASS, 2.603 s with 12 workers,
+  aggregate decode rate 74.40%.
+
 ## 2026-05-11 (later¹⁵) — docs(perf): refresh post-target bottleneck profile
 
 Pure research close-out after targets 3-8. Re-ran the BoofCV dataset

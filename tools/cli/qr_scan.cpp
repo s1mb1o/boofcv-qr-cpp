@@ -11,6 +11,7 @@
 // Usage:
 //   qr_scan <input_dir> <output_dir>     # batch mode; mirrors dataset
 //   qr_scan <single_image.png>           # single-image; emits JSON to stdout
+//   QR_SCAN_THREADS=N qr_scan <input_dir> <output_dir>  # pin batch workers
 //
 // JSON is emitted with a small hand-written serialiser — pulling in
 // nlohmann/json for one CLI binary isn't worth it. The shape matches
@@ -30,6 +31,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -37,9 +39,11 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -532,6 +536,23 @@ std::vector<fs::path> collectImages(const fs::path& root) {
     return out;
 }
 
+int32_t chooseBatchThreads(std::size_t imageCount) {
+    if (imageCount == 0)
+        return 1;
+
+    int32_t requested = 0;
+    if (const char* env = std::getenv("QR_SCAN_THREADS")) {
+        requested = std::atoi(env);
+    }
+    if (requested <= 0) {
+        unsigned int hw = std::thread::hardware_concurrency();
+        requested = hw == 0 ? 1 : static_cast<int32_t>(hw);
+    }
+    int32_t maxThreads = static_cast<int32_t>(
+        std::min<std::size_t>(imageCount, static_cast<std::size_t>(requested)));
+    return std::max(1, maxThreads);
+}
+
 // ---------------------------------------------------------------------
 // Run the pipeline on one image and populate `rec`. Failures (load
 // failure, decode exhaustion) are recorded in the JSON, never thrown.
@@ -593,23 +614,61 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
     std::printf("Found %zu images under %s\n", images.size(),
                 inputDir.string().c_str());
 
-    Pipeline pipe;
-
     // Warm up on up to 5 images (matches Java's Baseline.java warmup).
     int32_t warmupN = std::min(static_cast<int32_t>(images.size()), 5);
-    for (int32_t i = 0; i < warmupN; i++) {
-        cv::Mat gray = loadGray(images[static_cast<std::size_t>(i)]);
-        if (!gray.empty()) {
-            try { pipe.run(gray); } catch (...) {}
+    {
+        Pipeline warmupPipe;
+        for (int32_t i = 0; i < warmupN; i++) {
+            cv::Mat gray = loadGray(images[static_cast<std::size_t>(i)]);
+            if (!gray.empty()) {
+                try { warmupPipe.run(gray); } catch (...) {}
+            }
         }
     }
     std::printf("Warmed up on %d images\n", warmupN);
 
+    int32_t numThreads = chooseBatchThreads(images.size());
+    std::printf("Processing with %d worker thread%s",
+                numThreads, numThreads == 1 ? "" : "s");
+    if (const char* env = std::getenv("QR_SCAN_THREADS")) {
+        std::printf(" (QR_SCAN_THREADS=%s)", env);
+    }
+    std::printf("\n");
+
     auto globalStart = std::chrono::steady_clock::now();
 
-    // Open summary.json incrementally — write the records array as we
-    // go so we don't hold all 562 records in RAM (each may have
-    // alignment vectors etc).
+    std::vector<Record> records(images.size());
+    std::atomic<std::size_t> nextIndex{0};
+    std::atomic<int32_t> completed{0};
+    std::mutex printMutex;
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<std::size_t>(numThreads));
+
+    for (int32_t workerIdx = 0; workerIdx < numThreads; workerIdx++) {
+        workers.emplace_back([&]() {
+            Pipeline pipe;
+            for (;;) {
+                std::size_t index = nextIndex.fetch_add(1);
+                if (index >= images.size())
+                    break;
+
+                processOne(pipe, images[index], inputDir, records[index]);
+
+                int32_t done = completed.fetch_add(1) + 1;
+                if (done % 50 == 0 ||
+                    done == static_cast<int32_t>(images.size())) {
+                    std::lock_guard<std::mutex> lock(printMutex);
+                    std::printf("[%d/%zu] processed\n", done, images.size());
+                }
+            }
+        });
+    }
+
+    for (std::thread& worker : workers)
+        worker.join();
+
+    // Write files after processing so the records array remains in sorted
+    // image order even when processing finishes out-of-order.
     fs::path summaryFile = outputDir / "summary.json";
     std::ofstream summary(summaryFile);
     if (!summary.is_open()) {
@@ -626,20 +685,15 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
     summary << "  \"records\" : [";
 
     bool firstRec = true;
-    int32_t idx = 0;
-    for (const fs::path& img : images) {
-        idx++;
-        Record rec;
-        processOne(pipe, img, inputDir, rec);
-
+    for (std::size_t i = 0; i < images.size(); i++) {
         // Write per-image JSON file mirroring dataset structure.
-        fs::path rel = fs::relative(img, inputDir);
+        fs::path rel = fs::relative(images[i], inputDir);
         fs::path outFile = outputDir / rel;
         outFile.replace_extension(".json");
         fs::create_directories(outFile.parent_path());
         std::ofstream f(outFile);
         if (f.is_open()) {
-            f << recordJson(rec);
+            f << recordJson(records[i]);
         }
 
         // Append to summary.json's records array.
@@ -649,11 +703,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
         } else {
             summary << ", ";
         }
-        summary << recordJson(rec);
-
-        if (idx % 50 == 0 || idx == static_cast<int32_t>(images.size())) {
-            std::printf("[%d/%zu] processed\n", idx, images.size());
-        }
+        summary << recordJson(records[i]);
     }
     summary << " ],\n";
     auto globalEnd = std::chrono::steady_clock::now();
@@ -865,6 +915,7 @@ int main(int argc, char** argv) {
     } else {
         std::fprintf(stderr, "Usage:\n");
         std::fprintf(stderr, "  qr_scan <input_dir> <output_dir>          batch\n");
+        std::fprintf(stderr, "      env: QR_SCAN_THREADS=N pins batch worker count\n");
         std::fprintf(stderr, "  qr_scan <single_image.png>                single image\n");
         std::fprintf(stderr, "  qr_scan --dump-stages <image> <outDir>    stage dumps\n");
         std::fprintf(stderr, "  qr_scan --profile <image> <iters>         loop image for profiling\n");

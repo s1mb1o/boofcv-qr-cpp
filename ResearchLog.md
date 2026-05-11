@@ -1,5 +1,60 @@
 # ResearchLog
 
+## 2026-05-11 — Image-level parallel qr_scan batch mode
+
+### Why
+
+After the current algorithmic micro-optimizations, the CLI batch runner itself
+was still serial: one `Pipeline` instance processed every image in sorted order.
+The BoofCV regression corpus is naturally image-independent, so image-level
+parallelism is the highest-leverage remaining target for local dataset scans and
+Apple Silicon runs.
+
+### Implementation
+
+`qr_scan` batch mode now creates one `Pipeline` per worker thread, distributes
+sorted image indices through an atomic counter, and writes outputs only after
+all workers finish. The deferred write keeps per-image JSON and
+`summary.json.records` in deterministic sorted order even though image
+processing completes out of order. `QR_SCAN_THREADS=N` pins the worker count for
+benchmarks or thermal/load tuning; otherwise the CLI uses
+`std::thread::hardware_concurrency()` capped by image count.
+
+### Commands
+
+Build and unit/regression gates:
+
+```bash
+cmake --build build --target qr_scan boofcv_qr_tests -- -j
+ctest --test-dir build --output-on-failure -R 'QrCodePositionPatternDetector|DetectPolygon|QrCodeDecoderImage|QrCodeDecoderBits'
+ctest --test-dir build --output-on-failure
+QR_SCAN_THREADS=1 bash tools/cli/run_regression.sh
+QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh
+bash tools/cli/run_regression.sh
+```
+
+### Results
+
+BoofCV dataset regression, 562 images:
+
+| mode | workers | `summary.total_elapsed_ms` | aggregate decode |
+|---|---:|---:|---:|
+| forced serial | 1 | 17,523 ms | 74.40% |
+| performance-core-sized override | 8 | 2,774 ms | 74.40% |
+| default on this machine | 12 | 2,603 ms | 74.40% |
+
+The default path is 6.7x faster than the one-worker path on this Apple Silicon
+machine. The 8-worker run was effectively tied with default in this sample, so
+`QR_SCAN_THREADS=8` remains a useful knob if the 12-worker default competes with
+other local work or hits thermal limits. Quality is unchanged: regression PASS,
+aggregate decode rate remains byte-identical to the BoofCV Java baseline at
+**74.40%**.
+
+Parallel score tables report larger per-image `meanMs` values because each
+image's timer now includes CPU contention from other worker threads. Use
+`summary.total_elapsed_ms` for batch-throughput comparisons and reserve the
+serial one-worker mode for detector-core timing comparisons against Java.
+
 ## 2026-05-11 — Post-target performance profile and rejected image-line trial
 
 ### Why
