@@ -1,5 +1,58 @@
 # ResearchLog
 
+## 2026-05-11 — Target 4: compact SVD for `setTransformFromLinesSquare`
+
+### Why
+
+After target 3, the next marked sampler item was the residual `setTransformFromLinesSquare()` SVD path on multi-QR workloads. A previous fixed 9×9 normal-equation eigensolve passed coarse tests but degraded the strict rotated line-DLT fixture from machine precision to about 1e-5 grid units, so this target keeps the SVD null-space objective and removes avoidable work around the fixed-size solve.
+
+### Change
+
+- Kept the existing BoofCV row equations: 3 point correspondences contribute 6 rows and 4 direction-line correspondences contribute 8 rows.
+- Replaced heap `cv::Mat::zeros(14, 9, CV_64F)` with stack-backed `cv::Matx<double,14,9>`.
+- Replaced `cv::SVDecomp(A, w, u, vt, cv::SVD::FULL_UV)` with `cv::SVD::compute(A, w, cv::noArray(), vt)`. The right singular vectors in `vt` are still computed, but OpenCV no longer builds the unused U/full-UV basis.
+
+### Commands
+
+Same-session pre-change fixed probes:
+
+```bash
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+```
+
+Post-change verification:
+
+```bash
+cmake --build build --target boofcv_qr_tests qr_scan -- -j
+ctest --test-dir build --output-on-failure -R 'QrCodeBinaryGridToPixel|SetTransformFromLinesSquare'
+ctest --test-dir build --output-on-failure
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+bash tools/cli/run_regression.sh
+```
+
+### Result
+
+Fixed-count profile comparison:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `lots/image005.jpg` (250 iters) | 130.17 ms/iter | 123.13 ms/iter | -7.04 ms / -5.4% |
+| `bright_spots/image012.jpg` (300 iters) | 103.52 ms/iter | 104.51 ms/iter | +0.99 ms / +1.0% |
+
+Full regression quality is unchanged: aggregate decode rate remains byte-identical to the BoofCV Java baseline at **74.40%**. The timing effect is local to the multi-QR path: `lots` mean improved from target 3's 115.22 ms to 112.37 ms, while aggregate mean was effectively flat at 23.18 -> 23.21 ms and total elapsed was 17827 -> 17858 ms.
+
+The strict line-DLT numeric tests still pass, including `QrCodeBinaryGridToPixel.setTransformFromLinesSquare_rotated` at 1e-9 tolerance. This keeps the safer SVD behavior while trimming the residual SVD cost.
+
 ## 2026-05-11 — Target 3: packed contour block reuse and block-wise materialisation
 
 ### Why

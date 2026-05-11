@@ -221,7 +221,8 @@ void QrCodeBinaryGridToPixel::setTransformFromLinesSquare(const QrCode& qr) {
     // correspondence problem — line endpoints aren't point
     // correspondences, they're co-linear direction vectors at infinity
     // (z=0). Build the 2N×9 design matrix explicitly and solve via
-    // cv::SVDecomp, mirroring Java's SolveNullSpaceSvd_DDRM. The
+    // compact cv::SVD::compute, mirroring Java's SolveNullSpaceSvd_DDRM
+    // objective without computing the unused left singular basis. The
     // pure-point computeTransform() path below uses the equivalent fixed
     // 9x9 normal-equation eigensolve because that path is profile-hot.
     // Convention everywhere in this file: H maps **image (x, y) → grid
@@ -273,30 +274,29 @@ void QrCodeBinaryGridToPixel::setTransformFromLinesSquare(const QrCode& qr) {
     // ---- Build design matrix A: 2*num2D + 2*num3D rows, 9 cols. ----
     // Mirrors Java's HomographyDirectLinearTransform.computeTotalRows
     // (with numConic=0): `2*num2D + 2*num3D + 9*numConic`.
-    int32_t num2D = static_cast<int32_t>(points2D.size());
-    int32_t num3D = static_cast<int32_t>(points3D.size());
-    int32_t numRows = 2 * num2D + 2 * num3D;
-    cv::Mat A = cv::Mat::zeros(numRows, 9, CV_64F);
+    // The QR line setup is fixed at 3 point pairs + 4 direction pairs,
+    // so use stack-backed Matx storage and avoid a heap cv::Mat here.
+    cv::Matx<double, 14, 9> A = cv::Matx<double, 14, 9>::zeros();
     int32_t rows = 0;
 
     // ---- addPoints2D ----
     for (std::size_t i = 0; i < points2D.size(); i++) {
         const Pt2& p = points2D[i];
         // Row 1: cols 3..5 = (-f.x, -f.y, -1), cols 6..8 = (s.y*f.x, s.y*f.y, s.y).
-        A.at<double>(rows, 3) = -p.f_x;
-        A.at<double>(rows, 4) = -p.f_y;
-        A.at<double>(rows, 5) = -1.0;
-        A.at<double>(rows, 6) = p.s_y * p.f_x;
-        A.at<double>(rows, 7) = p.s_y * p.f_y;
-        A.at<double>(rows, 8) = p.s_y;
+        A(rows, 3) = -p.f_x;
+        A(rows, 4) = -p.f_y;
+        A(rows, 5) = -1.0;
+        A(rows, 6) = p.s_y * p.f_x;
+        A(rows, 7) = p.s_y * p.f_y;
+        A(rows, 8) = p.s_y;
         rows++;
         // Row 2: cols 0..2 = (f.x, f.y, 1), cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x).
-        A.at<double>(rows, 0) = p.f_x;
-        A.at<double>(rows, 1) = p.f_y;
-        A.at<double>(rows, 2) = 1.0;
-        A.at<double>(rows, 6) = -p.s_x * p.f_x;
-        A.at<double>(rows, 7) = -p.s_x * p.f_y;
-        A.at<double>(rows, 8) = -p.s_x;
+        A(rows, 0) = p.f_x;
+        A(rows, 1) = p.f_y;
+        A(rows, 2) = 1.0;
+        A(rows, 6) = -p.s_x * p.f_x;
+        A(rows, 7) = -p.s_x * p.f_y;
+        A(rows, 8) = -p.s_x;
         rows++;
     }
 
@@ -305,34 +305,35 @@ void QrCodeBinaryGridToPixel::setTransformFromLinesSquare(const QrCode& qr) {
         const Pt3& p = points3D[i];
         // Row 1: cols 3..5 = (-s.z*f.x, -s.z*f.y, -s.z*f.z),
         //        cols 6..8 = ( s.y*f.x,  s.y*f.y,  s.y*f.z).
-        A.at<double>(rows, 3) = -p.s_z * p.f_x;
-        A.at<double>(rows, 4) = -p.s_z * p.f_y;
-        A.at<double>(rows, 5) = -p.s_z * p.f_z;
-        A.at<double>(rows, 6) =  p.s_y * p.f_x;
-        A.at<double>(rows, 7) =  p.s_y * p.f_y;
-        A.at<double>(rows, 8) =  p.s_y * p.f_z;
+        A(rows, 3) = -p.s_z * p.f_x;
+        A(rows, 4) = -p.s_z * p.f_y;
+        A(rows, 5) = -p.s_z * p.f_z;
+        A(rows, 6) =  p.s_y * p.f_x;
+        A(rows, 7) =  p.s_y * p.f_y;
+        A(rows, 8) =  p.s_y * p.f_z;
         rows++;
         // Row 2: cols 0..2 = ( s.z*f.x,  s.z*f.y,  s.z*f.z),
         //        cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x*f.z).
-        A.at<double>(rows, 0) =  p.s_z * p.f_x;
-        A.at<double>(rows, 1) =  p.s_z * p.f_y;
-        A.at<double>(rows, 2) =  p.s_z * p.f_z;
-        A.at<double>(rows, 6) = -p.s_x * p.f_x;
-        A.at<double>(rows, 7) = -p.s_x * p.f_y;
-        A.at<double>(rows, 8) = -p.s_x * p.f_z;
+        A(rows, 0) =  p.s_z * p.f_x;
+        A(rows, 1) =  p.s_z * p.f_y;
+        A(rows, 2) =  p.s_z * p.f_z;
+        A(rows, 6) = -p.s_x * p.f_x;
+        A(rows, 7) = -p.s_x * p.f_y;
+        A(rows, 8) = -p.s_x * p.f_z;
         rows++;
     }
 
     // ---- Solve nullspace via SVD; H = right-singular vector at smallest σ. ----
     // Java uses SolveNullSpaceSvd_DDRM which returns the right-singular
     // vector of the smallest singular value reshaped to 3x3 row-major.
-    cv::Mat w, u, vt;
-    cv::SVDecomp(A, w, u, vt, cv::SVD::FULL_UV);
+    cv::Matx<double, 9, 1> w;
+    cv::Matx<double, 9, 9> vt;
+    cv::SVD::compute(A, w, cv::noArray(), vt);
     // vt is 9x9; row 8 is the smallest singular vector. Reshape row-major
     // into the 3x3 H.
-    H = cv::Matx33d(vt.at<double>(8, 0), vt.at<double>(8, 1), vt.at<double>(8, 2),
-                    vt.at<double>(8, 3), vt.at<double>(8, 4), vt.at<double>(8, 5),
-                    vt.at<double>(8, 6), vt.at<double>(8, 7), vt.at<double>(8, 8));
+    H = cv::Matx33d(vt(8, 0), vt(8, 1), vt(8, 2),
+                    vt(8, 3), vt(8, 4), vt(8, 5),
+                    vt(8, 6), vt(8, 7), vt(8, 8));
     cv::invert(H, Hinv);
 }
 

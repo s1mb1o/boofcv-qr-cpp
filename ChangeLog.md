@@ -1,5 +1,32 @@
 # ChangeLog
 
+## 2026-05-11 (later¹⁰) — perf(sampler): make line-DLT SVD compact
+
+Implemented the next sampler target against the residual `setTransformFromLinesSquare()` SVD hotspot. The change keeps the BoofCV point/line DLT row equations and right-singular-vector objective, but removes avoidable OpenCV work around it.
+
+### Changed
+
+- [src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp): the fixed 3-point + 4-line system now uses a stack-backed `cv::Matx<double,14,9>` design matrix and `cv::SVD::compute(A, w, noArray(), vt)` instead of heap `cv::Mat` + `cv::SVDecomp(..., FULL_UV)`.
+- [include/boofcv_qr/qr_code_binary_grid_to_pixel.hpp](include/boofcv_qr/qr_code_binary_grid_to_pixel.hpp), [src/sampler/qr_code_binary_grid_to_pixel.md](src/sampler/qr_code_binary_grid_to_pixel.md), [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md), and [ResearchLog.md](ResearchLog.md): documented why this target keeps SVD rather than the previous normal-equation trial.
+
+### Performance
+
+Same-session fixed probes:
+
+| image / run | before | after | delta |
+|---|---:|---:|---:|
+| `lots/image005.jpg` (250 iters) | 130.17 ms/iter | 123.13 ms/iter | -5.4% |
+| `bright_spots/image012.jpg` (300 iters) | 103.52 ms/iter | 104.51 ms/iter | +1.0% |
+
+Full regression quality stayed unchanged. Timing was targeted, not aggregate-wide: `lots` category mean moved from 115.22 ms in target 3 to 112.37 ms here; aggregate mean was effectively flat at 23.18 -> 23.21 ms.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure -R 'QrCodeBinaryGridToPixel|SetTransformFromLinesSquare'` -> 6/6 PASS, including the 1e-9 rotated line-DLT fixture.
+- `ctest --test-dir build --output-on-failure` -> 430/430 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains 74.40%, with only the documented accepted residual categories out-of-band.
+
 ## 2026-05-11 (later⁹) — perf(contour): reuse packed contour blocks across frames
 
 Implemented the next contour-stage memory/materialisation target from the refreshed profile. The first broader reuse attempt also recycled polygon `Contour` and `DetectedInfo` slots, but it regressed the `lots` category, so this commit keeps the smaller change that improved both representative probes.
