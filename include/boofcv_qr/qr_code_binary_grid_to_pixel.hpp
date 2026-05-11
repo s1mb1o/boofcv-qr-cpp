@@ -10,8 +10,8 @@
 //
 // Note: setTransformFromLinesSquare uses BoofCV's line-correspondence
 // DLT (which OpenCV doesn't directly expose). Implemented here via a
-// custom 8-equation linear system solved with cv::SVDecomp — see the
-// .cpp.
+// custom linear system solved with cv::SVDecomp — see the .cpp. The
+// profile-hot pure-point DLT path uses a fixed 9x9 null-space solve.
 
 #ifndef BOOFCV_QR_QR_CODE_BINARY_GRID_TO_PIXEL_HPP
 #define BOOFCV_QR_QR_CODE_BINARY_GRID_TO_PIXEL_HPP

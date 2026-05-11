@@ -183,6 +183,68 @@ TEST(QrCodeBinaryGridToPixel, setTransformFromLinesSquare_rotated) {
     assertMapsTo(qr.ppDown[0], 0.0, 14.0);
 }
 
+// N-point DLT path: with more than four correspondences, computeTransform
+// fits the projective image->grid homography. Use a noise-free perspective
+// warp so the recovered transform should round-trip points not used in the
+// fit to tight numerical tolerance.
+TEST(QrCodeBinaryGridToPixel, computeTransform_manyPoints_perspective) {
+    cv::Matx33d gridToImageH(3.2, 0.35, 40.0,
+                            -0.25, 2.8, 25.0,
+                             0.002, -0.0015, 1.0);
+    auto gridToImage = [&](double col, double row) {
+        const double w = gridToImageH(2, 0) * col +
+                         gridToImageH(2, 1) * row +
+                         gridToImageH(2, 2);
+        return cv::Point2d((gridToImageH(0, 0) * col +
+                            gridToImageH(0, 1) * row +
+                            gridToImageH(0, 2)) / w,
+                           (gridToImageH(1, 0) * col +
+                            gridToImageH(1, 1) * row +
+                            gridToImageH(1, 2)) / w);
+    };
+
+    std::array<cv::Point2d, 8> gridPoints{{
+        cv::Point2d(0.0, 0.0),
+        cv::Point2d(7.0, 0.0),
+        cv::Point2d(7.0, 7.0),
+        cv::Point2d(0.0, 7.0),
+        cv::Point2d(25.0, 0.0),
+        cv::Point2d(25.0, 25.0),
+        cv::Point2d(0.0, 25.0),
+        cv::Point2d(14.5, 12.0),
+    }};
+
+    QrCodeBinaryGridToPixel alg;
+    alg.pairs2D.clear();
+    for (const auto& g : gridPoints) {
+        alg.pairs2D.push_back({gridToImage(g.x, g.y), g});
+    }
+    alg.computeTransform();
+
+    std::array<cv::Point2d, 4> probes{{
+        cv::Point2d(3.5, 3.5),
+        cv::Point2d(12.0, 4.0),
+        cv::Point2d(18.0, 19.0),
+        cv::Point2d(22.5, 8.25),
+    }};
+    for (const auto& g : probes) {
+        cv::Point2d expected = gridToImage(g.x, g.y);
+        cv::Point2d image;
+        alg.gridToImage(g.y, g.x, image);
+        EXPECT_NEAR(expected.x, image.x, 1e-5)
+            << "col=" << g.x << " row=" << g.y;
+        EXPECT_NEAR(expected.y, image.y, 1e-5)
+            << "col=" << g.x << " row=" << g.y;
+
+        cv::Point2d recovered;
+        alg.imageToGrid(expected.x, expected.y, recovered);
+        EXPECT_NEAR(g.x, recovered.x, 1e-6)
+            << "image=(" << expected.x << "," << expected.y << ")";
+        EXPECT_NEAR(g.y, recovered.y, 1e-6)
+            << "image=(" << expected.x << "," << expected.y << ")";
+    }
+}
+
 // Round-trip: any image point through imageToGrid then gridToImage
 // returns the original (within numerical noise).
 TEST(QrCodeBinaryGridToPixel, roundTrip) {

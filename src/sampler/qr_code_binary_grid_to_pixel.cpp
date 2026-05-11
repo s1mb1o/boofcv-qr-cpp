@@ -1,6 +1,6 @@
-// Port of QrCodeBinaryGridToPixel. Homography math via OpenCV per
-// CLAUDE.md (cv::getPerspectiveTransform, cv::findHomography,
-// cv::perspectiveTransform — never cv::warpPerspective in this path).
+// Port of QrCodeBinaryGridToPixel. Homography math stays explicit in
+// this file: cv::getPerspectiveTransform for the 4-point path, pure DLT
+// null-space solves for N-point/line paths, and never cv::warpPerspective.
 
 #include "boofcv_qr/qr_code_binary_grid_to_pixel.hpp"
 
@@ -38,6 +38,58 @@ inline void applyHomography(const cv::Matx33d& M, double x, double y,
         out.x = 0.0;
         out.y = 0.0;
     }
+}
+
+using DltRow = std::array<double, 9>;
+using DltNormalMatrix = cv::Matx<double, 9, 9>;
+
+void accumulateDltRow(const DltRow& row, DltNormalMatrix& normal) {
+    for (int32_t i = 0; i < 9; i++) {
+        const double a = row[static_cast<std::size_t>(i)];
+        if (a == 0.0)
+            continue;
+        for (int32_t j = i; j < 9; j++) {
+            normal(i, j) += a * row[static_cast<std::size_t>(j)];
+        }
+    }
+}
+
+void finishSymmetric(DltNormalMatrix& normal) {
+    for (int32_t i = 0; i < 9; i++) {
+        for (int32_t j = i + 1; j < 9; j++) {
+            normal(j, i) = normal(i, j);
+        }
+    }
+}
+
+cv::Matx33d solveDltNullspace(DltNormalMatrix normal) {
+    // The DLT solution is the right singular vector of A at the smallest
+    // singular value. With a fixed 9-column A, that vector is also the
+    // eigenvector of A^T A at the smallest eigenvalue. This keeps the
+    // same pure-DLT objective while avoiding OpenCV's tall-matrix SVD hot
+    // path for every QR decode attempt.
+    finishSymmetric(normal);
+    cv::Matx<double, 9, 1> eigenvalues;
+    cv::Matx<double, 9, 9> eigenvectors;
+    if (!cv::eigen(normal, eigenvalues, eigenvectors)) {
+        throw std::runtime_error("DLT null-space eigensolve failed");
+    }
+    const double* hp = eigenvectors.val + 8 * 9;
+    return cv::Matx33d(hp[0], hp[1], hp[2],
+                       hp[3], hp[4], hp[5],
+                       hp[6], hp[7], hp[8]);
+}
+
+void accumulatePointDltRows(double f_x, double f_y, double s_x, double s_y,
+                            DltNormalMatrix& normal) {
+    accumulateDltRow(DltRow{{0.0, 0.0, 0.0,
+                             -f_x, -f_y, -1.0,
+                             s_y * f_x, s_y * f_y, s_y}},
+                     normal);
+    accumulateDltRow(DltRow{{f_x, f_y, 1.0,
+                             0.0, 0.0, 0.0,
+                             -s_x * f_x, -s_x * f_y, -s_x}},
+                     normal);
 }
 
 }  // namespace
@@ -169,12 +221,11 @@ void QrCodeBinaryGridToPixel::setTransformFromLinesSquare(const QrCode& qr) {
     // correspondence problem — line endpoints aren't point
     // correspondences, they're co-linear direction vectors at infinity
     // (z=0). Build the 2N×9 design matrix explicitly and solve via
-    // cv::SVDecomp, mirroring Java's SolveNullSpaceSvd_DDRM. The same
-    // explicit-DLT pattern is used in computeTransform() for the N>4
-    // pure-point case; see CLAUDE.md "OpenCV substitution policy" and
-    // the sampler algorithm doc for why cv::findHomography(method=0) is
-    // not pure DLT for npoints > 4. Convention everywhere in this file:
-    // H maps **image (x, y) → grid (col, row)**, i.e. p1=image, p2=grid.
+    // cv::SVDecomp, mirroring Java's SolveNullSpaceSvd_DDRM. The
+    // pure-point computeTransform() path below uses the equivalent fixed
+    // 9x9 normal-equation eigensolve because that path is profile-hot.
+    // Convention everywhere in this file: H maps **image (x, y) → grid
+    // (col, row)**, i.e. p1=image, p2=grid.
 
     // ---- 2D point correspondences (3 of ppCorner — skip outside [0]). ----
     // Java's setLine endpoints in the QR caller use grid coords (col, row)
@@ -340,15 +391,16 @@ void QrCodeBinaryGridToPixel::computeTransform() {
         H_mat.convertTo(H_mat, CV_64F);
         H = cv::Matx33d(H_mat.ptr<double>());
     } else {
-        // > 4 correspondences: pure DLT via cv::SVD::solveZ on the 2N x 9
-        // design matrix. cv::findHomography(method=0) is NOT pure DLT for
-        // N > 4: it post-processes the DLT solution with iterative
-        // Levenberg-Marquardt refinement (cv::LMSolverImpl::run path,
-        // confirmed in profile data) which diverges from BoofCV's
+        // > 4 correspondences: pure DLT through the same 2N x 9 design
+        // matrix BoofCV builds. cv::findHomography(method=0) is NOT pure
+        // DLT for N > 4: it post-processes the DLT solution with
+        // iterative Levenberg-Marquardt refinement (cv::LMSolverImpl::run
+        // path, confirmed in profile data) which diverges from BoofCV's
         // GenerateHomographyLinear -> HomographyDirectLinearTransform path
-        // (no LM, no Hartley normalization — `shouldNormalize` is hard-coded
-        // false in BoofCV's process()). Building A and solving via
-        // cv::SVD::solveZ matches BoofCV's SolveNullSpaceSvd_DDRM exactly.
+        // (no LM, no Hartley normalization — `shouldNormalize` is
+        // hard-coded false in BoofCV's process()). We accumulate A^T A
+        // directly and take the smallest eigenvector, which is the same
+        // DLT null-space vector as the right-singular vector at smallest σ.
         //
         // For each pair (f = image (p1), s = grid (p2)) Java's addPoints2D
         // writes 2 rows:
@@ -357,41 +409,21 @@ void QrCodeBinaryGridToPixel::computeTransform() {
         //   row2: cols 0..2 = ( f.x,  f.y,  1),
         //         cols 6..8 = (-s.x*f.x, -s.x*f.y, -s.x)
         // Same structure as setTransformFromLinesSquare's 2D block.
-        const int32_t numRows = 2 * static_cast<int32_t>(pairs2D.size());
-        cv::Mat A = cv::Mat::zeros(numRows, 9, CV_64F);
+        DltNormalMatrix normal = DltNormalMatrix::zeros();
         for (std::size_t i = 0; i < pairs2D.size(); i++) {
             const double f_x = pairs2D[i].p1.x;
             const double f_y = pairs2D[i].p1.y;
             const double s_x = pairs2D[i].p2.x;
             const double s_y = pairs2D[i].p2.y;
-            double* r0 = A.ptr<double>(static_cast<int32_t>(2 * i));
-            double* r1 = A.ptr<double>(static_cast<int32_t>(2 * i + 1));
-            r0[3] = -f_x;
-            r0[4] = -f_y;
-            r0[5] = -1.0;
-            r0[6] = s_y * f_x;
-            r0[7] = s_y * f_y;
-            r0[8] = s_y;
-            r1[0] = f_x;
-            r1[1] = f_y;
-            r1[2] = 1.0;
-            r1[6] = -s_x * f_x;
-            r1[7] = -s_x * f_y;
-            r1[8] = -s_x;
+            accumulatePointDltRows(f_x, f_y, s_x, s_y, normal);
         }
 
-        cv::Mat h;
-        cv::SVD::solveZ(A, h);
-        // h is a 9-element column vector; reshape row-major into the 3x3 H.
         // Note: scale and sign of H are projectively irrelevant — both
         // applyHomography (perspective divide cancels scalars) and
         // cv::invert handle any non-zero scalar multiple identically.
         // BoofCV's AdjustHomographyMatrix (post-DLT scale/sign canon) is
         // not needed for our consumers.
-        const double* hp = h.ptr<double>();
-        H = cv::Matx33d(hp[0], hp[1], hp[2],
-                        hp[3], hp[4], hp[5],
-                        hp[6], hp[7], hp[8]);
+        H = solveDltNullspace(normal);
     }
     cv::invert(H, Hinv);
 

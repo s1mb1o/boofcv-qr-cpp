@@ -523,6 +523,15 @@ predicted: `bright_spots` -81%, `brightness` -66%, `curved` -64%. The
 did **not** close — re-attributed to upstream binarizer divergence in
 ADR 05.
 
+**2026-05-11 follow-up perf targets.** A fresh post-cycle-B profile
+identified two isolated next steps. Target 1 removed division/modulo
+from `ContourTracer::moveToNext()` and direction `%` wraps from the
+unrolled contour search. Target 2 kept the pure-point DLT row equations
+from cycle 3 but replaced repeated `cv::SVD::solveZ` on the 2N×9 point
+matrix with direct `A^T A` accumulation and a fixed 9×9 eigensolve.
+`lots/image005` moved 142.15 → 127.47 ms/iter across the two targets,
+and full regression parity stayed at 74.40%.
+
 ### Six-state perf progression
 
 | commit    | label                                                | decoder-only sum | C++/Java |  Δ vs prior |
@@ -576,7 +585,7 @@ ADR 05 banked the architectural rework ADR 04 had named: port `LinearContourLabe
 The post-cycle-B state is the cv::findContours-free state. Remaining cost sources, ranked by approximate share:
 
 - **`ThresholdBlockOtsu`** — verbatim BoofCV port, forbidden to reshape under "Verbatim vs idiomize". Also the source of the upstream binarizer divergence that re-attributed the `monitor` / `glare` residuals in ADR 05.
-- **`cv::SVD::solveZ`** — parity-load-bearing (cycle 3). Reverting would re-open the -0.08pp parity residual cycle 3 closed.
+- **Pure-point DLT null-space solve** — parity-load-bearing since cycle 3. It now uses a fixed 9×9 eigensolve instead of repeated `cv::SVD::solveZ`; reverting to `cv::findHomography` would re-open the -0.08pp parity residual cycle 3 closed. The mixed line-DLT path still uses `cv::SVDecomp` because it is not the measured hotspot and the SVD result is more precise on the rotated line fixture.
 - **`LinearContourLabelChang2004`** itself (post-cycle-B) — verbatim port, forbidden to reshape. Still meaningfully faster than `cv::findContours` was on the same inputs, which is why bright_spots/brightness/curved collapsed -64-81%.
 - **`PolylineSplitMerge` corner finder** + the per-blob `findCandidateShapes` driver — already on the hot path; further wins would require either a verbatim-rule-violating reshape or a SIMD/threading rework that's out of v1 scope.
 

@@ -1,5 +1,81 @@
 # ResearchLog
 
+## 2026-05-11 — Target 2: pure-point grid-transform null-space solve
+
+### Why
+
+The fresh bottleneck profile showed `cv::JacobiSVDImpl_<double>()` at 13.4% of samples on `lots/image005.jpg`, reached from repeated QR grid-transform DLT solves. After target 1, contour extraction improved modestly, making the multi-QR transform path the next best isolated target.
+
+### Change
+
+- Kept `computeTransform()` on the same pure-DLT point-correspondence row equations that replaced `cv::findHomography` in ADR 03.
+- Replaced the N>4 point path's 2N×9 `cv::SVD::solveZ(A, h)` with direct accumulation of `A^T A` into a fixed 9×9 matrix and `cv::eigen()` on that symmetric matrix.
+- Kept `setTransformFromLinesSquare()` on its previous explicit matrix + `cv::SVDecomp` implementation. A normal-equation trial passed coarse checks but degraded the rotated line-DLT fixture from machine precision to about 1e-5 grid units; that path is rough pre-version setup and not the sampled hotspot.
+- Added `QrCodeBinaryGridToPixel.computeTransform_manyPoints_perspective` to cover the N>4 point-DLT path on a noise-free projective fixture and probes not used by the fit.
+
+### Commands
+
+Short noise check:
+
+```bash
+for img in \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg; do
+  for i in 1 2 3; do
+    build/qr_scan --profile "$img" 50
+  done
+done
+```
+
+Profile-count comparison:
+
+```bash
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+```
+
+Regression:
+
+```bash
+bash tools/cli/run_regression.sh
+```
+
+### Result
+
+Short 50-iteration runs after the change:
+
+| image | runs ms/iter | best | median |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` | 106.51, 107.23, 107.19 | 106.51 | 107.19 |
+| `lots/image005.jpg` | 131.63, 127.98, 133.49 | 127.98 | 131.63 |
+
+Same iteration counts as the prior profile/target logs:
+
+| image | original profile | after target 1 | after target 2 | target-2 delta |
+|---|---:|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 112.26 ms/iter | 107.65 ms/iter | 107.04 ms/iter | -0.61 ms / -0.6% |
+| `lots/image005.jpg` (250 iters) | 142.15 ms/iter | 140.26 ms/iter | 127.47 ms/iter | -12.79 ms / -9.1% |
+
+Full regression timing:
+
+| metric | after target 1 | after target 2 | delta |
+|---|---:|---:|---:|
+| `summary.total_elapsed_ms` | 18629 ms | 18184 ms | -445 ms |
+| aggregate mean ms | 24.66 | 23.95 | -2.9% |
+| `lots` mean ms | 124.56 | 112.59 | -9.6% |
+
+### Interpretation
+
+The target landed where expected: the multi-QR workload improved substantially, while the contour-heavy noisy image stayed flat. The full-regression speedup is smaller because `lots` is only 7 of 562 images, but it removes a major sampled decoder-side hotspot without changing output quality.
+
+### Verification
+
+`ctest --test-dir build --output-on-failure` passed 429/429 tests. `bash tools/cli/run_regression.sh` also passed: aggregate C++ decode rate stayed byte-identical to the Java BoofCV baseline at 74.40%, with only the already accepted residual categories out-of-band.
+
 ## 2026-05-11 — Target 1: contour-tracer arithmetic cleanup
 
 ### Why

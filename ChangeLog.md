@@ -1,5 +1,34 @@
 # ChangeLog
 
+## 2026-05-11 (later⁷) — perf(sampler): replace repeated point-DLT SVD with fixed 9×9 eigensolve
+
+Second isolated perf target from the fresh bottleneck profile: the repeated pure-point QR grid-transform solve on multi-QR workloads.
+
+### Changed
+
+- [src/sampler/qr_code_binary_grid_to_pixel.cpp](src/sampler/qr_code_binary_grid_to_pixel.cpp): `computeTransform()` still uses BoofCV's pure DLT row equations for the N>4 point-correspondence path, but now accumulates `A^T A` directly and solves the fixed 9×9 symmetric eigensystem with `cv::eigen`. This avoids OpenCV's repeated tall-matrix `cv::SVD::solveZ` / `JacobiSVD` path while preserving the DLT null-space objective.
+- [tests/unit/test_qr_code_binary_grid_to_pixel.cpp](tests/unit/test_qr_code_binary_grid_to_pixel.cpp): added a many-point perspective fixture that exercises the N>4 `computeTransform()` path on points not used by the fit.
+- [src/sampler/qr_code_binary_grid_to_pixel.md](src/sampler/qr_code_binary_grid_to_pixel.md): documents the fixed-size null-space solve and records why `setTransformFromLinesSquare()` intentionally stays on SVD.
+
+### Performance
+
+Measured with `build/qr_scan --profile` on the same two profile images, comparing against the post-target-1 state:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 107.65 ms/iter | 107.04 ms/iter | -0.6% |
+| `lots/image005.jpg` (250 iters) | 140.26 ms/iter | 127.47 ms/iter | -9.1% |
+
+Full regression timing also moved in the expected place: `lots` mean fell from 124.56 ms to 112.59 ms, while aggregate quality stayed byte-identical.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 429/429 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains 74.40%, with only the documented accepted residual categories out-of-band.
+
+---
+
 ## 2026-05-11 (later⁶) — perf(contour): avoid coordinate division in `ContourTracer`
 
 First isolated perf target from the fresh bottleneck profile: keep the Chang contour-tracing algorithm identical, but remove avoidable arithmetic from the hottest contour-walk path.
