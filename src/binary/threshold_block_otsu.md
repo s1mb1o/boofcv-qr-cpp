@@ -28,6 +28,8 @@ After picking `T`, compute `adjustment = (tuning · T)² / variance`, then `T -=
 
 Per ISO discussion in BoofCV's comment: if a single block happens to fall entirely inside a black square, classical block-Otsu would treat it as textureless and reject it; the resulting binary loses the edge. Looking at the 3×3 neighbourhood instead means even a single textured neighbour will give the block a non-degenerate threshold. The trade-off is some smoothing across block boundaries; CLAUDE.md notes this is one reason `cv::adaptiveThreshold` isn't equivalent (it uses a different smoothing kernel).
 
+Implementation note: the C++ port stores one 256-bin histogram per block, then computes each local 3×3 histogram with a sliding window. For a block row, it first sums the active three block rows into one vertical histogram per block column. It then slides a three-column horizontal window across those vertical sums, subtracting the column that leaves and adding the column that enters. The final histogram for each block is the same integer sum as the direct BoofCV 3×3 neighbourhood; only the data movement is reduced before the unchanged Otsu loop runs.
+
 ### Output convention
 
 Per CLAUDE.md "Binary image convention": output is `CV_8UC1` with `0/1` values. With `down = true` (the QR default), pixels whose intensity ≤ threshold get value `1` (foreground = dark module). With `down = false`, the convention flips. **Don't use 0/255 internally** — multiply by 255 only at the dump boundary.

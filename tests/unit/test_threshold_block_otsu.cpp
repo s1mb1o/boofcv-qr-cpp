@@ -67,6 +67,26 @@ TEST(ThresholdBlockOtsu, downFalseFlipsConvention) {
     EXPECT_EQ(0, output.at<std::uint8_t>(60, 110));  // dark -> 0
 }
 
+TEST(ThresholdBlockOtsu, thresholdFromSingleBlocks) {
+    cv::Mat input(80, 80, CV_8UC1);
+    for (int y = 0; y < input.rows; y++) {
+        std::uint8_t* row = input.ptr<std::uint8_t>(y);
+        for (int x = 0; x < input.cols; x++) {
+            row[x] = (x % 40) < 20 ? 220 : 30;
+        }
+    }
+    ThresholdBlockOtsu::Config cfg;
+    cfg.thresholdFromLocalBlocks = false;
+    ThresholdBlockOtsu alg(cfg);
+    cv::Mat output;
+    alg.process(input, output);
+
+    EXPECT_EQ(0, output.at<std::uint8_t>(60, 10));   // bright -> 0
+    EXPECT_EQ(1, output.at<std::uint8_t>(60, 30));   // dark -> 1
+    EXPECT_EQ(0, output.at<std::uint8_t>(60, 50));   // bright -> 0
+    EXPECT_EQ(1, output.at<std::uint8_t>(60, 70));   // dark -> 1
+}
+
 // Repeated process() calls must not carry state forward.
 TEST(ThresholdBlockOtsu, repeatable) {
     cv::Mat a = makeBimodal(120, 120, 220, 30, 60);

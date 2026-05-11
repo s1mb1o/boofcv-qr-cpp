@@ -90,6 +90,18 @@ double finalizeThreshold(double threshold, double variance, double tuning,
         scale * std::max(threshold, 0.0) + 0.5));
 }
 
+void addHistogram(const int32_t* src, int32_t* dst) {
+    for (int32_t i = 0; i < kHistogramLen; i++) {
+        dst[i] += src[i];
+    }
+}
+
+void subtractHistogram(const int32_t* src, int32_t* dst) {
+    for (int32_t i = 0; i < kHistogramLen; i++) {
+        dst[i] -= src[i];
+    }
+}
+
 }  // namespace
 
 void ThresholdBlockOtsu::selectBlockSize(int32_t width, int32_t height,
@@ -113,7 +125,6 @@ void ThresholdBlockOtsu::computeBlockStatistics(int32_t x0, int32_t y0,
                                                 int32_t indexStats,
                                                 const cv::Mat& input) {
     int32_t* hist = stats_.data() + indexStats;
-    for (int32_t i = 0; i < kHistogramLen; i++) hist[i] = 0;
 
     for (int32_t y = 0; y < height; y++) {
         const std::uint8_t* row = input.ptr<std::uint8_t>(y0 + y) + x0;
@@ -157,7 +168,7 @@ void ThresholdBlockOtsu::computeStatistics(const cv::Mat& input,
 
 void ThresholdBlockOtsu::thresholdBlock(int32_t blockX0, int32_t blockY0,
                                         const cv::Mat& input, cv::Mat& output,
-                                        std::vector<int32_t>& workHistogram) {
+                                        const int32_t* histogram) {
     int32_t x0 = blockX0 * blockWidth_;
     int32_t y0 = blockY0 * blockHeight_;
 
@@ -166,36 +177,11 @@ void ThresholdBlockOtsu::thresholdBlock(int32_t blockX0, int32_t blockY0,
     int32_t y1 =
         blockY0 == blocksHigh_ - 1 ? input.rows : (blockY0 + 1) * blockHeight_;
 
-    int32_t bX0, bY0, bX1, bY1;
-    if (cfg_.thresholdFromLocalBlocks) {
-        bX1 = std::min(blocksWide_ - 1, blockX0 + 1);
-        bY1 = std::min(blocksHigh_ - 1, blockY0 + 1);
-        bX0 = std::max(0, blockX0 - 1);
-        bY0 = std::max(0, blockY0 - 1);
-    } else {
-        bX0 = bX1 = blockX0;
-        bY0 = bY1 = blockY0;
-    }
-
-    // sum up histogram in local region
-    for (int32_t i = 0; i < kHistogramLen; i++)
-        workHistogram[static_cast<std::size_t>(i)] = 0;
-
-    for (int32_t y = bY0; y <= bY1; y++) {
-        for (int32_t x = bX0; x <= bX1; x++) {
-            int32_t indexStats = (y * blocksWide_ + x) * kHistogramLen;
-            for (int32_t i = 0; i < kHistogramLen; i++) {
-                workHistogram[static_cast<std::size_t>(i)] +=
-                    stats_[static_cast<std::size_t>(indexStats + i)];
-            }
-        }
-    }
-
     int32_t total = 0;
     for (int32_t i = 0; i < kHistogramLen; i++)
-        total += workHistogram[static_cast<std::size_t>(i)];
+        total += histogram[i];
 
-    OtsuResult res = computeOtsuRaw(workHistogram.data(), kHistogramLen, total,
+    OtsuResult res = computeOtsuRaw(histogram, kHistogramLen, total,
                                     cfg_.useOtsu2);
     double threshold = finalizeThreshold(res.threshold, res.variance,
                                          cfg_.tuning, cfg_.scale, cfg_.down);
@@ -219,10 +205,63 @@ void ThresholdBlockOtsu::thresholdBlock(int32_t blockX0, int32_t blockY0,
 }
 
 void ThresholdBlockOtsu::applyThreshold(const cv::Mat& input, cv::Mat& output) {
+    if (!cfg_.thresholdFromLocalBlocks) {
+        for (int32_t blockY = 0; blockY < blocksHigh_; blockY++) {
+            for (int32_t blockX = 0; blockX < blocksWide_; blockX++) {
+                const int32_t* histogram =
+                    stats_.data() + (blockY * blocksWide_ + blockX) * kHistogramLen;
+                thresholdBlock(blockX, blockY, input, output, histogram);
+            }
+        }
+        return;
+    }
+
+    std::vector<int32_t> verticalHistogram(
+        static_cast<std::size_t>(blocksWide_) *
+        static_cast<std::size_t>(kHistogramLen),
+        0);
     std::vector<int32_t> workHistogram(kHistogramLen, 0);
+
     for (int32_t blockY = 0; blockY < blocksHigh_; blockY++) {
+        std::fill(verticalHistogram.begin(), verticalHistogram.end(), 0);
+        int32_t bY0 = std::max(0, blockY - 1);
+        int32_t bY1 = std::min(blocksHigh_ - 1, blockY + 1);
+
         for (int32_t blockX = 0; blockX < blocksWide_; blockX++) {
-            thresholdBlock(blockX, blockY, input, output, workHistogram);
+            int32_t* vertical =
+                verticalHistogram.data() + blockX * kHistogramLen;
+            for (int32_t y = bY0; y <= bY1; y++) {
+                const int32_t* src =
+                    stats_.data() + (y * blocksWide_ + blockX) * kHistogramLen;
+                addHistogram(src, vertical);
+            }
+        }
+
+        std::fill(workHistogram.begin(), workHistogram.end(), 0);
+        int32_t bX0 = 0;
+        int32_t bX1 = std::min(blocksWide_ - 1, 1);
+        for (int32_t x = bX0; x <= bX1; x++) {
+            addHistogram(verticalHistogram.data() + x * kHistogramLen,
+                         workHistogram.data());
+        }
+        thresholdBlock(0, blockY, input, output, workHistogram.data());
+
+        int32_t previousX0 = bX0;
+        int32_t previousX1 = bX1;
+        for (int32_t blockX = 1; blockX < blocksWide_; blockX++) {
+            bX0 = std::max(0, blockX - 1);
+            bX1 = std::min(blocksWide_ - 1, blockX + 1);
+            for (int32_t x = previousX0; x < bX0; x++) {
+                subtractHistogram(verticalHistogram.data() + x * kHistogramLen,
+                                  workHistogram.data());
+            }
+            for (int32_t x = previousX1 + 1; x <= bX1; x++) {
+                addHistogram(verticalHistogram.data() + x * kHistogramLen,
+                             workHistogram.data());
+            }
+            thresholdBlock(blockX, blockY, input, output, workHistogram.data());
+            previousX0 = bX0;
+            previousX1 = bX1;
         }
     }
 }

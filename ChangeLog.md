@@ -1,5 +1,37 @@
 # ChangeLog
 
+## 2026-05-11 (later¹¹) — perf(otsu): slide local block histograms
+
+Implemented the next `ThresholdBlockOtsu` target without changing the Otsu math or threshold decisions. The change keeps per-block histogram values exact, but avoids rebuilding each 3×3 local histogram from scratch.
+
+### Changed
+
+- [src/binary/threshold_block_otsu.cpp](src/binary/threshold_block_otsu.cpp): removed duplicate per-block histogram zeroing after the process-level `stats_.assign(..., 0)`, split threshold application from local-neighbour histogram construction, and added a sliding vertical/horizontal histogram window for `thresholdFromLocalBlocks=true`.
+- [include/boofcv_qr/threshold_block_otsu.hpp](include/boofcv_qr/threshold_block_otsu.hpp): adjusted the private `thresholdBlock()` helper to consume a prepared histogram.
+- [tests/unit/test_threshold_block_otsu.cpp](tests/unit/test_threshold_block_otsu.cpp): added coverage for `thresholdFromLocalBlocks=false`, which now follows the direct per-block histogram path.
+- [src/binary/threshold_block_otsu.md](src/binary/threshold_block_otsu.md) and [ResearchLog.md](ResearchLog.md): documented the sliding-window implementation and perf results.
+
+### Performance
+
+Compared against the post-line-DLT target:
+
+| image / run | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 104.51 ms/iter | 101.73 ms/iter | -2.7% |
+| `lots/image005.jpg` (250 iters) | 123.13 ms/iter | 125.52 ms/iter | +1.9% |
+| Full regression `total_elapsed_ms` | 17.858 s | 17.799 s | -0.3% |
+| Aggregate detector mean | 23.21 ms | 23.10 ms | -0.5% |
+| `lots` mean | 112.37 ms | 111.66 ms | -0.6% |
+
+The fixed `lots/image005` probe was noisy and worsened, but the full `lots` category and aggregate regression timing both improved, with quality unchanged.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure -R ThresholdBlockOtsu` -> 6/6 PASS.
+- `ctest --test-dir build --output-on-failure` -> 431/431 PASS.
+- `bash tools/cli/run_regression.sh` -> PASS: aggregate decode rate remains 74.40%, with only the documented accepted residual categories out-of-band.
+
 ## 2026-05-11 (later¹⁰) — perf(sampler): make line-DLT SVD compact
 
 Implemented the next sampler target against the residual `setTransformFromLinesSquare()` SVD hotspot. The change keeps the BoofCV point/line DLT row equations and right-singular-vector objective, but removes avoidable OpenCV work around it.

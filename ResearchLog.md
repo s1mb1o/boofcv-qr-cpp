@@ -1,5 +1,56 @@
 # ResearchLog
 
+## 2026-05-11 — Target 5: sliding local histograms in `ThresholdBlockOtsu`
+
+### Why
+
+The refreshed profile still showed `ThresholdBlockOtsu` at roughly 14-16% of samples on 4MP images. A previous tiny arithmetic cleanup failed the fixed-count perf gate, so this target focused on data movement that preserves the exact integer histograms passed into the unchanged Otsu computation.
+
+### Change
+
+- Removed duplicate zeroing in `computeBlockStatistics()`. `process()` already clears the full `stats_` buffer with `stats_.assign(..., 0)` before every histogram build, and each block is computed once.
+- Split `thresholdBlock()` so it consumes a prepared histogram instead of constructing the local 3×3 neighbourhood itself.
+- For `thresholdFromLocalBlocks=true`, `applyThreshold()` now builds per-column vertical sums for the current three block rows, then slides a three-column horizontal window across the row. The resulting histogram for each block is identical to summing the same 3×3 neighbourhood directly, but avoids re-adding all nine source histograms for every adjacent block.
+- For `thresholdFromLocalBlocks=false`, `applyThreshold()` passes each block's own histogram directly into `thresholdBlock()`.
+- Added `ThresholdBlockOtsu.thresholdFromSingleBlocks` to exercise the non-local branch.
+
+### Commands
+
+```bash
+cmake --build build --target boofcv_qr_tests qr_scan -- -j
+ctest --test-dir build --output-on-failure -R ThresholdBlockOtsu
+ctest --test-dir build --output-on-failure
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/bright_spots/image012.jpg \
+  300
+build/qr_scan --profile \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes/detection/lots/image005.jpg \
+  250
+bash tools/cli/run_regression.sh
+```
+
+### Result
+
+Fixed-count profile comparison against target 4:
+
+| image | before | after | delta |
+|---|---:|---:|---:|
+| `bright_spots/image012.jpg` (300 iters) | 104.51 ms/iter | 101.73 ms/iter | -2.78 ms / -2.7% |
+| `lots/image005.jpg` (250 iters) | 123.13 ms/iter | 125.52 ms/iter | +2.39 ms / +1.9% |
+
+Full regression timing:
+
+| metric | target 4 | target 5 | delta |
+|---|---:|---:|---:|
+| `summary.total_elapsed_ms` | 17858 ms | 17799 ms | -59 ms / -0.3% |
+| aggregate mean ms | 23.21 | 23.10 | -0.5% |
+| `bright_spots` mean ms | 68.87 | 68.52 | -0.5% |
+| `brightness` mean ms | 57.64 | 57.43 | -0.4% |
+| `curved` mean ms | 29.62 | 28.01 | -5.4% |
+| `lots` mean ms | 112.37 | 111.66 | -0.6% |
+
+Quality is unchanged: regression PASS, aggregate decode rate remains byte-identical to the BoofCV Java baseline at **74.40%**. The fixed `lots/image005` probe worsened, but the full `lots` category and aggregate timing improved, so this target passed the broader dataset gate.
+
 ## 2026-05-11 — Target 4: compact SVD for `setTransformFromLinesSquare`
 
 ### Why

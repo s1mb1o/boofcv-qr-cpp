@@ -92,7 +92,7 @@ private:
                            int32_t innerHeight);
     void applyThreshold(const cv::Mat& input, cv::Mat& output);
     void thresholdBlock(int32_t blockX0, int32_t blockY0, const cv::Mat& input,
-                        cv::Mat& output, std::vector<int32_t>& workHistogram);
+                        cv::Mat& output, const int32_t* histogram);
     void computeBlockStatistics(int32_t x0, int32_t y0, int32_t width,
                                 int32_t height, int32_t indexStats,
                                 const cv::Mat& input);
