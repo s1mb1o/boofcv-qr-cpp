@@ -439,7 +439,7 @@ TYPED_TEST(ReedSolomonCodesTyped, findErrorEvaluator) {
     };
 
     // one error
-    check(arr<WordT>({64, 192, 93, 231, 52, 92, 228, 49, 83, 2455 & 0xFFFF}),
+    check(arr<WordT>({64, 192, 93, 231, 52, 92, 228, 49, 83, 245}),
           arr<WordT>({3, 1}),
           arr<WordT>({0, 64}));
 

@@ -27,6 +27,9 @@ surface beyond single-image smoke usage.
   added path-like support for `load_single_band()`, clearer dtype/color-image
   errors for `detect()`, and GIL-released batch path scanning with per-image
   exception capture.
+- [tests/unit/test_reed_solomon.cpp](tests/unit/test_reed_solomon.cpp):
+  fixed a U16 test vector typo that could index outside GF(2^8) tables on
+  Linux.
 - [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md),
   [SMOKE_TESTS.md](SMOKE_TESTS.md), [CLAUDE.md](CLAUDE.md),
   [pyproject.toml](pyproject.toml), and [ResearchLog.md](ResearchLog.md):
