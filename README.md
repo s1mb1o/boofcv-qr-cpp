@@ -63,6 +63,31 @@ benchmarks:
 QR_SCAN_THREADS=8 build/qr_scan /path/to/images /path/to/output
 ```
 
+## Python Status
+
+Native Python bindings are not included yet. The public C++ API is designed to
+be pybind11-friendly, but this repository currently does not build a Python
+extension module, wheel, or `import boofcv_qr` package.
+
+Python code can use the project today by invoking the `qr_scan` CLI and reading
+its JSON output:
+
+```python
+import json
+import subprocess
+
+result = subprocess.run(
+    ["build/qr_scan", "image.png"],
+    check=True,
+    text=True,
+    capture_output=True,
+)
+record = json.loads(result.stdout)
+```
+
+For in-process Python use, the next step is to add a pybind11 module that
+accepts `numpy`/`cv2` images and returns Python-native result dictionaries.
+
 ## Regression Dataset
 
 The full regression harness expects BoofCV's `qrcodes_v3` dataset to be

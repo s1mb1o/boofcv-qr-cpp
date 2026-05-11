@@ -1,5 +1,15 @@
 # ChangeLog
 
+## 2026-05-11 (later¹⁹) — docs: clarify Python usage status
+
+Clarified that `boofcv-qr-cpp` is not yet a native Python package.
+
+### Changed
+
+- [README.md](README.md): added a Python status section explaining that current
+  Python use is via the `qr_scan` CLI JSON output, while native in-process use
+  still requires a future pybind11 binding layer.
+
 ## 2026-05-11 (later¹⁸) — docs: prepare public GitHub publication
 
 Prepared the repository for public GitHub publication under the recommended
