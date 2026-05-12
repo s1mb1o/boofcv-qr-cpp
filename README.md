@@ -163,6 +163,11 @@ PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
 See [docs/python_api.md](docs/python_api.md) and [examples/python/](examples/python/)
 for more Python examples.
 
+Packaging support and wheel policy are documented in
+[docs/packaging.md](docs/packaging.md). In short: macOS release wheels are
+built with `cibuildwheel` and repaired with `delocate`; Linux release wheels
+are currently system-OpenCV artifacts, not manylinux wheels.
+
 ## Regression Dataset
 
 The full regression harness expects BoofCV's `qrcodes_v3` dataset to be

@@ -1,5 +1,33 @@
 # ChangeLog
 
+## 2026-05-13 — packaging: add cibuildwheel release path
+
+Closed the packaging hardening part of issue #2.
+
+### Added
+
+- [pyproject.toml](pyproject.toml): `cibuildwheel` build/test config for
+  CPython 3.10-3.14 and macOS `delocate` repair.
+- [.github/workflows/release.yml](.github/workflows/release.yml): macOS
+  `cibuildwheel` job, Linux system-OpenCV wheel job with `auditwheel show`,
+  release-artifact smoke installs, and a separate source-archive job.
+- [docs/packaging.md](docs/packaging.md): supported Python/OS/OpenCV matrix,
+  macOS wheel workflow, Linux system-OpenCV policy, and local wheel smoke.
+
+### Policy
+
+Linux artifacts are deliberately named `linux-system-opencv` and are not
+advertised as manylinux. True manylinux support needs an explicit OpenCV
+bundling strategy before `auditwheel repair` can produce policy-compliant
+portable wheels.
+
+### Verification
+
+- `python3 -m pip wheel . --no-deps -w /tmp/boofcv_qr_dist_check` -> PASS.
+- Clean venv install of `numpy` plus the built wheel -> PASS.
+- `BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr /tmp/boofcv_qr_smoke/bin/python tests/python/test_pyboof_compat.py`
+  -> PASS.
+
 ## 2026-05-13 — perf: cap OpenCV threads for Apple Silicon batch scans
 
 Closed the Apple Silicon threading part of issue #4.

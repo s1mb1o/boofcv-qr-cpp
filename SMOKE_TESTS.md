@@ -54,6 +54,19 @@ PYTHONPATH=build/python python3 tools/python/profile_python.py \
 Expected: the script prints single-image and batch timing lines with non-zero
 detection counts.
 
+## Python Wheel Smoke
+
+```bash
+python3 -m pip wheel . --no-deps -w /tmp/boofcv_qr_dist_check
+python3 -m venv /tmp/boofcv_qr_smoke
+/tmp/boofcv_qr_smoke/bin/python -m pip install numpy /tmp/boofcv_qr_dist_check/*.whl
+BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr \
+  /tmp/boofcv_qr_smoke/bin/python tests/python/test_pyboof_compat.py
+```
+
+Expected: the wheel builds, installs into the clean virtual environment, and
+the PyBoof compatibility smoke exits 0.
+
 ## CLI Stage Timing
 
 ```bash

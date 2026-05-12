@@ -1,5 +1,39 @@
 # ResearchLog
 
+## 2026-05-13 — Python wheel packaging hardening
+
+### Finding
+
+Issue #2 is best solved in two layers:
+
+- macOS release wheels can be repeatably built with `cibuildwheel` and repaired
+  with `delocate` after installing Homebrew OpenCV.
+- Linux wheels should remain explicitly labeled **system-OpenCV** artifacts for
+  now. The workflow builds them on Ubuntu, inspects them with `auditwheel show`,
+  and smoke-installs them, but does not claim manylinux compliance.
+
+The reason not to force manylinux in this pass is OpenCV. A policy-compliant
+manylinux wheel would need OpenCV built inside the manylinux image and then
+vendored by `auditwheel repair`, or a deliberately smaller bundled OpenCV
+subset. That is a separate packaging project because it affects build time,
+wheel size, and license/compliance review.
+
+### Validation
+
+Local clean-wheel smoke passed on macOS arm64 / Python 3.14:
+
+```bash
+python3 -m pip wheel . --no-deps -w /tmp/boofcv_qr_dist_check
+python3 -m venv /tmp/boofcv_qr_smoke
+/tmp/boofcv_qr_smoke/bin/python -m pip install numpy /tmp/boofcv_qr_dist_check/*.whl
+BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr \
+  /tmp/boofcv_qr_smoke/bin/python tests/python/test_pyboof_compat.py
+```
+
+Result: wheel built as
+`boofcv_qr_cpp-0.1.0-cp314-cp314-macosx_15_0_arm64.whl`; install and smoke
+test exited 0.
+
 ## 2026-05-13 — Apple Silicon thread audit and preset baseline
 
 ### Finding

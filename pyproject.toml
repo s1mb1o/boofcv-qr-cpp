@@ -45,3 +45,13 @@ cmake.args = [
   "-DBOOFCV_QR_BUILD_PYTHON=ON",
 ]
 wheel.packages = ["python/boofcv_qr"]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "pp* *-win32 *-win_amd64 *-musllinux*"
+test-requires = ["numpy>=1.21"]
+test-command = "BOOFCV_QR_FIXTURE_DIR={project}/tests/fixtures/qr python {project}/tests/python/test_pyboof_compat.py"
+
+[tool.cibuildwheel.macos]
+before-all = "brew install opencv"
+repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel}"
