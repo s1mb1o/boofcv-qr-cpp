@@ -27,12 +27,12 @@
     "monitor": {
       "delta_pp": -11.76,
       "tolerance_pp": 1.0,
-      "reason": "ThresholdBlockOtsu IEEE-754 edge-wandering: 2 of 17 images fail (image011, image012). Audit measured 0.602% per-pixel binary diff vs Java, 100% within 1px of fg/bg boundary, 0% interior. See ADR 06."
+      "reason": "ThresholdBlockOtsu IEEE-754 edge-wandering. Current taxonomy: Java decodes image011/image012 before C++ has a decoder candidate and image014 where C++ reaches ERROR_CORRECTION; C++ decodes image017 where Java does not, so the net residual is -2/17 = -11.76pp. Audit measured 0.602% per-pixel binary diff vs Java on image011, 100% within 1px of fg/bg boundary, 0% interior. See ADR 06 and ResearchLog 2026-05-12."
     },
     "glare": {
       "delta_pp": -3.77,
       "tolerance_pp": 1.0,
-      "reason": "ThresholdBlockOtsu IEEE-754 edge-wandering: 3 GT fail (image005, image007, image022). Audit measured 1.884% per-pixel binary diff vs Java, 100% within 1px of fg/bg boundary, 0% interior. See ADR 06."
+      "reason": "ThresholdBlockOtsu IEEE-754 edge-wandering. Current taxonomy: Java decodes image005/image022 before C++ has a decoder candidate; image007 is not a Java/C++ delta in the current locked baselines. Net residual is -2/53 = -3.77pp. Audit measured 1.884% per-pixel binary diff vs Java on image005, 100% within 1px of fg/bg boundary, 0% interior. See ADR 06 and ResearchLog 2026-05-12."
     },
     "bright_spots": {
       "delta_pp": 2.06,

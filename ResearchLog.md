@@ -1,5 +1,54 @@
 # ResearchLog
 
+## 2026-05-12 — Accuracy parity taxonomy pass
+
+### Why
+
+Start issue #3 by turning the current BoofCV dataset gap into image-level
+failure buckets, then test the smallest source-level parity fix found while
+reading the top residual path.
+
+### Findings
+
+Fresh regression stayed at **74.40%** aggregate decode rate. The aggregate is
+still byte-identical to Java because negative monitor/glare drift is offset by
+positive small-N categories, but the current image-level Java/C++ deltas are:
+
+| category | C++ | Java | net | Java-positive/C++-negative images |
+|---|---:|---:|---:|---|
+| `monitor` | 12/17 | 14/17 | -2 GT | `image011`, `image012` (`no_decoder_candidate`), `image014` (`ERROR_CORRECTION`) |
+| `glare` | 15/53 | 17/53 | -2 GT | `image005`, `image022` (`no_decoder_candidate`) |
+
+`monitor/image017` is C++-positive/Java-negative, so it offsets one of the
+three monitor misses in the category-level delta. `glare/image007` is not a
+Java/C++ delta in the current locked baselines; both sides decode two GT and
+record one failed candidate.
+
+Across the full dataset taxonomy, `no_decoder_candidate` is the largest C++
+miss bucket (111 image instances), and it is also the dominant product-relevant
+bucket for the monitor/glare residuals. That keeps the next accuracy target in
+the threshold/finder candidate path before decoder micro-fixes.
+
+### Parity checks tried
+
+- Source comparison found one C++-only behavior in
+  `QrCodePositionPatternDetector::checkLine()`: the port cleared `length_[]`
+  per call, while BoofCV Java leaves the workspace array stateful. Removing the
+  reset is source-level parity-correct but regression-neutral.
+- A separate strict-FP build with `-ffp-contract=off` produced the same
+  74.40% score and identical taxonomy, so the threshold residual is not a
+  simple fused-multiply-add contraction issue.
+- Fresh Java stage dumps could not be generated on this machine because no
+  Java runtime is installed; this pass used the checked-in Java summary as the
+  reference.
+
+### Tooling
+
+Added `tests/regression/failure_taxonomy.py` to classify each summary record by
+C++ stage (`no_decoder_candidate`, `decoder_failure:<cause>`,
+`localization_miss`, `ok`) and, when a Java summary is supplied, by Java/C++
+parity direction.
+
 ## 2026-05-11 — Python batch API and release-readiness pass
 
 ### Why

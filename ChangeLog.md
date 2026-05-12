@@ -1,5 +1,36 @@
 # ChangeLog
 
+## 2026-05-12 — accuracy: add failure taxonomy for BoofCV parity
+
+Started the accuracy-parity track by making the Java/C++ regression gap
+inspectable at image and stage level.
+
+### Added
+
+- [tests/regression/failure_taxonomy.py](tests/regression/failure_taxonomy.py):
+  image-level taxonomy for C++ misses and optional Java/C++ parity drift.
+
+### Changed
+
+- [src/finder/qr_code_position_pattern_detector.cpp](src/finder/qr_code_position_pattern_detector.cpp):
+  removed a C++-only per-call RLE workspace reset so `checkLine()` matches
+  BoofCV Java's stateful workspace semantics.
+- [tests/accepted_residuals.json](tests/accepted_residuals.json),
+  [docs/decisions/06_threshold_block_otsu_audit.md](docs/decisions/06_threshold_block_otsu_audit.md),
+  [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md),
+  and [ResearchLog.md](ResearchLog.md): refreshed the monitor/glare residual
+  image taxonomy and corrected the stale `glare/image007` note.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build -R "QrCodePositionPatternDetector" --output-on-failure`
+  -> 6/6 PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `PYTHONDONTWRITEBYTECODE=1 python3 tests/regression/failure_taxonomy.py tests/regression/baseline_cpp/summary.json --java-summary tests/regression/baseline_java/summary.json --output /tmp/qr_accuracy_parity_taxonomy.json --limit 12`
+  -> PASS.
+
 ## 2026-05-11 (later²¹) — release: harden Python API and GitHub packaging
 
 Prepared the repository for a first GitHub release and expanded the Python

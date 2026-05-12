@@ -27,6 +27,22 @@ Both sides operate on the same source JPEG with the same EXIF handling (`cv::IMR
 
 ## Empirical findings
 
+### 2026-05-12 taxonomy refresh
+
+`tests/regression/failure_taxonomy.py` rechecked the current locked Java and
+C++ summaries at image level. The residual attribution is unchanged, but the
+image accounting is now more precise:
+
+- `monitor`: Java-positive/C++-negative images are `image011`, `image012`, and
+  `image014`; C++-positive/Java-negative `image017` offsets one, so the net
+  accepted residual remains -2/17 = -11.76pp.
+- `glare`: Java-positive/C++-negative images are `image005` and `image022`;
+  `image007` is not a Java/C++ delta in the current locked baselines. The net
+  accepted residual remains -2/53 = -3.77pp.
+
+The original pixel-diff audit below still uses the canonical images
+`monitor/image011` and `glare/image005`.
+
 ### Per-pixel divergence
 
 | image | total px | diff px | diff % | Java fg % | C++ fg % |
