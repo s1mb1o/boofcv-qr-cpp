@@ -70,6 +70,25 @@ struct PolygonOnlyResult {
     std::vector<QrCode> qrCodes;
 };
 
+// Optional wall-clock timing for QrCodeDecoderImage internals. Values
+// are additive over one process() call and expressed in milliseconds.
+struct QrCodeDecoderImageTiming {
+    double formatMs = 0.0;
+    double versionMs = 0.0;
+    double alignmentMs = 0.0;
+    double transformMs = 0.0;
+    double samplingMs = 0.0;
+    double rsMs = 0.0;
+    double messageMs = 0.0;
+
+    int32_t candidates = 0;
+    int32_t decodeAttempts = 0;
+    int32_t transposedAttempts = 0;
+    int32_t samplingAttempts = 0;
+    int32_t rsAttempts = 0;
+    int32_t messageAttempts = 0;
+};
+
 // Forward-declare the test-only access shim so the friend grant in
 // `QrCodeDecoderImage` compiles without test code in the public include
 // path. The shim is defined alongside the test fixture in
@@ -133,6 +152,9 @@ public:
     // and `getFailures()` reflect what was decoded.
     void process(const std::vector<PositionPatternNode>& pps,
                  const cv::Mat& gray);
+    void process(const std::vector<PositionPatternNode>& pps,
+                 const cv::Mat& gray,
+                 QrCodeDecoderImageTiming* timing);
 
     // ---- Stage-isolation public entry points (CLAUDE.md mandate). ----
     //
@@ -221,7 +243,8 @@ public:
     friend class QrCodeDecoderImagePeer;
 
 private:
-    bool decode(const cv::Mat& gray, QrCode& qr);
+    bool decode(const cv::Mat& gray, QrCode& qr,
+                QrCodeDecoderImageTiming* timing);
     bool readRawData(QrCode& qr);
     float readBitIntensityAndThresholdDownRight(
         QrCode& qr, const std::vector<Point2I>& locationBits);

@@ -1,5 +1,50 @@
 # ResearchLog
 
+## 2026-05-13 — Stage-level QR timing baseline
+
+### Finding
+
+Issue #6 now has explicit timing at the pipeline and decoder levels. The CLI
+profile path reports binarization, contour/polygon extraction, finder
+validation, graph wiring, decoder format/version/alignment/transform/sampling,
+RS correction, message decode, and residual overhead. Batch timing writes a
+sidecar `stage_timings.json` grouped by category and image-size bucket.
+
+Fixture profile on this Apple Silicon machine:
+
+```bash
+build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 1000
+```
+
+Result: **0.14 ms/iter**. Top stages were `contour_polygon`
+(**0.0478 ms/iter**, 35.2%) and `binarization` (**0.0241 ms/iter**, 17.7%).
+
+Full BoofCV dataset timing:
+
+```bash
+QR_SCAN_THREADS=8 build/qr_scan --stage-timings \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes \
+  /tmp/qr_stage_timing
+```
+
+Overall mean stage timing was **29.40 ms/image**. The top two bottlenecks were:
+
+| stage | mean ms/image | share |
+|---|---:|---:|
+| `contour_polygon` | 19.296 | 65.6% |
+| `binarization` | 8.553 | 29.1% |
+
+The slowest category means were `lots` (133.40 ms/image), `brightness`
+(103.81 ms/image), and `bright_spots` (78.45 ms/image). The `ge_8mp` bucket
+averaged 88.58 ms/image, confirming that image size is the dominant driver.
+
+### Consequence
+
+The next performance work should target contour/polygon extraction first and
+binarization second. Decoder micro-optimizations are currently lower leverage:
+`decoder_sampling` averaged 0.623 ms/image, while RS and message decode were
+below 0.1 ms/image and 0.01 ms/image respectively.
+
 ## 2026-05-13 — Regression failure snapshot workflow
 
 ### Finding

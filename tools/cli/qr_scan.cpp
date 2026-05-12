@@ -11,6 +11,7 @@
 // Usage:
 //   qr_scan <input_dir> <output_dir>     # batch mode; mirrors dataset
 //   qr_scan <single_image.png>           # single-image; emits JSON to stdout
+//   qr_scan --stage-timings <input_dir> <output_dir>  # batch + sidecar timing report
 //   QR_SCAN_THREADS=N qr_scan <input_dir> <output_dir>  # pin batch workers
 //
 // JSON is emitted with a small hand-written serialiser — pulling in
@@ -32,6 +33,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +41,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <memory>
 #include <sstream>
@@ -234,6 +237,27 @@ boofcv_qr::QrCodeDecoderImage::Config makeQrConfig() {
     return cfg;
 }
 
+struct StageTiming {
+    double totalMs = 0.0;
+    double binarizeMs = 0.0;
+    double finderTotalMs = 0.0;
+    double contourPolygonMs = 0.0;
+    double finderValidationMs = 0.0;
+    double graphMs = 0.0;
+    double orchestratorMs = 0.0;
+    boofcv_qr::QrCodeDecoderImageTiming decoder;
+
+    int32_t polygons = 0;
+    int32_t positionPatterns = 0;
+    int32_t detections = 0;
+    int32_t failures = 0;
+};
+
+double elapsedMs(std::chrono::steady_clock::time_point start,
+                 std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
 struct Pipeline {
     boofcv_qr::ThresholdBlockOtsu binarizer;
     std::unique_ptr<boofcv_qr::QrCodePositionPatternDetector> finder;
@@ -297,14 +321,54 @@ struct Pipeline {
     // Run binarize → finder → graph → orchestrator on a CV_8UC1 image.
     // Populates `orchestrator.getSuccesses() / getFailures()`.
     void run(const cv::Mat& gray) {
+        runTimed(gray, nullptr);
+    }
+
+    void runTimed(const cv::Mat& gray, StageTiming* timing) {
+        auto totalStart = std::chrono::steady_clock::now();
+        auto t0 = totalStart;
+
         binarizer.process(gray, binary);
+        auto t1 = std::chrono::steady_clock::now();
+        if (timing)
+            timing->binarizeMs = elapsedMs(t0, t1);
+
+        t0 = std::chrono::steady_clock::now();
         finder->process(gray, binary);
+        t1 = std::chrono::steady_clock::now();
+        if (timing) {
+            timing->finderTotalMs = elapsedMs(t0, t1);
+            timing->contourPolygonMs = finder->getLastContourPolygonMS();
+            timing->finderValidationMs = finder->getLastFinderValidationMS();
+            timing->polygons = static_cast<int32_t>(
+                finder->getSquareDetector().getPolygonInfo().size());
+            timing->positionPatterns = static_cast<int32_t>(
+                finder->getPositionPatterns().size());
+        }
+
         // The graph generator mutates the position-pattern node list in place;
         // we cast away const via the friend grant pattern used elsewhere.
         auto& positions = const_cast<std::vector<boofcv_qr::PositionPatternNode>&>(
             finder->getPositionPatterns());
+        t0 = std::chrono::steady_clock::now();
         graphGen.process(positions);
-        orchestrator.process(positions, gray);
+        t1 = std::chrono::steady_clock::now();
+        if (timing)
+            timing->graphMs = elapsedMs(t0, t1);
+
+        t0 = std::chrono::steady_clock::now();
+        if (timing) {
+            orchestrator.process(positions, gray, &timing->decoder);
+        } else {
+            orchestrator.process(positions, gray);
+        }
+        t1 = std::chrono::steady_clock::now();
+        if (timing) {
+            timing->orchestratorMs = elapsedMs(t0, t1);
+            timing->detections = static_cast<int32_t>(orchestrator.getSuccesses().size());
+            timing->failures = static_cast<int32_t>(orchestrator.getFailures().size());
+            timing->totalMs = elapsedMs(totalStart, std::chrono::steady_clock::now());
+        }
     }
 };
 
@@ -445,6 +509,8 @@ struct Record {
     int32_t imageHeight = 0;
     double elapsedMs = 0.0;
     bool loadFailed = false;
+    bool hasTiming = false;
+    StageTiming timing;
     std::vector<boofcv_qr::QrCode> detections;
     std::vector<boofcv_qr::QrCode> failures;
 };
@@ -559,7 +625,8 @@ int32_t chooseBatchThreads(std::size_t imageCount) {
 // ---------------------------------------------------------------------
 
 void processOne(Pipeline& pipe, const fs::path& imagePath,
-                const fs::path& datasetRoot, Record& rec) {
+                const fs::path& datasetRoot, Record& rec,
+                bool collectTimings) {
     fs::path rel = fs::relative(imagePath, datasetRoot);
     std::string relStr = rel.generic_string();
     rec.imagePath = relStr;
@@ -586,7 +653,12 @@ void processOne(Pipeline& pipe, const fs::path& imagePath,
 
     auto t0 = std::chrono::steady_clock::now();
     try {
-        pipe.run(gray);
+        if (collectTimings) {
+            rec.hasTiming = true;
+            pipe.runTimed(gray, &rec.timing);
+        } else {
+            pipe.run(gray);
+        }
         rec.detections = pipe.orchestrator.getSuccesses();
         rec.failures = pipe.orchestrator.getFailures();
     } catch (const std::exception& e) {
@@ -603,11 +675,327 @@ void processOne(Pipeline& pipe, const fs::path& imagePath,
         std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 
+bool envFlag(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr)
+        return false;
+    std::string s(value);
+    for (char& c : s) {
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    }
+    return !(s.empty() || s == "0" || s == "false" ||
+             s == "off" || s == "no");
+}
+
+double nonNegative(double value) {
+    return value < 0.0 ? 0.0 : value;
+}
+
+std::string sizeBucket(const Record& rec) {
+    int64_t pixels = static_cast<int64_t>(rec.imageWidth) *
+                     static_cast<int64_t>(rec.imageHeight);
+    if (pixels < 500000)
+        return "lt_0_5mp";
+    if (pixels < 2000000)
+        return "0_5_to_2mp";
+    if (pixels < 8000000)
+        return "2_to_8mp";
+    return "ge_8mp";
+}
+
+struct TimingAggregate {
+    int64_t images = 0;
+    int64_t pixels = 0;
+    int64_t polygons = 0;
+    int64_t positionPatterns = 0;
+    int64_t detections = 0;
+    int64_t failures = 0;
+    int64_t candidates = 0;
+    int64_t decodeAttempts = 0;
+    int64_t transposedAttempts = 0;
+    int64_t samplingAttempts = 0;
+    int64_t rsAttempts = 0;
+    int64_t messageAttempts = 0;
+
+    double totalMs = 0.0;
+    double binarizeMs = 0.0;
+    double finderTotalMs = 0.0;
+    double contourPolygonMs = 0.0;
+    double finderValidationMs = 0.0;
+    double graphMs = 0.0;
+    double orchestratorMs = 0.0;
+    double formatMs = 0.0;
+    double versionMs = 0.0;
+    double alignmentMs = 0.0;
+    double transformMs = 0.0;
+    double samplingMs = 0.0;
+    double rsMs = 0.0;
+    double messageMs = 0.0;
+
+    void add(const Record& rec) {
+        if (!rec.hasTiming || rec.loadFailed)
+            return;
+        const StageTiming& t = rec.timing;
+        images++;
+        pixels += static_cast<int64_t>(rec.imageWidth) *
+                  static_cast<int64_t>(rec.imageHeight);
+        polygons += t.polygons;
+        positionPatterns += t.positionPatterns;
+        detections += t.detections;
+        failures += t.failures;
+        candidates += t.decoder.candidates;
+        decodeAttempts += t.decoder.decodeAttempts;
+        transposedAttempts += t.decoder.transposedAttempts;
+        samplingAttempts += t.decoder.samplingAttempts;
+        rsAttempts += t.decoder.rsAttempts;
+        messageAttempts += t.decoder.messageAttempts;
+
+        totalMs += t.totalMs;
+        binarizeMs += t.binarizeMs;
+        finderTotalMs += t.finderTotalMs;
+        contourPolygonMs += t.contourPolygonMs;
+        finderValidationMs += t.finderValidationMs;
+        graphMs += t.graphMs;
+        orchestratorMs += t.orchestratorMs;
+        formatMs += t.decoder.formatMs;
+        versionMs += t.decoder.versionMs;
+        alignmentMs += t.decoder.alignmentMs;
+        transformMs += t.decoder.transformMs;
+        samplingMs += t.decoder.samplingMs;
+        rsMs += t.decoder.rsMs;
+        messageMs += t.decoder.messageMs;
+    }
+
+    double finderOverheadMs() const {
+        return nonNegative(finderTotalMs - contourPolygonMs - finderValidationMs);
+    }
+
+    double decoderKnownMs() const {
+        return formatMs + versionMs + alignmentMs + transformMs +
+               samplingMs + rsMs + messageMs;
+    }
+
+    double decoderOtherMs() const {
+        return nonNegative(orchestratorMs - decoderKnownMs());
+    }
+
+    double pipelineOverheadMs() const {
+        return nonNegative(totalMs - binarizeMs - finderTotalMs -
+                           graphMs - orchestratorMs);
+    }
+};
+
+std::vector<std::pair<std::string, double>> additiveStageSums(
+    const TimingAggregate& agg) {
+    return {
+        {"binarization", agg.binarizeMs},
+        {"contour_polygon", agg.contourPolygonMs},
+        {"finder_validation", agg.finderValidationMs},
+        {"finder_overhead", agg.finderOverheadMs()},
+        {"graph", agg.graphMs},
+        {"decoder_format", agg.formatMs},
+        {"decoder_version", agg.versionMs},
+        {"decoder_alignment", agg.alignmentMs},
+        {"decoder_transform", agg.transformMs},
+        {"decoder_sampling", agg.samplingMs},
+        {"decoder_rs", agg.rsMs},
+        {"decoder_message", agg.messageMs},
+        {"decoder_other", agg.decoderOtherMs()},
+        {"pipeline_overhead", agg.pipelineOverheadMs()},
+    };
+}
+
+std::vector<std::pair<std::string, double>> topBottlenecks(
+    const TimingAggregate& agg, int32_t count) {
+    auto stages = additiveStageSums(agg);
+    std::sort(stages.begin(), stages.end(),
+              [](const auto& a, const auto& b) {
+                  return a.second > b.second;
+              });
+    if (static_cast<int32_t>(stages.size()) > count)
+        stages.resize(static_cast<std::size_t>(count));
+    return stages;
+}
+
+void writeStageMap(std::ostream& out, const TimingAggregate& agg,
+                   const std::string& indent, bool mean) {
+    auto emit = [&](const char* name, double value, bool last) {
+        double v = mean && agg.images > 0
+            ? value / static_cast<double>(agg.images)
+            : value;
+        out << indent << "  \"" << name << "\" : " << JsonWriter::num(v);
+        out << (last ? "\n" : ",\n");
+    };
+    out << indent << "{\n";
+    emit("pipeline_total", agg.totalMs, false);
+    emit("binarization", agg.binarizeMs, false);
+    emit("finder_total", agg.finderTotalMs, false);
+    emit("contour_polygon", agg.contourPolygonMs, false);
+    emit("finder_validation", agg.finderValidationMs, false);
+    emit("finder_overhead", agg.finderOverheadMs(), false);
+    emit("graph", agg.graphMs, false);
+    emit("orchestrator_total", agg.orchestratorMs, false);
+    emit("decoder_format", agg.formatMs, false);
+    emit("decoder_version", agg.versionMs, false);
+    emit("decoder_alignment", agg.alignmentMs, false);
+    emit("decoder_transform", agg.transformMs, false);
+    emit("decoder_sampling", agg.samplingMs, false);
+    emit("decoder_rs", agg.rsMs, false);
+    emit("decoder_message", agg.messageMs, false);
+    emit("decoder_other", agg.decoderOtherMs(), false);
+    emit("pipeline_overhead", agg.pipelineOverheadMs(), true);
+    out << indent << "}";
+}
+
+void writeAggregate(std::ostream& out, const TimingAggregate& agg,
+                    const std::string& indent) {
+    double meanMegapixels = agg.images > 0
+        ? static_cast<double>(agg.pixels) / static_cast<double>(agg.images) / 1000000.0
+        : 0.0;
+    out << indent << "{\n";
+    out << indent << "  \"images\" : " << JsonWriter::num(agg.images) << ",\n";
+    out << indent << "  \"mean_megapixels\" : "
+        << JsonWriter::num(meanMegapixels) << ",\n";
+    out << indent << "  \"counters\" : {\n";
+    out << indent << "    \"polygons\" : " << JsonWriter::num(agg.polygons) << ",\n";
+    out << indent << "    \"position_patterns\" : "
+        << JsonWriter::num(agg.positionPatterns) << ",\n";
+    out << indent << "    \"decoder_candidates\" : "
+        << JsonWriter::num(agg.candidates) << ",\n";
+    out << indent << "    \"decode_attempts\" : "
+        << JsonWriter::num(agg.decodeAttempts) << ",\n";
+    out << indent << "    \"transposed_attempts\" : "
+        << JsonWriter::num(agg.transposedAttempts) << ",\n";
+    out << indent << "    \"sampling_attempts\" : "
+        << JsonWriter::num(agg.samplingAttempts) << ",\n";
+    out << indent << "    \"rs_attempts\" : "
+        << JsonWriter::num(agg.rsAttempts) << ",\n";
+    out << indent << "    \"message_attempts\" : "
+        << JsonWriter::num(agg.messageAttempts) << ",\n";
+    out << indent << "    \"detections\" : " << JsonWriter::num(agg.detections) << ",\n";
+    out << indent << "    \"failures\" : " << JsonWriter::num(agg.failures) << "\n";
+    out << indent << "  },\n";
+    out << indent << "  \"stages_ms\" : ";
+    writeStageMap(out, agg, indent + "  ", false);
+    out << ",\n";
+    out << indent << "  \"mean_ms\" : ";
+    writeStageMap(out, agg, indent + "  ", true);
+    out << "\n";
+    out << indent << "}";
+}
+
+bool writeStageTimingReport(const std::vector<Record>& records,
+                            const fs::path& outputDir) {
+    TimingAggregate overall;
+    std::map<std::string, TimingAggregate> byCategory;
+    std::map<std::string, TimingAggregate> bySize;
+
+    for (const Record& rec : records) {
+        if (!rec.hasTiming || rec.loadFailed)
+            continue;
+        overall.add(rec);
+        byCategory[rec.category.empty() ? "uncategorized" : rec.category].add(rec);
+        bySize[sizeBucket(rec)].add(rec);
+    }
+
+    fs::path reportFile = outputDir / "stage_timings.json";
+    std::ofstream out(reportFile);
+    if (!out.is_open()) {
+        std::fprintf(stderr, "Cannot open stage timing report %s\n",
+                     reportFile.string().c_str());
+        return false;
+    }
+
+    out << "{\n";
+    out << "  \"image_count\" : " << JsonWriter::num(overall.images) << ",\n";
+    out << "  \"top_bottlenecks\" : [";
+    auto top = topBottlenecks(overall, 2);
+    for (std::size_t i = 0; i < top.size(); i++) {
+        if (i > 0) out << ", ";
+        double pct = overall.totalMs > 0.0 ? 100.0 * top[i].second / overall.totalMs : 0.0;
+        double mean = overall.images > 0
+            ? top[i].second / static_cast<double>(overall.images)
+            : 0.0;
+        out << "{ \"stage\" : \"" << JsonWriter::escape(top[i].first)
+            << "\", \"total_ms\" : " << JsonWriter::num(top[i].second)
+            << ", \"mean_ms\" : " << JsonWriter::num(mean)
+            << ", \"pct_pipeline\" : " << JsonWriter::num(pct) << " }";
+    }
+    out << " ],\n";
+    out << "  \"overall\" : ";
+    writeAggregate(out, overall, "  ");
+    out << ",\n";
+
+    out << "  \"by_category\" : {\n";
+    bool first = true;
+    for (const auto& [name, agg] : byCategory) {
+        if (!first) out << ",\n";
+        first = false;
+        out << "    \"" << JsonWriter::escape(name) << "\" : ";
+        writeAggregate(out, agg, "    ");
+    }
+    out << "\n  },\n";
+
+    out << "  \"by_size_bucket\" : {\n";
+    first = true;
+    for (const auto& [name, agg] : bySize) {
+        if (!first) out << ",\n";
+        first = false;
+        out << "    \"" << JsonWriter::escape(name) << "\" : ";
+        writeAggregate(out, agg, "    ");
+    }
+    out << "\n  }\n";
+    out << "}\n";
+
+    if (!top.empty()) {
+        std::printf("Stage timing report: %s\n", reportFile.string().c_str());
+        std::printf("Top bottlenecks:");
+        for (const auto& [name, total] : top) {
+            double pct = overall.totalMs > 0.0 ? 100.0 * total / overall.totalMs : 0.0;
+            double mean = overall.images > 0
+                ? total / static_cast<double>(overall.images)
+                : 0.0;
+            std::printf(" %s %.3f ms/image (%.1f%%)",
+                        name.c_str(), mean, pct);
+        }
+        std::printf("\n");
+    }
+    return true;
+}
+
+void printStageProfileSummary(const TimingAggregate& agg) {
+    if (agg.images == 0)
+        return;
+    std::printf("Stage timings (mean ms/iter, pct of pipeline):\n");
+    auto stages = additiveStageSums(agg);
+    for (const auto& [name, total] : stages) {
+        if (total <= 0.0)
+            continue;
+        double mean = total / static_cast<double>(agg.images);
+        double pct = agg.totalMs > 0.0 ? 100.0 * total / agg.totalMs : 0.0;
+        std::printf("  %-18s %9.4f  %5.1f%%\n",
+                    name.c_str(), mean, pct);
+    }
+    auto top = topBottlenecks(agg, 2);
+    if (!top.empty()) {
+        std::printf("Top bottlenecks:");
+        for (const auto& [name, total] : top) {
+            double mean = total / static_cast<double>(agg.images);
+            double pct = agg.totalMs > 0.0 ? 100.0 * total / agg.totalMs : 0.0;
+            std::printf(" %s %.4f ms/iter (%.1f%%)",
+                        name.c_str(), mean, pct);
+        }
+        std::printf("\n");
+    }
+}
+
 // ---------------------------------------------------------------------
 // Main.
 // ---------------------------------------------------------------------
 
-int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
+int runBatch(const fs::path& inputDir, const fs::path& outputDir,
+             bool collectTimings) {
     fs::create_directories(outputDir);
 
     std::vector<fs::path> images = collectImages(inputDir);
@@ -633,6 +1021,9 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
     if (const char* env = std::getenv("QR_SCAN_THREADS")) {
         std::printf(" (QR_SCAN_THREADS=%s)", env);
     }
+    if (collectTimings) {
+        std::printf(" + stage timings");
+    }
     std::printf("\n");
 
     auto globalStart = std::chrono::steady_clock::now();
@@ -652,7 +1043,8 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
                 if (index >= images.size())
                     break;
 
-                processOne(pipe, images[index], inputDir, records[index]);
+                processOne(pipe, images[index], inputDir, records[index],
+                           collectTimings);
 
                 int32_t done = completed.fetch_add(1) + 1;
                 if (done % 50 == 0 ||
@@ -718,6 +1110,8 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir) {
     std::printf("Wrote %s (%zu records, %lld ms total)\n",
                 summaryFile.string().c_str(), images.size(),
                 static_cast<long long>(totalMs));
+    if (collectTimings && !writeStageTimingReport(records, outputDir))
+        return 2;
     return 0;
 }
 
@@ -877,6 +1271,10 @@ int runDumpStages(const fs::path& imagePath, const fs::path& outDir) {
 // ---------------------------------------------------------------------
 
 int runProfile(const fs::path& imagePath, int iters) {
+    if (iters <= 0) {
+        std::fprintf(stderr, "Profile iterations must be > 0\n");
+        return 2;
+    }
     Pipeline pipe;
     cv::Mat gray = loadGray(imagePath);
     if (gray.empty()) {
@@ -889,15 +1287,24 @@ int runProfile(const fs::path& imagePath, int iters) {
     pipe.run(gray);
     auto t0 = std::chrono::steady_clock::now();
     int totalDet = 0;
+    TimingAggregate stageAgg;
     for (int i = 0; i < iters; ++i) {
-        pipe.run(gray);
+        StageTiming timing;
+        pipe.runTimed(gray, &timing);
         totalDet += static_cast<int>(pipe.orchestrator.getSuccesses().size());
+        Record timingRec;
+        timingRec.hasTiming = true;
+        timingRec.imageWidth = gray.cols;
+        timingRec.imageHeight = gray.rows;
+        timingRec.timing = timing;
+        stageAgg.add(timingRec);
     }
     auto t1 = std::chrono::steady_clock::now();
     double totalMs =
         std::chrono::duration<double, std::milli>(t1 - t0).count();
     std::printf("Total: %.1f ms, mean per-iter: %.2f ms (det sum %d)\n",
                 totalMs, totalMs / iters, totalDet);
+    printStageProfileSummary(stageAgg);
     return 0;
 }
 
@@ -908,17 +1315,21 @@ int main(int argc, char** argv) {
         return runDumpStages(argv[2], argv[3]);
     } else if (argc == 4 && std::string(argv[1]) == "--profile") {
         return runProfile(argv[2], std::atoi(argv[3]));
+    } else if (argc == 4 && std::string(argv[1]) == "--stage-timings") {
+        return runBatch(argv[2], argv[3], true);
     } else if (argc == 2) {
         return runSingle(argv[1]);
     } else if (argc == 3) {
-        return runBatch(argv[1], argv[2]);
+        return runBatch(argv[1], argv[2], envFlag("QR_SCAN_STAGE_TIMINGS"));
     } else {
         std::fprintf(stderr, "Usage:\n");
         std::fprintf(stderr, "  qr_scan <input_dir> <output_dir>          batch\n");
         std::fprintf(stderr, "      env: QR_SCAN_THREADS=N pins batch worker count\n");
+        std::fprintf(stderr, "      env: QR_SCAN_STAGE_TIMINGS=1 writes stage_timings.json\n");
         std::fprintf(stderr, "  qr_scan <single_image.png>                single image\n");
         std::fprintf(stderr, "  qr_scan --dump-stages <image> <outDir>    stage dumps\n");
         std::fprintf(stderr, "  qr_scan --profile <image> <iters>         loop image for profiling\n");
+        std::fprintf(stderr, "  qr_scan --stage-timings <input_dir> <output_dir>  batch + timing report\n");
         return 2;
     }
 }

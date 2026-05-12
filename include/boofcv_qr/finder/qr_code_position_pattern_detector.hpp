@@ -20,7 +20,7 @@ public:
         std::shared_ptr<DetectPolygonBinaryGrayRefine> squareDetector);
 
     void resetRuntimeProfiling() {
-        squareDetector_->resetRuntimeProfiling();
+        SquareLocatorPatternDetectorBase::resetRuntimeProfiling();
     }
 
     // Position-pattern candidates surviving the 1:1:3:1:1 check, with

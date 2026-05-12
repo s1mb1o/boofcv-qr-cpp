@@ -48,6 +48,15 @@ public:
     }
 
     double getProfilingMS() const { return profilingMS_; }
+    double getLastContourPolygonMS() const { return lastContourPolygonMS_; }
+    double getLastFinderValidationMS() const { return lastFinderValidationMS_; }
+
+    void resetRuntimeProfiling() {
+        squareDetector_->resetRuntimeProfiling();
+        profilingMS_ = 0.0;
+        lastContourPolygonMS_ = 0.0;
+        lastFinderValidationMS_ = 0.0;
+    }
 
 protected:
     // Concrete subclasses override this to walk the wrapped detector's
@@ -77,6 +86,8 @@ protected:
     // Runtime profiling (exponential moving average of the
     // findLocatorPatternsFromSquares() call duration in ms).
     double profilingMS_ = 0.0;
+    double lastContourPolygonMS_ = 0.0;
+    double lastFinderValidationMS_ = 0.0;
 };
 
 }  // namespace boofcv_qr

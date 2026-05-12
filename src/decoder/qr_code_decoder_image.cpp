@@ -14,6 +14,7 @@
 #include "boofcv_qr/squares/square_edge.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
@@ -82,6 +83,11 @@ void copyPolygon(std::array<cv::Point2d, 4>& dst,
 
 }  // namespace
 
+static double elapsedMs(std::chrono::steady_clock::time_point start,
+                        std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
 QrCodeDecoderImage::QrCodeDecoderImage()
     : QrCodeDecoderImage(Config{}) {}
 
@@ -120,6 +126,15 @@ bool QrCodeDecoderImage::runRsCorrect(QrCode& qr) {
 // ---- Java line ~88: process(List<PositionPatternNode> pps, T gray) ----
 void QrCodeDecoderImage::process(const std::vector<PositionPatternNode>& pps,
                                  const cv::Mat& gray) {
+    process(pps, gray, nullptr);
+}
+
+void QrCodeDecoderImage::process(const std::vector<PositionPatternNode>& pps,
+                                 const cv::Mat& gray,
+                                 QrCodeDecoderImageTiming* timing) {
+    if (timing)
+        *timing = QrCodeDecoderImageTiming{};
+
     gridReader_.setImage(gray);
     storageQR_.clear();
     successes_.clear();
@@ -134,12 +149,14 @@ void QrCodeDecoderImage::process(const std::vector<PositionPatternNode>& pps,
                 ppn.edges[static_cast<std::size_t>(k)] != nullptr) {
                 storageQR_.emplace_back();
                 QrCode& qr = storageQR_.back();
+                if (timing)
+                    timing->candidates++;
 
                 setPositionPatterns(ppn, j, k, qr);
                 computeBoundingBox(qr);
 
                 // Decode the entire marker now
-                if (decode(gray, qr)) {
+                if (decode(gray, qr, timing)) {
                     if (qr.failureCause == Failure::NONE) {
                         successes_.push_back(qr);
                     } else {
@@ -150,8 +167,10 @@ void QrCodeDecoderImage::process(const std::vector<PositionPatternNode>& pps,
                     // incorrectly with transposed bits
                     bool success = false;
                     if (considerTransposed_) {
+                        if (timing)
+                            timing->transposedAttempts++;
                         transposePositionPatterns(qr);
-                        success = decode(gray, qr);
+                        success = decode(gray, qr, timing);
                     }
 
                     if (success) {
@@ -252,17 +271,36 @@ void QrCodeDecoderImage::computeBoundingBox(QrCode& qr) {
 }
 
 // ---- Java line ~226: decode(T gray, QrCode qr) ----
-bool QrCodeDecoderImage::decode(const cv::Mat& gray, QrCode& qr) {
-    if (!extractFormatInfo(qr)) {
+bool QrCodeDecoderImage::decode(const cv::Mat& gray, QrCode& qr,
+                                QrCodeDecoderImageTiming* timing) {
+    if (timing)
+        timing->decodeAttempts++;
+
+    auto t0 = std::chrono::steady_clock::now();
+    bool formatOk = extractFormatInfo(qr);
+    auto t1 = std::chrono::steady_clock::now();
+    if (timing)
+        timing->formatMs += elapsedMs(t0, t1);
+    if (!formatOk) {
         qr.failureCause = Failure::FORMAT;
         return false;
     }
-    if (!extractVersionInfo(qr)) {
+    t0 = std::chrono::steady_clock::now();
+    bool versionOk = extractVersionInfo(qr);
+    t1 = std::chrono::steady_clock::now();
+    if (timing)
+        timing->versionMs += elapsedMs(t0, t1);
+    if (!versionOk) {
         qr.failureCause = Failure::VERSION;
         return false;
     }
 
-    if (!runAlignmentLocator(gray, qr)) {
+    t0 = std::chrono::steady_clock::now();
+    bool alignmentOk = runAlignmentLocator(gray, qr);
+    t1 = std::chrono::steady_clock::now();
+    if (timing)
+        timing->alignmentMs += elapsedMs(t0, t1);
+    if (!alignmentOk) {
         qr.failureCause = Failure::ALIGNMENT;
         return false;
     }
@@ -274,20 +312,42 @@ bool QrCodeDecoderImage::decode(const cv::Mat& gray, QrCode& qr) {
     gridReader_.getTransformGrid().addAllFeatures(qr);
     // by default, it removes outside corners. This works most of the time
     for (int32_t i = 0; i < 6; i++) {
+        t0 = std::chrono::steady_clock::now();
         if (i > 0) {
             bool removed = gridReader_.getTransformGrid().removeFeatureWithLargestError();
             if (!removed) {
+                t1 = std::chrono::steady_clock::now();
+                if (timing)
+                    timing->transformMs += elapsedMs(t0, t1);
                 break;
             }
         }
 
         gridReader_.getTransformGrid().computeTransform();
+        t1 = std::chrono::steady_clock::now();
+        if (timing)
+            timing->transformMs += elapsedMs(t0, t1);
+
         qr.failureCause = Failure::NONE;
-        if (!readRawData(qr)) {
+        if (timing)
+            timing->samplingAttempts++;
+        t0 = std::chrono::steady_clock::now();
+        bool rawOk = readRawData(qr);
+        t1 = std::chrono::steady_clock::now();
+        if (timing)
+            timing->samplingMs += elapsedMs(t0, t1);
+        if (!rawOk) {
             qr.failureCause = Failure::READING_BITS;
             continue;
         }
-        if (!runRsCorrect(qr)) {
+        if (timing)
+            timing->rsAttempts++;
+        t0 = std::chrono::steady_clock::now();
+        bool rsOk = runRsCorrect(qr);
+        t1 = std::chrono::steady_clock::now();
+        if (timing)
+            timing->rsMs += elapsedMs(t0, t1);
+        if (!rsOk) {
             qr.failureCause = Failure::ERROR_CORRECTION;
             continue;
         }
@@ -303,7 +363,13 @@ bool QrCodeDecoderImage::decode(const cv::Mat& gray, QrCode& qr) {
         // Parses the message. Return value is ignored since the parse
         // error is encoded in the message and we want to return true if
         // it could apply error correction
+        if (timing)
+            timing->messageAttempts++;
+        t0 = std::chrono::steady_clock::now();
         decoder_.decodeMessage(qr);
+        t1 = std::chrono::steady_clock::now();
+        if (timing)
+            timing->messageMs += elapsedMs(t0, t1);
     }
 
     qr.Hinv = gridReader_.getTransformGrid().Hinv;

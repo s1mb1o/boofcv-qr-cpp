@@ -44,6 +44,26 @@ PYTHONPATH=build/python python3 tools/python/profile_python.py \
 Expected: the script prints single-image and batch timing lines with non-zero
 detection counts.
 
+## CLI Stage Timing
+
+```bash
+build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 1000
+```
+
+Expected: output includes a `Stage timings` table and `Top bottlenecks` line.
+
+For a full dataset timing report:
+
+```bash
+QR_SCAN_THREADS=8 build/qr_scan --stage-timings \
+  /path/to/boofcv-qrcodes/qrcodes \
+  /tmp/qr_stage_timing
+```
+
+Expected: `/tmp/qr_stage_timing/stage_timings.json` contains `overall`,
+`by_category`, `by_size_bucket`, and the top two bottleneck stages. The regular
+`summary.json` schema stays the same unless callers read the timing sidecar.
+
 ## BoofCV Regression Dataset
 
 ```bash

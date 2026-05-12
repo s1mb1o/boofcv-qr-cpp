@@ -1,5 +1,40 @@
 # ChangeLog
 
+## 2026-05-13 — perf: add stage-level QR timing reports
+
+Closed the profiling observability gap from issue #6 without changing the
+default scan JSON schema.
+
+### Added
+
+- [include/boofcv_qr/qr_code_decoder_image.hpp](include/boofcv_qr/qr_code_decoder_image.hpp):
+  optional `QrCodeDecoderImageTiming` output for decoder format/version,
+  alignment, transform, sampling, RS, and message-decode stages.
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): `--profile` now prints a
+  stage timing table; `--stage-timings <input_dir> <output_dir>` writes
+  `stage_timings.json` with `overall`, `by_category`, `by_size_bucket`, and
+  top-bottleneck summaries.
+- [README.md](README.md) and [SMOKE_TESTS.md](SMOKE_TESTS.md): documented CLI
+  timing commands.
+
+### Findings
+
+On the BoofCV dataset with `QR_SCAN_THREADS=8`, the timing sidecar identifies
+`contour_polygon` as the top stage at 19.296 ms/image (65.6%) and
+`binarization` second at 8.553 ms/image (29.1%).
+
+### Verification
+
+- `cmake --build build --target qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 1000` -> PASS.
+- `QR_SCAN_THREADS=8 build/qr_scan --stage-timings /path/to/boofcv-qrcodes/qrcodes /tmp/qr_stage_timing`
+  -> PASS, report written.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- Normal regression `summary.json` contains no timing fields; timing remains a
+  sidecar-only schema.
+
 ## 2026-05-13 — regression: add image-level failure snapshots
 
 Closed the regression-suite observability gap from issue #5 by making failed

@@ -38,15 +38,22 @@ void SquareLocatorPatternDetectorBase::process(const cv::Mat& gray,
     configureContourDetector(gray);
     gray_ = gray;
 
+    auto detectorStart = std::chrono::steady_clock::now();
+
     // detect squares
     squareDetector_->process(gray, binary);
+    auto detectorEnd = std::chrono::steady_clock::now();
+    lastContourPolygonMS_ =
+        std::chrono::duration<double, std::milli>(
+            detectorEnd - detectorStart).count();
 
     auto time0 = std::chrono::steady_clock::now();
     findLocatorPatternsFromSquares();
     auto time1 = std::chrono::steady_clock::now();
 
-    double milli = std::chrono::duration<double, std::milli>(time1 - time0).count();
-    movingAverageUpdate(profilingMS_, milli, 0.8);
+    lastFinderValidationMS_ =
+        std::chrono::duration<double, std::milli>(time1 - time0).count();
+    movingAverageUpdate(profilingMS_, lastFinderValidationMS_, 0.8);
 }
 
 void SquareLocatorPatternDetectorBase::configureContourDetector(

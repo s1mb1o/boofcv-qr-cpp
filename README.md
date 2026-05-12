@@ -74,6 +74,22 @@ benchmarks:
 QR_SCAN_THREADS=8 build/qr_scan /path/to/images /path/to/output
 ```
 
+Profile one image with stage timing:
+
+```bash
+build/qr_scan --profile image.png 1000
+```
+
+Run a dataset scan with a sidecar timing report. Normal batch JSON remains
+unchanged; timings are written to `stage_timings.json`.
+
+```bash
+QR_SCAN_THREADS=8 build/qr_scan --stage-timings /path/to/images /path/to/output
+```
+
+The same report can be enabled for the regression driver with
+`QR_SCAN_STAGE_TIMINGS=1`.
+
 ## Python Usage
 
 The Python package exposes a PyBoof-compatible QR subset under the
