@@ -128,6 +128,13 @@ This audit confirms: the binary input fed to BOTH contour extractors already dif
 
 **(C) Accept the residuals as documented. Ship.** The audit is the durable artifact. 5 images out of 562 (0.89% of the dataset) fail on the same FP-noise-induced edge-wandering. Aggregate parity is 0.00pp byte-identical to Java. Decoder-only perf is ~2× C++/Java. The v1 close-out state is correct.
 
+2026-05-12 clarification: do not change C++ solely to match Java
+floating-point or workspace-state behavior. Java/C++ residuals are diagnostic;
+the product accuracy target is C++ recognition against ground truth. Revisit
+this path only when a proposed change improves C++ ground-truth recognition
+without increasing false positives, not merely because it makes C++ look more
+like Java on a borderline image.
+
 ## Consequences
 
 - `tests/accepted_residuals.json` for `monitor` and `glare` entries: `reason` text updated to cite **ADR 06's IEEE-754 edge-wandering audit** as the root cause (previously cited ADR 01's cv::findContours-substitution rationale, which ADR 05 superseded and ADR 06 now disproves entirely).

@@ -102,8 +102,9 @@ bool QrCodePositionPatternDetector::checkLine(
     int32_t size = 0;
     bool black = samples_[0] < grayThreshold;
     type_[0] = black ? 0 : 1;
-    // Keep Java's workspace semantics: length_[0] is not cleared here.
-    // Borderline finder candidates can drift if this method becomes stateless.
+    // Keep C++ scan state local. Java's workspace array is stateful across
+    // calls, but matching that does not improve current C++ accuracy.
+    for (int32_t k = 0; k < RUN_LEN_CAP; k++) length_[k] = 0;
 
     for (int32_t i = 0; i < SAMPLES_LEN_LOCAL; i++) {
         bool b = samples_[i] < grayThreshold;

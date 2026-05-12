@@ -1,5 +1,26 @@
 # ResearchLog
 
+## 2026-05-12 — Accuracy target clarification
+
+### Decision
+
+Do not tune C++ results to match Java for its own sake. The product target is
+C++ recognition against the dataset ground truth: if C++ decodes a QR correctly,
+that is sufficient even when Java differs. Java remains valuable as a reference
+implementation for finding stage-level divergences, but Java/C++ deltas caused
+by floating-point accumulation, compiler/runtime behavior, or Java workspace
+state should not be fixed unless they also improve C++ ground-truth accuracy
+without adding false positives.
+
+### Consequence
+
+The previous `checkLine()` experiment that removed the local `length_[]` reset
+was reverted. It matched Java's stateful workspace semantics, but it was
+regression-neutral on the BoofCV dataset and did not improve C++ recognition.
+Future accuracy work should target C++ misses against ground truth, starting
+with the `no_decoder_candidate` bucket surfaced by
+`tests/regression/failure_taxonomy.py`.
+
 ## 2026-05-12 — Accuracy parity taxonomy pass
 
 ### Why

@@ -1,5 +1,24 @@
 # ChangeLog
 
+## 2026-05-12 (later) — accuracy: use product accuracy over Java fitting
+
+Clarified the accuracy target: Java BoofCV remains a useful diagnostic
+baseline, but C++ behavior should not be changed solely to mimic Java floating
+point or workspace-state quirks when C++ already recognizes the QR against
+ground truth.
+
+### Changed
+
+- [src/finder/qr_code_position_pattern_detector.cpp](src/finder/qr_code_position_pattern_detector.cpp):
+  restored the local RLE workspace reset in `checkLine()` because the previous
+  Java-statefulness match was regression-neutral and not a product-accuracy
+  improvement.
+- [ResearchLog.md](ResearchLog.md),
+  [docs/decisions/06_threshold_block_otsu_audit.md](docs/decisions/06_threshold_block_otsu_audit.md),
+  and [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md):
+  documented that Java/C++ residuals caused by floating-point/runtime
+  differences are accepted unless they hurt C++ ground-truth recognition.
+
 ## 2026-05-12 — accuracy: add failure taxonomy for BoofCV parity
 
 Started the accuracy-parity track by making the Java/C++ regression gap

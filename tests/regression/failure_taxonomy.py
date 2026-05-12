@@ -2,9 +2,10 @@
 """Build an image-level failure taxonomy from a QR regression summary.
 
 The input is the `summary.json` emitted by `qr_scan` or the Java reference
-runner. With `--java-summary`, the report also highlights Java/C++ decode
-count drift per image, which is the highest-signal view for accuracy-parity
-work.
+runner. The primary taxonomy is C++ misses against ground truth. With
+`--java-summary`, the report also highlights Java/C++ decode count drift per
+image for diagnostics; that comparison is not itself a requirement to make C++
+match Java.
 
 Usage:
     failure_taxonomy.py tests/regression/baseline_cpp/summary.json \
@@ -265,7 +266,7 @@ def top_counter(counter: dict[str, int]) -> str:
 
 
 def print_report(taxonomy: dict[str, Any], limit: int) -> None:
-    print("Accuracy failure taxonomy")
+    print("C++ accuracy failure taxonomy")
     print(f"IoU threshold: {taxonomy['iou_threshold']}")
     print()
     header = (

@@ -302,6 +302,11 @@ for two distinct, well-understood reasons. Future engineers staring at
 the per-category table should read this section before assuming any of
 the residuals is a fixable bug.
 
+Java parity is a diagnostic lens, not the product target. The C++ detector is
+judged by correct recognition against ground truth. Do not change C++ solely to
+imitate Java floating-point edge cases or mutable-workspace behavior unless the
+change also improves C++ ground-truth accuracy without adding false positives.
+
 ### 1. `monitor` -11.76pp + `glare` -3.77pp — **`ThresholdBlockOtsu` binarizer divergence** (re-attributed in ADR 05)
 
 **Re-attribution note (2026-05-11).** ADR 01 originally diagnosed both residuals as a `cv::findContours` per-pixel-encoding cost. Cycles A + B of the LinearContour port (commits `d3ef6cf` + `c21926e`) retired `cv::findContours` from the polygon path and replaced it with a verbatim port of `LinearContourLabelChang2004`. The residuals did **not** close — they remain at exactly -11.76pp / -3.77pp post-cycle-B, byte-identical to pre-cycle-B. Combined with cycle A's JUnit proof that the new port emits Java-identical contours on identical binary inputs, this isolates the root cause upstream of the contour stage: **the binarizer (`ThresholdBlockOtsu`) produces a binary image that differs from Java's by ~0.6–1.9% per pixel** (ADR 01's own diagnostic figure). Those pixel differences propagate into the contour pixel sequence regardless of which extractor processes them, then into the downstream `ContourEdgeIntensity` and `PolylineSplitMerge` stages. See [ADR 05 § "Parity residual re-attribution"](../../docs/decisions/05_perf_linear_contour_label_chang2004_port.md) for the full causal-chain analysis.

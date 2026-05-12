@@ -20,7 +20,12 @@
     "cv::findContours hypothesis, now disproven), and src/decoder/",
     "qr_code_decoder_image.md 'Known parity residuals' section have full",
     "history. Update this file ONLY when an ADR is updated to reflect a",
-    "new accepted state."
+    "new accepted state.",
+    "",
+    "2026-05-12: Java residuals are tracked as diagnostics and regression",
+    "guardrails, not as a mandate to tune C++ to Java floating-point or",
+    "mutable-workspace quirks. Product accuracy is C++ recognition against",
+    "ground truth."
   ],
   "tolerance_pp_default": 1.0,
   "accepted": {
