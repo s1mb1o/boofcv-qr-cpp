@@ -1,5 +1,48 @@
 # ChangeLog
 
+## 2026-05-13 — perf: cap OpenCV threads for Apple Silicon batch scans
+
+Closed the Apple Silicon threading part of issue #4.
+
+### Added
+
+- [CMakePresets.json](CMakePresets.json): Release and RelWithDebInfo arm64
+  presets for Apple Silicon profiling.
+- [README.md](README.md), [SMOKE_TESTS.md](SMOKE_TESTS.md), and
+  [docs/python_api.md](docs/python_api.md): documented Apple Silicon build
+  commands and OpenCV thread controls.
+
+### Changed
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): image-parallel batch mode now
+  caps OpenCV internal threads to 1 by default and prints the active OpenCV
+  thread count. Override with `QR_SCAN_OPENCV_THREADS=N` or
+  `BOOFCV_QR_OPENCV_THREADS=N`.
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  Python `scan_batch()` applies the same default OpenCV thread cap for
+  multi-worker scans.
+
+### Findings
+
+Local OpenCV uses the GCD backend with 12 internal threads. With
+`QR_SCAN_THREADS=8`, the cap avoids image-worker × OpenCV-worker
+oversubscription. Dataset timing stayed in the same band: 3016 ms before the
+cap versus 2949 ms in the first timing run after the cap; normal regression was
+2889 ms before and 2843 ms after.
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_python -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `cmake --preset apple-arm64-release` -> PASS.
+- `cmake --build --preset apple-arm64-release --target qr_scan boofcv_qr_python -- -j`
+  -> PASS.
+- `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 5000` -> PASS.
+- `PYTHONPATH=build/python python3 tools/python/profile_python.py tests/fixtures/qr/full_v1_L_M000.png --iters 1000 --batch-size 32 --threads 8`
+  -> PASS, batch 0.034 ms/image on the sequential validation run.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+
 ## 2026-05-13 — perf: add stage-level QR timing reports
 
 Closed the profiling observability gap from issue #6 without changing the

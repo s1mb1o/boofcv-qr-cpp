@@ -1,0 +1,60 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimized release build.",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "relwithdebinfo",
+      "displayName": "RelWithDebInfo",
+      "description": "Optimized build with debug symbols for profilers.",
+      "binaryDir": "${sourceDir}/build/relwithdebinfo",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "apple-arm64-release",
+      "displayName": "Apple Silicon Release",
+      "description": "Release build pinned to arm64 for Apple Silicon.",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/apple-arm64-release",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64"
+      }
+    },
+    {
+      "name": "apple-arm64-relwithdebinfo",
+      "displayName": "Apple Silicon RelWithDebInfo",
+      "description": "Profiler-friendly arm64 build for Apple Silicon.",
+      "inherits": "relwithdebinfo",
+      "binaryDir": "${sourceDir}/build/apple-arm64-relwithdebinfo",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "apple-arm64-release",
+      "configurePreset": "apple-arm64-release"
+    },
+    {
+      "name": "apple-arm64-relwithdebinfo",
+      "configurePreset": "apple-arm64-relwithdebinfo"
+    }
+  ]
+}

@@ -44,6 +44,16 @@ cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests boofcv_qr_python 
 ctest --test-dir build --output-on-failure
 ```
 
+Apple Silicon profiling presets are available when using CMake 3.21+:
+
+```bash
+cmake --preset apple-arm64-release
+cmake --build --preset apple-arm64-release --target qr_scan boofcv_qr_python -- -j
+
+cmake --preset apple-arm64-relwithdebinfo
+cmake --build --preset apple-arm64-relwithdebinfo --target qr_scan -- -j
+```
+
 Disable optional targets if needed:
 
 ```bash
@@ -73,6 +83,11 @@ benchmarks:
 ```bash
 QR_SCAN_THREADS=8 build/qr_scan /path/to/images /path/to/output
 ```
+
+Parallel batch scans cap OpenCV's internal worker count to 1 by default to
+avoid multiplying `QR_SCAN_THREADS` by OpenCV's GCD/TBB workers. Override this
+for experiments with `QR_SCAN_OPENCV_THREADS=N` or
+`BOOFCV_QR_OPENCV_THREADS=N`.
 
 Profile one image with stage timing:
 
@@ -117,6 +132,9 @@ for result in results:
     for qr in result.detections:
         print(result.path, qr.message)
 ```
+
+`scan_batch()` also caps OpenCV internal threads to 1 when using multiple image
+workers. Set `BOOFCV_QR_OPENCV_THREADS=N` to override it.
 
 The main exposed QR types are:
 

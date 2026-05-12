@@ -1,5 +1,56 @@
 # ResearchLog
 
+## 2026-05-13 — Apple Silicon thread audit and preset baseline
+
+### Finding
+
+OpenCV on this Apple Silicon machine reports **12** internal threads with the
+GCD backend. That oversubscribes by default when `qr_scan` or Python
+`scan_batch()` also runs image-level workers (`QR_SCAN_THREADS=8` or
+`threads=8`). Batch paths now cap OpenCV internal threads to **1** by default
+and allow override with `BOOFCV_QR_OPENCV_THREADS=N` or
+`QR_SCAN_OPENCV_THREADS=N`.
+
+Apple Silicon CMake presets were added for Release and RelWithDebInfo arm64
+builds:
+
+```bash
+cmake --preset apple-arm64-release
+cmake --build --preset apple-arm64-release --target qr_scan boofcv_qr_python -- -j
+```
+
+### Measurements
+
+Before the OpenCV cap, the issue #6 stage-timing run with `QR_SCAN_THREADS=8`
+completed in **3016 ms**. After the cap, the same dataset timing path printed
+`OpenCV threads=1, capped for image-parallel batch` and completed in **2949 ms**
+on the first run; a later normal regression run completed in **2843 ms** versus
+the previous same-thread normal regression at **2889 ms**. Treat this as a
+small/noisy win, not an algorithmic speedup.
+
+Validation commands:
+
+```bash
+build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 5000
+PYTHONPATH=build/python python3 tools/python/profile_python.py \
+  tests/fixtures/qr/full_v1_L_M000.png --iters 1000 --batch-size 32 --threads 8
+BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh
+```
+
+Results:
+
+| check | result |
+|---|---:|
+| CLI profile fixture | 0.18 ms/iter |
+| Python `scan_batch` fixture, sequential validation run | 0.034 ms/image |
+| Regression aggregate | 74.40%, PASS |
+
+### Consequence
+
+The verified hot loops remain contour/polygon extraction and binarization.
+No NEON-specific rewrite was attempted here because the current evidence points
+at broader contour and threshold data-flow work, not a small isolated SIMD loop.
+
 ## 2026-05-13 — Stage-level QR timing baseline
 
 ### Finding

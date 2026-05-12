@@ -29,6 +29,7 @@
 #include "boofcv_qr/threshold_block_otsu.hpp"
 
 #include <opencv2/core.hpp>
+#include <opencv2/core/utility.hpp>
 #include <opencv2/imgcodecs.hpp>
 
 #include <algorithm>
@@ -688,6 +689,52 @@ bool envFlag(const char* name) {
              s == "off" || s == "no");
 }
 
+int32_t readPositiveEnvInt(const std::vector<const char*>& names,
+                           std::string* usedName) {
+    for (const char* name : names) {
+        const char* value = std::getenv(name);
+        if (value == nullptr)
+            continue;
+        int32_t parsed = std::atoi(value);
+        if (parsed > 0) {
+            if (usedName != nullptr)
+                *usedName = name;
+            return parsed;
+        }
+    }
+    return 0;
+}
+
+struct OpenCvThreadConfig {
+    int32_t before = 0;
+    int32_t active = 0;
+    int32_t target = 0;
+    std::string envName;
+    bool cappedForBatch = false;
+};
+
+OpenCvThreadConfig configureOpenCvThreads(int32_t imageWorkers) {
+    OpenCvThreadConfig cfg;
+    cfg.before = cv::getNumThreads();
+    cfg.active = cfg.before;
+    cfg.target = cfg.before;
+
+    int32_t requested = readPositiveEnvInt(
+        {"BOOFCV_QR_OPENCV_THREADS", "QR_SCAN_OPENCV_THREADS"},
+        &cfg.envName);
+    if (requested > 0) {
+        cfg.target = requested;
+    } else if (imageWorkers > 1) {
+        cfg.target = 1;
+        cfg.cappedForBatch = true;
+    }
+
+    if (cfg.target > 0 && cfg.target != cfg.before)
+        cv::setNumThreads(cfg.target);
+    cfg.active = cv::getNumThreads();
+    return cfg;
+}
+
 double nonNegative(double value) {
     return value < 0.0 ? 0.0 : value;
 }
@@ -1016,11 +1063,19 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
     std::printf("Warmed up on %d images\n", warmupN);
 
     int32_t numThreads = chooseBatchThreads(images.size());
+    OpenCvThreadConfig openCvThreads = configureOpenCvThreads(numThreads);
     std::printf("Processing with %d worker thread%s",
                 numThreads, numThreads == 1 ? "" : "s");
     if (const char* env = std::getenv("QR_SCAN_THREADS")) {
         std::printf(" (QR_SCAN_THREADS=%s)", env);
     }
+    std::printf(" (OpenCV threads=%d", openCvThreads.active);
+    if (!openCvThreads.envName.empty()) {
+        std::printf(" via %s", openCvThreads.envName.c_str());
+    } else if (openCvThreads.cappedForBatch) {
+        std::printf(", capped for image-parallel batch");
+    }
+    std::printf(")");
     if (collectTimings) {
         std::printf(" + stage timings");
     }
@@ -1116,6 +1171,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
 }
 
 int runSingle(const fs::path& imagePath) {
+    configureOpenCvThreads(1);
     Pipeline pipe;
     cv::Mat gray = loadGray(imagePath);
     if (gray.empty()) {
@@ -1149,6 +1205,7 @@ int runSingle(const fs::path& imagePath) {
 // ---------------------------------------------------------------------
 
 int runDumpStages(const fs::path& imagePath, const fs::path& outDir) {
+    configureOpenCvThreads(1);
     fs::create_directories(outDir);
     cv::Mat gray = loadGray(imagePath);
     if (gray.empty()) {
@@ -1275,14 +1332,16 @@ int runProfile(const fs::path& imagePath, int iters) {
         std::fprintf(stderr, "Profile iterations must be > 0\n");
         return 2;
     }
+    OpenCvThreadConfig openCvThreads = configureOpenCvThreads(1);
     Pipeline pipe;
     cv::Mat gray = loadGray(imagePath);
     if (gray.empty()) {
         std::fprintf(stderr, "Cannot load %s\n", imagePath.string().c_str());
         return 1;
     }
-    std::printf("Loaded %s (%dx%d), %d iterations\n",
-                imagePath.string().c_str(), gray.cols, gray.rows, iters);
+    std::printf("Loaded %s (%dx%d), %d iterations, OpenCV threads=%d\n",
+                imagePath.string().c_str(), gray.cols, gray.rows, iters,
+                openCvThreads.active);
     // Warm up once.
     pipe.run(gray);
     auto t0 = std::chrono::steady_clock::now();

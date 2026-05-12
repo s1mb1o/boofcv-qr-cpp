@@ -9,6 +9,7 @@
 #include "boofcv_qr/threshold_block_otsu.hpp"
 
 #include <opencv2/core.hpp>
+#include <opencv2/core/utility.hpp>
 #include <opencv2/imgcodecs.hpp>
 
 #include <pybind11/numpy.h>
@@ -20,8 +21,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -476,6 +479,34 @@ void markRemainingBatchErrors(const std::vector<std::string>& inputPaths,
     }
 }
 
+int32_t readOpenCvThreadsEnv() {
+    const char* value = std::getenv("BOOFCV_QR_OPENCV_THREADS");
+    if (value == nullptr)
+        value = std::getenv("QR_SCAN_OPENCV_THREADS");
+    if (value == nullptr)
+        return 0;
+    int32_t parsed = std::atoi(value);
+    return parsed > 0 ? parsed : 0;
+}
+
+std::mutex& openCvThreadMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+void configureOpenCvThreadsForBatch(std::size_t imageWorkers) {
+    std::lock_guard<std::mutex> lock(openCvThreadMutex());
+    int32_t requested = readOpenCvThreadsEnv();
+    int32_t target = 0;
+    if (requested > 0) {
+        target = requested;
+    } else if (imageWorkers > 1) {
+        target = 1;
+    }
+    if (target > 0 && cv::getNumThreads() != target)
+        cv::setNumThreads(target);
+}
+
 py::array_t<std::uint8_t> loadSingleBand(py::object path,
                                          py::object dtype = py::none()) {
     if (!dtypeIsUint8(dtype)) {
@@ -517,6 +548,7 @@ std::vector<ScanResult> scanBatch(py::object paths,
     if (workerCount > inputPaths.size())
         workerCount = inputPaths.size();
 
+    configureOpenCvThreadsForBatch(workerCount);
     {
         py::gil_scoped_release release;
         std::atomic<std::size_t> next{0};

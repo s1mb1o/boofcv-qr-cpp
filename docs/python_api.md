@@ -47,6 +47,9 @@ for result in results:
 
 `scan_batch()` preserves input order, uses one detector pipeline per worker,
 and releases the GIL while scanning. `threads=0` uses hardware concurrency.
+When multiple image workers are used, OpenCV internal threads are capped to 1
+to avoid oversubscription. Set `BOOFCV_QR_OPENCV_THREADS=N` to override that
+process-wide cap for experiments.
 
 ## PyBoof Compatibility Scope
 

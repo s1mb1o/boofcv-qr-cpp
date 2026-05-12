@@ -13,6 +13,16 @@ ctest --test-dir build --output-on-failure
 
 Expected: all GoogleTest cases pass.
 
+Apple Silicon preset smoke:
+
+```bash
+cmake --preset apple-arm64-release
+cmake --build --preset apple-arm64-release --target qr_scan boofcv_qr_python -- -j
+```
+
+Expected: configure pins `CMAKE_OSX_ARCHITECTURES=arm64` and both targets
+build.
+
 ## Single-Image CLI
 
 ```bash
@@ -73,7 +83,9 @@ BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
 ```
 
 Expected: the script prints `PASS: no new regressions` and aggregate decode
-rate remains at 74.40% against the locked baseline.
+rate remains at 74.40% against the locked baseline. Batch output should also
+show `OpenCV threads=1, capped for image-parallel batch` unless
+`QR_SCAN_OPENCV_THREADS` or `BOOFCV_QR_OPENCV_THREADS` is set.
 
 The regression driver also writes an image-level taxonomy to
 `tests/regression/baseline_cpp/failure_taxonomy.json`. If a category drifts out
