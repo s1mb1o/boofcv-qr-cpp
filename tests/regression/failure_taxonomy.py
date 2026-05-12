@@ -54,17 +54,25 @@ def decode_stats(rec: dict[str, Any], iou_threshold: float) -> dict[str, Any]:
         decode_success = sum(
             1 for m in matches if dets[m["det_index"]].get("message") not in (None, "")
         )
+        payload_exact = 0
+        for m in matches:
+            gt_msg = gt[m["gt_index"]].get("message")
+            det_msg = dets[m["det_index"]].get("message")
+            if gt_msg not in (None, "") and gt_msg == det_msg:
+                payload_exact += 1
         matched_decode_failures = [
             dets[m["det_index"]].get("failure_cause") or "EMPTY_MESSAGE"
             for m in matches
             if dets[m["det_index"]].get("message") in (None, "")
         ]
         return {
+            "score_mode": "polygon",
             "gt_count": len(gt_polys),
             "det_count": len(dets),
             "failure_count": len(failures),
             "matches": len(matches),
             "decode_success": decode_success,
+            "payload_exact": payload_exact,
             "matched_decode_failures": matched_decode_failures,
             "unmatched_gt": len(gt_polys) - len(matches),
             "unmatched_det": len(dets) - len(matched_det),
@@ -83,11 +91,13 @@ def decode_stats(rec: dict[str, Any], iou_threshold: float) -> dict[str, Any]:
                 break
 
     return {
+        "score_mode": "payload",
         "gt_count": len(gt_messages),
         "det_count": len(dets),
         "failure_count": len(failures),
         "matches": payload_matches,
         "decode_success": payload_matches,
+        "payload_exact": payload_matches,
         "matched_decode_failures": [],
         "unmatched_gt": len(gt_messages) - payload_matches,
         "unmatched_det": len(dets) - payload_matches,
@@ -113,6 +123,13 @@ def classify_cpp_stage(rec: dict[str, Any], stats: dict[str, Any]) -> str:
     if missed == 0:
         return "ok"
 
+    if (
+        stats["score_mode"] == "payload"
+        and stats["det_count"] > 0
+        and stats["payload_exact"] < gt_count
+    ):
+        return "payload_mismatch"
+
     if stats["matched_decode_failures"]:
         causes = sorted(set(stats["matched_decode_failures"]))
         return "matched_decode_failure:" + "+".join(causes)
@@ -124,7 +141,7 @@ def classify_cpp_stage(rec: dict[str, Any], stats: dict[str, Any]) -> str:
     if stats["det_count"] == 0:
         return "no_decoder_candidate"
     if stats["matches"] == 0:
-        return "localization_miss"
+        return "iou_mismatch"
     return "partial_decode"
 
 
@@ -192,6 +209,8 @@ def build_taxonomy(
             "cpp_missed_gt": missed,
             "cpp_detections": cpp_stats["det_count"],
             "cpp_failures": cpp_stats["failure_count"],
+            "iou_matches": cpp_stats["matches"],
+            "payload_exact": cpp_stats["payload_exact"],
             "cpp_stage": stage,
             "parity": parity,
         }

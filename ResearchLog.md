@@ -1,5 +1,32 @@
 # ResearchLog
 
+## 2026-05-13 — Regression failure snapshot workflow
+
+### Finding
+
+Issue #5 did not need a separate committed snapshot file for each accepted
+residual. The durable artifact is better as a generated taxonomy tied to the
+current `summary.json`, because the exact image list can change whenever the
+detector changes. `run_regression.sh` now writes
+`tests/regression/baseline_cpp/failure_taxonomy.json` every run and uses it to
+print exact images when a category drifts.
+
+The taxonomy separates the useful first-order classes for future work:
+
+- `no_decoder_candidate`: no decoded QR or failed candidate reached scoring.
+- `iou_mismatch`: candidates exist but do not overlap GT at the scoring IoU.
+- `decoder_failure:<cause>` / `matched_decode_failure:<cause>`: localization
+  happened, but format/version/RS/readout failed.
+- `payload_mismatch`: payload-only regression fixture decoded something, but
+  not the expected message.
+
+### Consequence
+
+Future performance or accuracy changes can inspect the generated JSON before
+opening per-image files. Regression failures now have enough image/stage detail
+to decide whether the next fix belongs in thresholding, finder/candidate
+formation, sampling/decoder, or payload parsing.
+
 ## 2026-05-12 — Accuracy target clarification
 
 ### Decision

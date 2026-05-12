@@ -54,3 +54,19 @@ BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
 
 Expected: the script prints `PASS: no new regressions` and aggregate decode
 rate remains at 74.40% against the locked baseline.
+
+The regression driver also writes an image-level taxonomy to
+`tests/regression/baseline_cpp/failure_taxonomy.json`. If a category drifts out
+of band, the script prints the affected images plus their likely stage
+(`no_decoder_candidate`, `iou_mismatch`, `decoder_failure:*`, or
+`payload_mismatch`).
+
+To generate the taxonomy without rerunning the full dataset:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 tests/regression/failure_taxonomy.py \
+  tests/regression/baseline_cpp/summary.json \
+  --java-summary tests/regression/baseline_java/summary.json \
+  --output /tmp/qr_failure_taxonomy.json \
+  --limit 12
+```

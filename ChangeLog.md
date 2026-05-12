@@ -1,5 +1,25 @@
 # ChangeLog
 
+## 2026-05-13 — regression: add image-level failure snapshots
+
+Closed the regression-suite observability gap from issue #5 by making failed
+dataset runs point at images instead of only categories.
+
+### Changed
+
+- [tests/regression/failure_taxonomy.py](tests/regression/failure_taxonomy.py):
+  now separates `no_decoder_candidate`, `iou_mismatch`, decoder failures, and
+  `payload_mismatch`, and records compact per-image counts in the JSON report.
+- [tools/cli/run_regression.sh](tools/cli/run_regression.sh): generates
+  `tests/regression/baseline_cpp/failure_taxonomy.json` after scoring and, on
+  drift, prints affected images with their likely stage.
+- [SMOKE_TESTS.md](SMOKE_TESTS.md): documented the regression taxonomy workflow.
+
+### Verification
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 tests/regression/failure_taxonomy.py tests/regression/baseline_cpp/summary.json --java-summary tests/regression/baseline_java/summary.json --output /tmp/qr_taxonomy_check.json --limit 8`
+  -> PASS.
+
 ## 2026-05-12 (later) — accuracy: use product accuracy over Java fitting
 
 Clarified the accuracy target: Java BoofCV remains a useful diagnostic
