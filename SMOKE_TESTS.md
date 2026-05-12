@@ -39,7 +39,8 @@ PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
 
 Expected: `FactoryFiducial(np.uint8).qrcode()` detects the fixture QR code and
 exposes PyBoof-style detection fields, path-like image loading, color-array
-rejection, and `scan_batch()` path scanning.
+rejection, polygon-only detection, typed `BatchScanConfig`, result `as_dict()`
+helpers, and `scan_batch()` path scanning.
 
 ## Python Timing Smoke
 

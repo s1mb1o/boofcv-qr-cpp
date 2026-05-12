@@ -1,12 +1,14 @@
 """PyBoof-compatible QR subset backed by boofcv-qr-cpp."""
 
 from ._boofcv_qr import (  # noqa: F401
+    BatchScanConfig,
     ConfigQrCode,
     FactoryFiducial,
     ImageType,
     Point2D,
     Polygon2D,
     QrCode,
+    QrCodeAlignment,
     QrCodeDetector,
     ScanResult,
     __version__,
@@ -15,12 +17,14 @@ from ._boofcv_qr import (  # noqa: F401
 )
 
 __all__ = [
+    "BatchScanConfig",
     "ConfigQrCode",
     "FactoryFiducial",
     "ImageType",
     "Point2D",
     "Polygon2D",
     "QrCode",
+    "QrCodeAlignment",
     "QrCodeDetector",
     "ScanResult",
     "__version__",

@@ -1,5 +1,34 @@
 # ResearchLog
 
+## 2026-05-13 — Python API completeness pass
+
+### Finding
+
+Issue #1 does not require replacing the existing PyBoof-shaped entry points.
+The useful gap is an additive layer on top of them:
+
+- keep `FactoryFiducial(np.uint8).qrcode()` and `detect(image)` stable;
+- expose the first stage-level Python API as `detect_polygons_only(image)`;
+- add a typed `BatchScanConfig` for batch worker/OpenCV-thread/QR options;
+- keep BoofCV/PyBoof camelCase result fields while adding Pythonic aliases;
+- make batch and QR results easy to log with `as_dict()` helpers.
+
+This preserves migration friendliness for PyBoof-style code and exposes enough
+intermediate metadata for downstream recovery pipelines without widening the
+Python package into a full PyBoof replacement.
+
+### Consequence
+
+The next Python API additions should be driven by concrete recovery-pipeline
+needs: raw stage wrappers for bit sampling/RS/message decode, richer error
+diagnostics, or NumPy-friendly geometry arrays. Those can be added without
+breaking the current QR-focused surface.
+
+Validation after the API expansion kept the detector baseline unchanged:
+436/436 C++/Python tests passed, BoofCV dataset regression stayed at 74.40%,
+and the fixture profile was 0.13 ms/image for the CLI path and 0.036 ms/image
+for Python `scan_batch()` with 8 workers.
+
 ## 2026-05-13 — Python wheel packaging hardening
 
 ### Finding

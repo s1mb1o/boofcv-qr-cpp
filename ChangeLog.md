@@ -1,5 +1,41 @@
 # ChangeLog
 
+## 2026-05-13 — python: expand PyBoof-compatible API surface
+
+Closed the Python API completeness part of issue #1.
+
+### Added
+
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  `BatchScanConfig`, `QrCodeAlignment`, `QrCodeDetector.detect_polygons_only()`,
+  `Point2D.as_tuple()`, `Polygon2D.as_list()`, polygon indexing, QR result
+  Pythonic aliases, `QrCode.as_dict()`, `ScanResult.ok`, and
+  `ScanResult.as_dict()`.
+- [python/boofcv_qr/__init__.pyi](python/boofcv_qr/__init__.pyi): typed stubs
+  for the expanded result/config surface and overloaded `scan_batch()`.
+- [docs/python_api.md](docs/python_api.md), [README.md](README.md), and
+  [examples/python/scan_qr.py](examples/python/scan_qr.py): examples for typed
+  batch config, polygon-only detection, and result metadata helpers.
+- [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md): release note coverage
+  for the expanded Python API.
+
+### Compatibility
+
+Existing calls remain supported: `scan_batch(paths, threads=0, config=None)`
+and `QrCodeDetector.detect(image)` are unchanged. The new
+`scan_batch(paths, BatchScanConfig())` form is additive.
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_tests boofcv_qr_python -- -j`
+  -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py` -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 5000` -> PASS,
+  0.13 ms/image on the local fixture run.
+
 ## 2026-05-13 — packaging: add cibuildwheel release path
 
 Closed the packaging hardening part of issue #2.

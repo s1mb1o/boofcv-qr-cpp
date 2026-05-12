@@ -92,6 +92,14 @@ struct Polygon2D {
     }
 };
 
+struct QrCodeAlignment {
+    Point2D pixel;
+    int32_t moduleX = 0;
+    int32_t moduleY = 0;
+    Point2D moduleFound;
+    double threshold = 0.0;
+};
+
 struct ImageType {
     std::string family = "SINGLE_BAND";
     std::string dtype = "uint8";
@@ -106,6 +114,12 @@ struct ConfigQrCode {
     py::object forceEncoding = py::none();
     bool considerTransposed = true;
     bool ignorePaddingBytes = true;
+};
+
+struct BatchScanConfig {
+    int32_t threads = 0;
+    ConfigQrCode config;
+    int32_t opencvThreads = 0;
 };
 
 struct QrCode {
@@ -124,6 +138,11 @@ struct QrCode {
     Polygon2D pp_right{4};
     Polygon2D pp_corner{4};
     Polygon2D pp_down{4};
+    double threshCorner = 0.0;
+    double threshDown = 0.0;
+    double threshRight = 0.0;
+    double threshDownRight = 0.0;
+    std::vector<QrCodeAlignment> alignment;
 
     std::vector<std::uint8_t> rawCodewords;
     std::vector<std::int32_t> rsErrorLocations;
@@ -165,6 +184,26 @@ Polygon2D polygonFromArray(const std::array<cv::Point2d, 4>& points) {
     return Polygon2D(std::move(out));
 }
 
+Point2D pointFromCv(const cv::Point2d& point) {
+    return Point2D(point.x, point.y);
+}
+
+std::vector<QrCodeAlignment> alignmentsFromCpp(
+    const std::vector<boofcv_qr::QrCode::Alignment>& alignments) {
+    std::vector<QrCodeAlignment> out;
+    out.reserve(alignments.size());
+    for (const boofcv_qr::QrCode::Alignment& alignment : alignments) {
+        QrCodeAlignment pyAlignment;
+        pyAlignment.pixel = pointFromCv(alignment.pixel);
+        pyAlignment.moduleX = alignment.moduleX;
+        pyAlignment.moduleY = alignment.moduleY;
+        pyAlignment.moduleFound = pointFromCv(alignment.moduleFound);
+        pyAlignment.threshold = alignment.threshold;
+        out.push_back(pyAlignment);
+    }
+    return out;
+}
+
 py::array_t<std::uint8_t> vectorToArray(const std::vector<std::uint8_t>& data) {
     py::array_t<std::uint8_t> out(static_cast<py::ssize_t>(data.size()));
     if (!data.empty()) {
@@ -177,6 +216,81 @@ py::object correctedArray(const QrCode& qr) {
     if (!qr.hasCorrected)
         return py::none();
     return vectorToArray(qr.correctedBytes);
+}
+
+py::object correctedList(const QrCode& qr) {
+    if (!qr.hasCorrected)
+        return py::none();
+    return py::cast(qr.correctedBytes);
+}
+
+py::dict alignmentAsDict(const QrCodeAlignment& alignment) {
+    py::dict out;
+    out["pixel"] = alignment.pixel.get_tuple();
+    out["moduleX"] = alignment.moduleX;
+    out["moduleY"] = alignment.moduleY;
+    out["moduleFound"] = alignment.moduleFound.get_tuple();
+    out["threshold"] = alignment.threshold;
+    return out;
+}
+
+py::dict finderPatternDict(const QrCode& qr) {
+    py::dict out;
+    out["corner"] = qr.pp_corner.convert_tuple();
+    out["right"] = qr.pp_right.convert_tuple();
+    out["down"] = qr.pp_down.convert_tuple();
+    return out;
+}
+
+py::dict qrAsDict(const QrCode& qr) {
+    py::dict out;
+    out["version"] = qr.version;
+    out["message"] = qr.message;
+    out["byteEncoding"] = qr.byteEncoding;
+    out["byte_encoding"] = qr.byteEncoding;
+    out["totalBitErrors"] = qr.totalBitErrors;
+    out["total_bit_errors"] = qr.totalBitErrors;
+    out["bitsTransposed"] = qr.bitsTransposed;
+    out["bits_transposed"] = qr.bitsTransposed;
+    out["error_level"] = qr.error_level;
+    out["mask_pattern"] = qr.mask_pattern;
+    out["mode"] = qr.mode;
+    out["failure_cause"] = qr.failure_cause;
+    out["bounds"] = qr.bounds.convert_tuple();
+    out["position_patterns"] = finderPatternDict(qr);
+    out["rawCodewords"] = py::cast(qr.rawCodewords);
+    out["raw_codewords"] = py::cast(qr.rawCodewords);
+    out["corrected"] = correctedList(qr);
+    out["rsErrorLocations"] = py::cast(qr.rsErrorLocations);
+    out["rs_error_locations"] = py::cast(qr.rsErrorLocations);
+    out["blockStatus"] = py::cast(qr.blockStatus);
+    out["block_status"] = py::cast(qr.blockStatus);
+    out["threshCorner"] = qr.threshCorner;
+    out["threshDown"] = qr.threshDown;
+    out["threshRight"] = qr.threshRight;
+    out["threshDownRight"] = qr.threshDownRight;
+    py::list alignments;
+    for (const QrCodeAlignment& alignment : qr.alignment)
+        alignments.append(alignmentAsDict(alignment));
+    out["alignment"] = alignments;
+    return out;
+}
+
+py::dict scanResultAsDict(const ScanResult& result) {
+    py::dict out;
+    out["path"] = result.path;
+    out["error"] = result.error;
+    out["ok"] = result.error.empty();
+    out["elapsed_ms"] = result.elapsed_ms;
+    py::list detections;
+    for (const QrCode& qr : result.detections)
+        detections.append(qrAsDict(qr));
+    py::list failures;
+    for (const QrCode& qr : result.failures)
+        failures.append(qrAsDict(qr));
+    out["detections"] = detections;
+    out["failures"] = failures;
+    return out;
 }
 
 const char* errorLevelName(boofcv_qr::ErrorLevel e) {
@@ -290,6 +404,11 @@ QrCode toPythonQrCode(const boofcv_qr::QrCode& qr) {
     out.pp_right = polygonFromArray(qr.ppRight);
     out.pp_corner = polygonFromArray(qr.ppCorner);
     out.pp_down = polygonFromArray(qr.ppDown);
+    out.threshCorner = qr.threshCorner;
+    out.threshDown = qr.threshDown;
+    out.threshRight = qr.threshRight;
+    out.threshDownRight = qr.threshDownRight;
+    out.alignment = alignmentsFromCpp(qr.alignment);
     out.rawCodewords = qr.rawCodewords;
     out.rsErrorLocations = qr.rsErrorLocations;
     out.blockStatus.reserve(qr.blockStatus.size());
@@ -397,6 +516,18 @@ public:
         orchestrator_.process(positions, gray);
     }
 
+    std::vector<boofcv_qr::QrCode> detectPolygonsOnly(const cv::Mat& gray) {
+        binarizer_.process(gray, binary_);
+        finder_->process(gray, binary_);
+        auto& positions =
+            const_cast<std::vector<boofcv_qr::PositionPatternNode>&>(
+                finder_->getPositionPatterns());
+        graphGen_.process(positions);
+        boofcv_qr::PolygonOnlyResult result =
+            orchestrator_.detect_polygons_only(positions, gray);
+        return std::move(result.qrCodes);
+    }
+
     const std::vector<boofcv_qr::QrCode>& successes() const {
         return orchestrator_.getSuccesses();
     }
@@ -432,6 +563,21 @@ public:
             detections.push_back(toPythonQrCode(qr));
         for (const boofcv_qr::QrCode& qr : pipeline_->failures())
             failures.push_back(toPythonQrCode(qr));
+    }
+
+    std::vector<QrCode> detect_polygons_only(const py::object& image) {
+        ImageMat input = imageFromObject(image);
+        std::vector<boofcv_qr::QrCode> candidates;
+        {
+            py::gil_scoped_release release;
+            candidates = pipeline_->detectPolygonsOnly(input.gray);
+        }
+
+        std::vector<QrCode> out;
+        out.reserve(candidates.size());
+        for (const boofcv_qr::QrCode& qr : candidates)
+            out.push_back(toPythonQrCode(qr));
+        return out;
     }
 
     ImageType get_image_type() const { return ImageType{}; }
@@ -494,9 +640,10 @@ std::mutex& openCvThreadMutex() {
     return mutex;
 }
 
-void configureOpenCvThreadsForBatch(std::size_t imageWorkers) {
+void configureOpenCvThreadsForBatch(std::size_t imageWorkers,
+                                    int32_t explicitThreads) {
     std::lock_guard<std::mutex> lock(openCvThreadMutex());
-    int32_t requested = readOpenCvThreadsEnv();
+    int32_t requested = explicitThreads > 0 ? explicitThreads : readOpenCvThreadsEnv();
     int32_t target = 0;
     if (requested > 0) {
         target = requested;
@@ -520,13 +667,10 @@ py::array_t<std::uint8_t> loadSingleBand(py::object path,
     return matToArray(gray);
 }
 
-std::vector<ScanResult> scanBatch(py::object paths,
-                                  int32_t threads,
-                                  py::object config) {
-    ConfigQrCode pyConfig;
-    if (!config.is_none())
-        pyConfig = config.cast<ConfigQrCode>();
-    boofcv_qr::QrCodeDecoderImage::Config cppConfig = toCppConfig(pyConfig);
+std::vector<ScanResult> scanBatchConfigured(py::object paths,
+                                            BatchScanConfig batchConfig) {
+    boofcv_qr::QrCodeDecoderImage::Config cppConfig =
+        toCppConfig(batchConfig.config);
 
     std::vector<std::string> inputPaths;
     for (py::handle item : paths)
@@ -539,8 +683,8 @@ std::vector<ScanResult> scanBatch(py::object paths,
         return results;
 
     std::size_t workerCount = 1;
-    if (threads > 0) {
-        workerCount = static_cast<std::size_t>(threads);
+    if (batchConfig.threads > 0) {
+        workerCount = static_cast<std::size_t>(batchConfig.threads);
     } else {
         unsigned int detected = std::thread::hardware_concurrency();
         workerCount = detected == 0 ? 1 : static_cast<std::size_t>(detected);
@@ -548,7 +692,7 @@ std::vector<ScanResult> scanBatch(py::object paths,
     if (workerCount > inputPaths.size())
         workerCount = inputPaths.size();
 
-    configureOpenCvThreadsForBatch(workerCount);
+    configureOpenCvThreadsForBatch(workerCount, batchConfig.opencvThreads);
     {
         py::gil_scoped_release release;
         std::atomic<std::size_t> next{0};
@@ -610,6 +754,16 @@ std::vector<ScanResult> scanBatch(py::object paths,
     return results;
 }
 
+std::vector<ScanResult> scanBatch(py::object paths,
+                                  int32_t threads,
+                                  py::object config) {
+    BatchScanConfig batchConfig;
+    batchConfig.threads = threads;
+    if (!config.is_none())
+        batchConfig.config = config.cast<ConfigQrCode>();
+    return scanBatchConfigured(std::move(paths), std::move(batchConfig));
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_boofcv_qr, m) {
@@ -622,6 +776,7 @@ PYBIND11_MODULE(_boofcv_qr, m) {
         .def_readwrite("x", &Point2D::x)
         .def_readwrite("y", &Point2D::y)
         .def("get_tuple", &Point2D::get_tuple)
+        .def("as_tuple", &Point2D::get_tuple)
         .def("get_x", [](const Point2D& p) { return p.x; })
         .def("get_y", [](const Point2D& p) { return p.y; })
         .def("set_x", [](Point2D& p, double x) { p.x = x; })
@@ -639,9 +794,25 @@ PYBIND11_MODULE(_boofcv_qr, m) {
         }))
         .def_readwrite("vertexes", &Polygon2D::vertexes)
         .def("convert_tuple", &Polygon2D::convert_tuple)
+        .def("as_list", &Polygon2D::convert_tuple)
         .def("side_length", &Polygon2D::side_length)
+        .def("__len__", [](const Polygon2D& p) { return p.vertexes.size(); })
+        .def("__getitem__", [](const Polygon2D& p, std::size_t index) {
+            if (index >= p.vertexes.size())
+                throw py::index_error("Polygon2D vertex index out of range");
+            return p.vertexes[index];
+        })
         .def("__repr__", &Polygon2D::to_string)
         .def("__str__", &Polygon2D::to_string);
+
+    py::class_<QrCodeAlignment>(m, "QrCodeAlignment")
+        .def(py::init<>())
+        .def_readwrite("pixel", &QrCodeAlignment::pixel)
+        .def_readwrite("moduleX", &QrCodeAlignment::moduleX)
+        .def_readwrite("moduleY", &QrCodeAlignment::moduleY)
+        .def_readwrite("moduleFound", &QrCodeAlignment::moduleFound)
+        .def_readwrite("threshold", &QrCodeAlignment::threshold)
+        .def("as_dict", &alignmentAsDict);
 
     py::class_<ImageType>(m, "ImageType")
         .def(py::init<>())
@@ -657,27 +828,67 @@ PYBIND11_MODULE(_boofcv_qr, m) {
         .def_readwrite("considerTransposed", &ConfigQrCode::considerTransposed)
         .def_readwrite("ignorePaddingBytes", &ConfigQrCode::ignorePaddingBytes);
 
+    py::class_<BatchScanConfig>(m, "BatchScanConfig")
+        .def(py::init<>())
+        .def_readwrite("threads", &BatchScanConfig::threads)
+        .def_readwrite("config", &BatchScanConfig::config)
+        .def_readwrite("opencv_threads", &BatchScanConfig::opencvThreads);
+
     py::class_<QrCode>(m, "QrCode")
         .def(py::init<>())
         .def_readwrite("version", &QrCode::version)
         .def_readwrite("message", &QrCode::message)
         .def_property_readonly("corrected", &correctedArray)
+        .def_property_readonly("corrected_bytes", &correctedArray)
         .def_readwrite("byteEncoding", &QrCode::byteEncoding)
+        .def_property("byte_encoding",
+            [](const QrCode& qr) { return qr.byteEncoding; },
+            [](QrCode& qr, const std::string& value) { qr.byteEncoding = value; })
         .def_readwrite("totalBitErrors", &QrCode::totalBitErrors)
+        .def_property("total_bit_errors",
+            [](const QrCode& qr) { return qr.totalBitErrors; },
+            [](QrCode& qr, int32_t value) { qr.totalBitErrors = value; })
         .def_readwrite("bitsTransposed", &QrCode::bitsTransposed)
+        .def_property("bits_transposed",
+            [](const QrCode& qr) { return qr.bitsTransposed; },
+            [](QrCode& qr, bool value) { qr.bitsTransposed = value; })
         .def_readwrite("error_level", &QrCode::error_level)
         .def_readwrite("mask_pattern", &QrCode::mask_pattern)
         .def_readwrite("mode", &QrCode::mode)
         .def_readwrite("failure_cause", &QrCode::failure_cause)
         .def_readwrite("bounds", &QrCode::bounds)
+        .def_property_readonly("corners",
+            [](const QrCode& qr) { return qr.bounds.convert_tuple(); })
         .def_readwrite("pp_right", &QrCode::pp_right)
         .def_readwrite("pp_corner", &QrCode::pp_corner)
         .def_readwrite("pp_down", &QrCode::pp_down)
+        .def_property_readonly("position_patterns", &finderPatternDict)
+        .def_readwrite("threshCorner", &QrCode::threshCorner)
+        .def_readwrite("threshDown", &QrCode::threshDown)
+        .def_readwrite("threshRight", &QrCode::threshRight)
+        .def_readwrite("threshDownRight", &QrCode::threshDownRight)
+        .def_readwrite("alignment", &QrCode::alignment)
+        .def_property_readonly("alignment_patterns",
+            [](const QrCode& qr) { return qr.alignment; })
         .def_property_readonly(
             "rawCodewords",
             [](const QrCode& qr) { return vectorToArray(qr.rawCodewords); })
+        .def_property_readonly(
+            "raw_codewords",
+            [](const QrCode& qr) { return vectorToArray(qr.rawCodewords); })
         .def_readwrite("rsErrorLocations", &QrCode::rsErrorLocations)
-        .def_readwrite("blockStatus", &QrCode::blockStatus);
+        .def_property("rs_error_locations",
+            [](const QrCode& qr) { return qr.rsErrorLocations; },
+            [](QrCode& qr, std::vector<std::int32_t> value) {
+                qr.rsErrorLocations = std::move(value);
+            })
+        .def_readwrite("blockStatus", &QrCode::blockStatus)
+        .def_property("block_status",
+            [](const QrCode& qr) { return qr.blockStatus; },
+            [](QrCode& qr, std::vector<std::string> value) {
+                qr.blockStatus = std::move(value);
+            })
+        .def("as_dict", &qrAsDict);
 
     py::class_<ScanResult>(m, "ScanResult")
         .def(py::init<>())
@@ -685,11 +896,15 @@ PYBIND11_MODULE(_boofcv_qr, m) {
         .def_readwrite("detections", &ScanResult::detections)
         .def_readwrite("failures", &ScanResult::failures)
         .def_readwrite("error", &ScanResult::error)
-        .def_readwrite("elapsed_ms", &ScanResult::elapsed_ms);
+        .def_readwrite("elapsed_ms", &ScanResult::elapsed_ms)
+        .def_property_readonly("ok",
+            [](const ScanResult& result) { return result.error.empty(); })
+        .def("as_dict", &scanResultAsDict);
 
     py::class_<QrCodeDetector>(m, "QrCodeDetector")
         .def(py::init<ConfigQrCode>(), py::arg("config") = ConfigQrCode{})
         .def("detect", &QrCodeDetector::detect)
+        .def("detect_polygons_only", &QrCodeDetector::detect_polygons_only)
         .def("get_image_type", &QrCodeDetector::get_image_type)
         .def_readwrite("detections", &QrCodeDetector::detections)
         .def_readwrite("failures", &QrCodeDetector::failures);
@@ -704,4 +919,6 @@ PYBIND11_MODULE(_boofcv_qr, m) {
     m.def("scan_batch", &scanBatch,
           py::arg("paths"), py::arg("threads") = 0,
           py::arg("config") = py::none());
+    m.def("scan_batch", &scanBatchConfigured,
+          py::arg("paths"), py::arg("batch_config"));
 }

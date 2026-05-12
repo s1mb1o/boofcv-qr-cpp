@@ -127,14 +127,29 @@ for qr in detector.detections:
 Batch scan image paths in parallel:
 
 ```python
-results = pb.scan_batch(["frame001.png", "frame002.png"], threads=8)
+batch = pb.BatchScanConfig()
+batch.threads = 8
+
+results = pb.scan_batch(["frame001.png", "frame002.png"], batch)
 for result in results:
+    if not result.ok:
+        continue
     for qr in result.detections:
         print(result.path, qr.message)
 ```
 
+The legacy `scan_batch(paths, threads=8)` form remains supported.
 `scan_batch()` also caps OpenCV internal threads to 1 when using multiple image
-workers. Set `BOOFCV_QR_OPENCV_THREADS=N` to override it.
+workers. Set `BatchScanConfig.opencv_threads` or
+`BOOFCV_QR_OPENCV_THREADS=N` to override it.
+
+For detection-only pipelines, call the first exposed stage API:
+
+```python
+candidates = detector.detect_polygons_only(image)
+for qr in candidates:
+    print(qr.version, qr.bounds.as_list(), qr.position_patterns["corner"])
+```
 
 The main exposed QR types are:
 
@@ -142,7 +157,9 @@ The main exposed QR types are:
 |---|---|
 | `FactoryFiducial(np.uint8).qrcode()` | Construct a GrayU8 QR detector |
 | `ConfigQrCode` | QR decode options such as encoding and transposed-bit handling |
+| `BatchScanConfig` | Typed path-batch options for worker count, QR config, and OpenCV threads |
 | `QrCodeDetector.detect(image)` | Detect QR codes in one `numpy.uint8` grayscale image |
+| `QrCodeDetector.detect_polygons_only(image)` | Return finder/bounds/alignment candidates without decode |
 | `scan_batch(paths, threads=0)` | Scan image paths in parallel using one pipeline per worker |
 | `QrCode` | Message, geometry, QR metadata, raw codewords, and RS status |
 | `Point2D` / `Polygon2D` | PyBoof-like geometry wrappers |
