@@ -41,6 +41,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -983,70 +984,120 @@ BatchMemoryConfig configureBatchMemory(int32_t imageWorkers) {
     return cfg;
 }
 
-class PixelBudget {
+class BatchScheduler {
 public:
-    explicit PixelBudget(int64_t maxPixels) : maxPixels_(maxPixels) {}
+    BatchScheduler(const std::vector<ImageJob>& jobs, int64_t maxPixels)
+        : jobs_(jobs), maxPixels_(maxPixels) {
+        pending_.resize(jobs.size());
+        for (std::size_t i = 0; i < jobs.size(); i++)
+            pending_[i] = i;
+    }
 
     class Lease {
     public:
         Lease() = default;
-        Lease(PixelBudget* owner, int64_t pixels)
-            : owner_(owner), pixels_(pixels) {}
+        Lease(BatchScheduler* owner, std::size_t index, int64_t pixels)
+            : owner_(owner), index_(index), pixels_(pixels), valid_(true) {}
         Lease(const Lease&) = delete;
         Lease& operator=(const Lease&) = delete;
         Lease(Lease&& other) noexcept
-            : owner_(other.owner_), pixels_(other.pixels_) {
+            : owner_(other.owner_),
+              index_(other.index_),
+              pixels_(other.pixels_),
+              valid_(other.valid_) {
             other.owner_ = nullptr;
+            other.index_ = 0;
             other.pixels_ = 0;
+            other.valid_ = false;
         }
         Lease& operator=(Lease&& other) noexcept {
             if (this != &other) {
                 release();
                 owner_ = other.owner_;
+                index_ = other.index_;
                 pixels_ = other.pixels_;
+                valid_ = other.valid_;
                 other.owner_ = nullptr;
+                other.index_ = 0;
                 other.pixels_ = 0;
+                other.valid_ = false;
             }
             return *this;
         }
         ~Lease() { release(); }
 
+        bool valid() const { return valid_; }
+        std::size_t index() const { return index_; }
+
     private:
         void release() {
-            if (owner_ == nullptr)
+            if (owner_ == nullptr || !valid_)
                 return;
             owner_->release(pixels_);
             owner_ = nullptr;
+            index_ = 0;
             pixels_ = 0;
+            valid_ = false;
         }
 
-        PixelBudget* owner_ = nullptr;
+        BatchScheduler* owner_ = nullptr;
+        std::size_t index_ = 0;
         int64_t pixels_ = 0;
+        bool valid_ = false;
     };
 
-    Lease acquire(int64_t pixels) {
-        if (maxPixels_ <= 0 || pixels <= 0)
-            return Lease();
-        int64_t weight = std::min(pixels, maxPixels_);
+    Lease acquire() {
         std::unique_lock<std::mutex> lock(mutex_);
-        condition_.wait(lock, [&]() {
-            return inFlightPixels_ + weight <= maxPixels_;
-        });
-        inFlightPixels_ += weight;
-        return Lease(this, weight);
+        for (;;) {
+            if (pending_.empty())
+                return Lease();
+
+            if (maxPixels_ <= 0) {
+                std::size_t index = pending_.front();
+                pending_.pop_front();
+                return Lease(this, index, 0);
+            }
+
+            auto selected = pending_.end();
+            int64_t selectedWeight = 0;
+            for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+                int64_t weight = weightFor(*it);
+                if (inFlightPixels_ + weight <= maxPixels_) {
+                    selected = it;
+                    selectedWeight = weight;
+                    break;
+                }
+            }
+
+            if (selected != pending_.end()) {
+                std::size_t index = *selected;
+                pending_.erase(selected);
+                inFlightPixels_ += selectedWeight;
+                return Lease(this, index, selectedWeight);
+            }
+
+            condition_.wait(lock);
+        }
     }
 
 private:
+    int64_t weightFor(std::size_t index) const {
+        int64_t pixels = jobs_[index].pixels();
+        if (pixels <= 0 || maxPixels_ <= 0)
+            return 0;
+        return std::min(pixels, maxPixels_);
+    }
+
     void release(int64_t pixels) {
-        {
+        if (pixels > 0) {
             std::lock_guard<std::mutex> lock(mutex_);
-            inFlightPixels_ -= pixels;
-            if (inFlightPixels_ < 0)
-                inFlightPixels_ = 0;
+            inFlightPixels_ = std::max<int64_t>(0, inFlightPixels_ - pixels);
         }
         condition_.notify_all();
     }
 
+    const std::vector<ImageJob>& jobs_;
+    std::deque<std::size_t> pending_;
     int64_t maxPixels_ = 0;
     int64_t inFlightPixels_ = 0;
     std::mutex mutex_;
@@ -1414,7 +1465,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
     int32_t numThreads = chooseBatchThreads(images.size());
     OpenCvThreadConfig openCvThreads = configureOpenCvThreads(numThreads);
     BatchMemoryConfig memoryConfig = configureBatchMemory(numThreads);
-    PixelBudget pixelBudget(memoryConfig.maxInFlightPixels);
+    BatchScheduler scheduler(jobs, memoryConfig.maxInFlightPixels);
     std::printf("Processing with %d worker thread%s",
                 numThreads, numThreads == 1 ? "" : "s");
     if (const char* env = std::getenv("QR_SCAN_THREADS")) {
@@ -1444,7 +1495,6 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
 
     auto globalStart = std::chrono::steady_clock::now();
 
-    std::atomic<std::size_t> nextIndex{0};
     std::atomic<int32_t> completed{0};
     std::atomic<int32_t> writeFailures{0};
     std::mutex printMutex;
@@ -1472,12 +1522,12 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
             workers.emplace_back([&]() {
                 auto pipe = std::make_unique<Pipeline>();
                 for (;;) {
-                    std::size_t index = nextIndex.fetch_add(1);
-                    if (index >= images.size())
-                        break;
-
+                    std::size_t index = 0;
                     {
-                        auto lease = pixelBudget.acquire(jobs[index].pixels());
+                        auto lease = scheduler.acquire();
+                        if (!lease.valid())
+                            break;
+                        index = lease.index();
                         processOne(*pipe, jobs[index].path, inputDir,
                                    records[index], collectTimings);
                         if (shouldResetPipeline(index))
@@ -1492,13 +1542,13 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
             workers.emplace_back([&]() {
                 auto pipe = std::make_unique<Pipeline>();
                 for (;;) {
-                    std::size_t index = nextIndex.fetch_add(1);
-                    if (index >= images.size())
-                        break;
-
+                    std::size_t index = 0;
                     Record rec;
                     {
-                        auto lease = pixelBudget.acquire(jobs[index].pixels());
+                        auto lease = scheduler.acquire();
+                        if (!lease.valid())
+                            break;
+                        index = lease.index();
                         processOne(*pipe, jobs[index].path, inputDir, rec,
                                    collectTimings);
                         if (shouldResetPipeline(index))

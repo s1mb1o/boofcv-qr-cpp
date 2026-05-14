@@ -1,5 +1,33 @@
 # ChangeLog
 
+## 2026-05-14 — perf: add size-aware batch scheduler
+
+Closed the first pass on issue #8.
+
+### Changed
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): replaced FIFO batch admission
+  plus a blocking pixel-budget semaphore with a size-aware scheduler. Workers
+  now take the first pending image that fits the active megapixel budget, so
+  smaller images can continue while large images wait for enough memory budget.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8` and the default
+64 MP in-flight budget, batch elapsed time improved from **3734 ms** to
+**3211 ms**. RSS stayed in the same band (**1072.1 MiB** before, **1060.1 MiB**
+after), and decode stayed unchanged at **936 / 1258** (**74.40%**).
+
+### Verification
+
+- `cmake --build build --target qr_scan -- -j` -> PASS.
+- `QR_SCAN_THREADS=4 build/qr_scan tests/fixtures/qr /tmp/qr_sched_fixture`
+  plus score and JSON validation -> PASS.
+- `QR_SCAN_THREADS=2 build/qr_scan --stage-timings tests/fixtures/qr /tmp/qr_sched_stage`
+  plus JSON validation -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_BENCH_CPP_THREADS=8 QR_BENCH_SKIP_JAVA=1 tools/benchmark_compare.sh /tmp/qr_bench_sched`
+  -> PASS, C++ aggregate decode rate 74.40%.
+
 ## 2026-05-14 — perf: add reproducible memory benchmark and reduce batch RSS
 
 ### Added

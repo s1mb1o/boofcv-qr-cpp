@@ -1,5 +1,31 @@
 # ResearchLog
 
+## 2026-05-14 — Size-aware scheduler restores batch throughput
+
+### Finding
+
+The RSS budget did not need to serialize as much work as the first
+implementation did. The slow path came from FIFO admission: if the next image
+was large and the current pixel budget was partially occupied, that worker
+waited even when smaller later images could have fit.
+
+The replacement scheduler keeps the pending list in dataset order but scans for
+the first image that fits the current in-flight megapixel budget. Output order
+remains deterministic because normal batch mode still builds `summary.json`
+from per-image files in the original image order.
+
+### Measurement
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`, default 64 MP budget:
+
+| run | elapsed | real | max RSS | footprint | decode |
+|---|---:|---:|---:|---:|---:|
+| FIFO budget | 3734 ms | 3.82 s | 1072.1 MiB | 485.0 MiB | 936 / 1258 |
+| size-aware scheduler | 3211 ms | 3.30 s | 1060.1 MiB | 470.6 MiB | 936 / 1258 |
+
+This recovers about **14%** of the post-RSS wall time without giving back the
+memory reduction.
+
 ## 2026-05-14 — Benchmark reproducibility and batch RSS audit
 
 ### Finding
