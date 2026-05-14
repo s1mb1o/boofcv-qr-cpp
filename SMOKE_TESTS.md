@@ -123,10 +123,18 @@ PYTHONDONTWRITEBYTECODE=1 python3 tests/regression/failure_taxonomy.py \
 ```bash
 BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
   QR_BENCH_CPP_THREADS=8 \
-  tools/benchmark_compare.sh /tmp/boofcv_qr_benchmark
+  tools/benchmark_compare.sh --cpp-only --skip-build /tmp/boofcv_qr_benchmark
 ```
 
 Expected: `report.md` and `report.json` are written with host/tool versions,
-commands, C++ serial/batch RSS, macOS memory footprint, regression score, and
-Java reference timing/RSS when Java is available. Use `QR_BENCH_SKIP_JAVA=1`
-for a C++-only smoke.
+commands, C++ serial/batch RSS, macOS memory footprint, and regression score.
+Compare two saved reports with:
+
+```bash
+tools/benchmark_compare.sh --compare \
+  /tmp/qr_bench_before/report.json \
+  /tmp/qr_bench_after/report.json
+```
+
+Expected: stdout contains a `QR Benchmark Delta` table with elapsed, RSS,
+footprint, and decode-rate deltas.

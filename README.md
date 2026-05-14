@@ -215,13 +215,21 @@ Java BoofCV reference:
 ```bash
 BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
   QR_BENCH_CPP_THREADS=8 \
-  tools/benchmark_compare.sh /tmp/boofcv_qr_benchmark
+  tools/benchmark_compare.sh --cpp-only --skip-build /tmp/boofcv_qr_benchmark
 ```
 
 The report includes commands, host/tool versions, `/usr/bin/time -l` RSS and
 memory footprint, C++ regression scores, and Java reference timing/RSS when a
 usable JDK and cached Gradle dependencies are available. Set
-`QR_BENCH_SKIP_JAVA=1` for C++-only runs.
+`QR_BENCH_SKIP_JAVA=1` or pass `--cpp-only` / `--skip-java` for C++-only runs.
+Use `--skip-build` when comparing an already-built binary. To compare two saved
+reports without rerunning the dataset:
+
+```bash
+tools/benchmark_compare.sh --compare \
+  /tmp/bench_before/report.json \
+  /tmp/bench_after/report.json
+```
 
 ## Project Name
 

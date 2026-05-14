@@ -5,7 +5,9 @@ usage() {
   cat <<'USAGE'
 Usage:
   BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
-    tools/benchmark_compare.sh [output_dir]
+    tools/benchmark_compare.sh [--skip-build] [--cpp-only|--skip-java] [output_dir]
+
+  tools/benchmark_compare.sh --compare before/report.json after/report.json
 
 Runs reproducible C++/Java QR benchmark passes and writes:
   report.md
@@ -18,25 +20,180 @@ Environment:
   QR_BENCH_BUILD_DIR=build          CMake build directory.
   QR_BENCH_CPP_THREADS=8           C++ batch worker count.
   QR_BENCH_SKIP_JAVA=1             Skip the Java BoofCV reference run.
+  QR_BENCH_SKIP_BUILD=1            Reuse the existing build without invoking CMake.
   QR_BENCH_JAVA_XMX=-Xmx4g         JVM heap flag for the Java run.
   JAVA_BIN=/path/to/java           Java executable override.
   JAVA_HOME=/path/to/jdk           Java home fallback.
 USAGE
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
-  exit 0
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${QR_BENCH_BUILD_DIR:-${REPO_ROOT}/build}"
 CPP_THREADS="${QR_BENCH_CPP_THREADS:-8}"
 SKIP_JAVA="${QR_BENCH_SKIP_JAVA:-0}"
+SKIP_BUILD="${QR_BENCH_SKIP_BUILD:-0}"
 JAVA_XMX="${QR_BENCH_JAVA_XMX:--Xmx4g}"
 if [[ "${BUILD_DIR}" != /* ]]; then
   BUILD_DIR="${REPO_ROOT}/${BUILD_DIR}"
+fi
+
+compare_reports() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+before_path = Path(sys.argv[1])
+after_path = Path(sys.argv[2])
+
+def load(path):
+    with path.open() as f:
+        return json.load(f)
+
+def runs_by_label(report):
+    runs = report.get("runs", [])
+    if isinstance(runs, dict):
+        return runs
+    return {run.get("label", f"run_{i}"): run for i, run in enumerate(runs)}
+
+def score_for(report, run):
+    score = run.get("score")
+    if score:
+        return score
+    if run.get("kind") == "java":
+        return report.get("locked_java_baseline_score")
+    return None
+
+def get_metric(report, run, key):
+    if key == "decode_rate":
+        score = score_for(report, run) or {}
+        return score.get("decode_rate")
+    return run.get(key)
+
+def fmt(value, decimals=2):
+    if value is None:
+        return ""
+    return f"{value:.{decimals}f}"
+
+def fmt_delta(delta, decimals=2):
+    if delta is None:
+        return ""
+    sign = "+" if delta >= 0 else ""
+    return f"{sign}{delta:.{decimals}f}"
+
+def fmt_pct_delta(before, after):
+    if before in (None, 0) or after is None:
+        return ""
+    delta = (after - before) / before * 100.0
+    sign = "+" if delta >= 0 else ""
+    return f"{sign}{delta:.1f}%"
+
+def cell(report_before, run_before, report_after, run_after, key, decimals=2, pp=False):
+    before = get_metric(report_before, run_before, key)
+    after = get_metric(report_after, run_after, key)
+    if before is None and after is None:
+        return ""
+    delta = None if before is None or after is None else after - before
+    if pp:
+        return (
+            f"{fmt(before * 100.0 if before is not None else None, decimals)}% -> "
+            f"{fmt(after * 100.0 if after is not None else None, decimals)}% "
+            f"({fmt_delta(delta * 100.0 if delta is not None else None, decimals)} pp)"
+        )
+    pct = fmt_pct_delta(before, after)
+    suffix = f", {pct}" if pct else ""
+    return f"{fmt(before, decimals)} -> {fmt(after, decimals)} ({fmt_delta(delta, decimals)}{suffix})"
+
+before = load(before_path)
+after = load(after_path)
+before_runs = runs_by_label(before)
+after_runs = runs_by_label(after)
+labels = [label for label in before_runs if label in after_runs]
+for label in after_runs:
+    if label not in before_runs:
+        labels.append(label)
+
+print("# QR Benchmark Delta")
+print()
+print(f"- Before: `{before_path}`")
+print(f"- After: `{after_path}`")
+if before.get("git_commit") or after.get("git_commit"):
+    print(f"- Commits: `{before.get('git_commit', '')}` -> `{after.get('git_commit', '')}`")
+if before.get("dataset_root") or after.get("dataset_root"):
+    print(f"- Dataset: `{after.get('dataset_root') or before.get('dataset_root')}`")
+print()
+print("| run | elapsed ms | real s | RSS MiB | footprint MiB | decode rate |")
+print("|---|---:|---:|---:|---:|---:|")
+for label in labels:
+    b = before_runs.get(label, {})
+    a = after_runs.get(label, {})
+    print(
+        f"| `{label}` | "
+        f"{cell(before, b, after, a, 'summary_elapsed_ms', 0)} | "
+        f"{cell(before, b, after, a, 'real_seconds', 2)} | "
+        f"{cell(before, b, after, a, 'rss_mib', 1)} | "
+        f"{cell(before, b, after, a, 'peak_footprint_mib', 1)} | "
+        f"{cell(before, b, after, a, 'decode_rate', 2, pp=True)} |"
+    )
+PY
+}
+
+OUT_ROOT_ARG="${QR_BENCH_OUTPUT_DIR:-}"
+OUT_ROOT_SET=0
+COMPARE_BEFORE=""
+COMPARE_AFTER=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --skip-build)
+      SKIP_BUILD=1
+      shift
+      ;;
+    --cpp-only|--skip-java)
+      SKIP_JAVA=1
+      shift
+      ;;
+    --compare)
+      if [[ $# -lt 3 ]]; then
+        echo "--compare requires two report.json paths." >&2
+        usage >&2
+        exit 2
+      fi
+      COMPARE_BEFORE="$2"
+      COMPARE_AFTER="$3"
+      shift 3
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [[ "${OUT_ROOT_SET}" == "1" ]]; then
+        echo "Only one output_dir may be provided." >&2
+        usage >&2
+        exit 2
+      fi
+      OUT_ROOT_ARG="$1"
+      OUT_ROOT_SET=1
+      shift
+      ;;
+  esac
+done
+
+if [[ -n "${COMPARE_BEFORE}" || -n "${COMPARE_AFTER}" ]]; then
+  if [[ -z "${COMPARE_BEFORE}" || -z "${COMPARE_AFTER}" ]]; then
+    echo "--compare requires two report.json paths." >&2
+    usage >&2
+    exit 2
+  fi
+  compare_reports "${COMPARE_BEFORE}" "${COMPARE_AFTER}"
+  exit 0
 fi
 
 if [[ -z "${BOOFCV_QR_DATASET_ROOT:-}" ]]; then
@@ -46,7 +203,7 @@ if [[ -z "${BOOFCV_QR_DATASET_ROOT:-}" ]]; then
 fi
 
 DATASET_ROOT="$(cd "${BOOFCV_QR_DATASET_ROOT}" && pwd)"
-OUT_ROOT="${1:-${QR_BENCH_OUTPUT_DIR:-/tmp/boofcv_qr_benchmark_$(date +%Y%m%d_%H%M%S)}}"
+OUT_ROOT="${OUT_ROOT_ARG:-/tmp/boofcv_qr_benchmark_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${OUT_ROOT}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -54,10 +211,12 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 2
 fi
 
-if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
-  cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
+if [[ "${SKIP_BUILD}" != "1" ]]; then
+  if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+    cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
+  fi
+  cmake --build "${BUILD_DIR}" --target qr_scan -- -j
 fi
-cmake --build "${BUILD_DIR}" --target qr_scan -- -j
 
 QR_SCAN_BIN="${BUILD_DIR}/qr_scan"
 if [[ ! -x "${QR_SCAN_BIN}" ]]; then

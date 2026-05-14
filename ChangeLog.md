@@ -1,5 +1,33 @@
 # ChangeLog
 
+## 2026-05-14 — tooling: benchmark run flags and report compare mode
+
+Closed issue #11.
+
+### Added
+
+- [tools/benchmark_compare.sh](tools/benchmark_compare.sh): `--skip-build`,
+  `--cpp-only` / `--skip-java`, and `--compare before/report.json
+  after/report.json`.
+- Compare mode prints a markdown delta table for elapsed time, real time, RSS,
+  footprint, and decode rate without requiring the dataset env or macOS timing
+  tools.
+
+### Compatibility
+
+The existing environment-variable workflow remains supported:
+`QR_BENCH_SKIP_JAVA=1`, `QR_BENCH_SKIP_BUILD=1`,
+`QR_BENCH_CPP_THREADS=N`, and positional `output_dir` all continue to work.
+
+### Verification
+
+- `bash -n tools/benchmark_compare.sh` -> PASS.
+- `tools/benchmark_compare.sh --help` -> PASS.
+- `tools/benchmark_compare.sh --compare /tmp/qr_bench_scratch_release/report.json /tmp/qr_bench_scratch_release_final/report.json`
+  -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... tools/benchmark_compare.sh --cpp-only --skip-build /tmp/qr_bench_cpp_only_flags`
+  -> PASS.
+
 ## 2026-05-14 — memory: release large batch scratch without pipeline rebuilds
 
 Closed issue #10.

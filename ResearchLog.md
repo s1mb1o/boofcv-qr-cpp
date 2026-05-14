@@ -1,5 +1,18 @@
 # ResearchLog
 
+## 2026-05-14 — Benchmark reports are now diffable
+
+### Finding
+
+The benchmark script was useful for one-off reports but awkward for iterative
+work: C++-only runs required remembering `QR_BENCH_SKIP_JAVA=1`, and before/after
+comparisons required manual JSON inspection.
+
+The script now has explicit run controls and a read-only compare mode. Compare
+mode consumes two existing `report.json` files and prints deltas for the values
+we use when deciding whether a performance change is worth keeping: elapsed
+time, real time, RSS, footprint, and decode rate.
+
 ## 2026-05-14 — Scratch release beats detector rebuild for batch RSS
 
 ### Finding
