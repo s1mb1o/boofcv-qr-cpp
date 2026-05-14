@@ -53,6 +53,8 @@ class BatchScanConfig:
     threads: int
     config: ConfigQrCode
     opencv_threads: int
+    max_in_flight_mpix: float
+    reset_pipeline_mpix: float
     def __init__(self) -> None: ...
 
 class QrCode:

@@ -136,6 +136,7 @@ Batch scan image paths in parallel:
 ```python
 batch = pb.BatchScanConfig()
 batch.threads = 8
+batch.max_in_flight_mpix = 64.0
 
 results = pb.scan_batch(["frame001.png", "frame002.png"], batch)
 for result in results:
@@ -148,7 +149,10 @@ for result in results:
 The legacy `scan_batch(paths, threads=8)` form remains supported.
 `scan_batch()` also caps OpenCV internal threads to 1 when using multiple image
 workers. Set `BatchScanConfig.opencv_threads` or
-`BOOFCV_QR_OPENCV_THREADS=N` to override it.
+`BOOFCV_QR_OPENCV_THREADS=N` to override it. Python batch scans also expose the
+CLI memory controls as `BatchScanConfig.max_in_flight_mpix` and
+`BatchScanConfig.reset_pipeline_mpix`; leave them negative for the default
+policy, set positive megapixel values to override, or set `0.0` to disable.
 
 For detection-only pipelines, call the first exposed stage API:
 
@@ -164,7 +168,7 @@ The main exposed QR types are:
 |---|---|
 | `FactoryFiducial(np.uint8).qrcode()` | Construct a GrayU8 QR detector |
 | `ConfigQrCode` | QR decode options such as encoding and transposed-bit handling |
-| `BatchScanConfig` | Typed path-batch options for worker count, QR config, and OpenCV threads |
+| `BatchScanConfig` | Typed path-batch options for worker count, QR config, OpenCV threads, and memory budget |
 | `QrCodeDetector.detect(image)` | Detect QR codes in one `numpy.uint8` grayscale image |
 | `QrCodeDetector.detect_polygons_only(image)` | Return finder/bounds/alignment candidates without decode |
 | `scan_batch(paths, threads=0)` | Scan image paths in parallel using one pipeline per worker |

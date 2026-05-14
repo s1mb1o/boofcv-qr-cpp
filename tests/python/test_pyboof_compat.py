@@ -108,6 +108,10 @@ def main() -> None:
     batch_config.threads = 2
     batch_config.config = config
     batch_config.opencv_threads = 1
+    assert batch_config.max_in_flight_mpix < 0.0
+    assert batch_config.reset_pipeline_mpix < 0.0
+    batch_config.max_in_flight_mpix = 16.0
+    batch_config.reset_pipeline_mpix = 4.0
     configured_batch = pb.scan_batch([image_path], batch_config)
     assert len(configured_batch) == 1
     assert configured_batch[0].ok

@@ -1,5 +1,34 @@
 # ChangeLog
 
+## 2026-05-14 — python: expose batch memory controls
+
+Closed issue #9.
+
+### Added
+
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  `BatchScanConfig.max_in_flight_mpix` and
+  `BatchScanConfig.reset_pipeline_mpix`, plus the same size-aware scheduler and
+  large-image pipeline reset policy used by the CLI batch path.
+- [python/boofcv_qr/__init__.pyi](python/boofcv_qr/__init__.pyi): typed stubs
+  for the new batch memory controls.
+
+### Compatibility
+
+`scan_batch(paths, threads=N, config=None)` is unchanged. The new fields are
+only on `BatchScanConfig`; negative values keep the default/env policy, `0.0`
+disables a control, and positive values override in megapixels. Environment
+fallbacks are `BOOFCV_QR_MAX_IN_FLIGHT_MPIX` /
+`QR_SCAN_MAX_IN_FLIGHT_MPIX` and `BOOFCV_QR_RESET_PIPELINE_MPIX` /
+`QR_SCAN_RESET_PIPELINE_MPIX`.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_python -- -j` -> PASS.
+- `PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py` -> PASS.
+- `PYTHONPATH=build/python python3 tools/python/profile_python.py tests/fixtures/qr/full_v1_L_M000.png --iters 200 --batch-size 32 --threads 8`
+  -> PASS, batch 0.048 ms/image.
+
 ## 2026-05-14 — perf: add size-aware batch scheduler
 
 Closed the first pass on issue #8.

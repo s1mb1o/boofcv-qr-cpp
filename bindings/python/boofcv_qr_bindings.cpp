@@ -16,13 +16,17 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -120,6 +124,8 @@ struct BatchScanConfig {
     int32_t threads = 0;
     ConfigQrCode config;
     int32_t opencvThreads = 0;
+    double maxInFlightMpix = -1.0;
+    double resetPipelineMpix = -1.0;
 };
 
 struct QrCode {
@@ -387,6 +393,126 @@ cv::Mat loadGrayFromPath(const std::string& path) {
     return cv::imread(path, cv::IMREAD_GRAYSCALE | cv::IMREAD_IGNORE_ORIENTATION);
 }
 
+struct ImageJob {
+    std::string path;
+    int32_t width = 0;
+    int32_t height = 0;
+
+    int64_t pixels() const {
+        return static_cast<int64_t>(width) * static_cast<int64_t>(height);
+    }
+};
+
+uint16_t be16(const unsigned char* p) {
+    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) |
+                                 static_cast<uint16_t>(p[1]));
+}
+
+int32_t be32(const unsigned char* p) {
+    return (static_cast<int32_t>(p[0]) << 24) |
+           (static_cast<int32_t>(p[1]) << 16) |
+           (static_cast<int32_t>(p[2]) << 8) |
+           static_cast<int32_t>(p[3]);
+}
+
+bool isJpegSof(unsigned char marker) {
+    return marker == 0xC0 || marker == 0xC1 || marker == 0xC2 ||
+           marker == 0xC3 || marker == 0xC5 || marker == 0xC6 ||
+           marker == 0xC7 || marker == 0xC9 || marker == 0xCA ||
+           marker == 0xCB || marker == 0xCD || marker == 0xCE ||
+           marker == 0xCF;
+}
+
+bool readPngSize(const std::string& path, int32_t& width, int32_t& height) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open())
+        return false;
+    unsigned char header[24] = {};
+    in.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (in.gcount() != static_cast<std::streamsize>(sizeof(header)))
+        return false;
+    const unsigned char signature[8] =
+        {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    if (!std::equal(signature, signature + 8, header))
+        return false;
+    width = be32(header + 16);
+    height = be32(header + 20);
+    return width > 0 && height > 0;
+}
+
+bool readJpegSize(const std::string& path, int32_t& width, int32_t& height) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open())
+        return false;
+
+    unsigned char b[2] = {};
+    in.read(reinterpret_cast<char*>(b), 2);
+    if (in.gcount() != 2 || b[0] != 0xFF || b[1] != 0xD8)
+        return false;
+
+    for (;;) {
+        unsigned char c = 0;
+        do {
+            in.read(reinterpret_cast<char*>(&c), 1);
+            if (!in)
+                return false;
+        } while (c != 0xFF);
+
+        do {
+            in.read(reinterpret_cast<char*>(&c), 1);
+            if (!in)
+                return false;
+        } while (c == 0xFF);
+
+        if (c == 0xD9 || c == 0xDA)
+            return false;
+        if (c >= 0xD0 && c <= 0xD7)
+            continue;
+
+        unsigned char lenBytes[2] = {};
+        in.read(reinterpret_cast<char*>(lenBytes), 2);
+        if (in.gcount() != 2)
+            return false;
+        uint16_t len = be16(lenBytes);
+        if (len < 2)
+            return false;
+
+        if (isJpegSof(c)) {
+            unsigned char sof[5] = {};
+            in.read(reinterpret_cast<char*>(sof), sizeof(sof));
+            if (in.gcount() != static_cast<std::streamsize>(sizeof(sof)))
+                return false;
+            height = be16(sof + 1);
+            width = be16(sof + 3);
+            return width > 0 && height > 0;
+        }
+
+        in.seekg(static_cast<std::streamoff>(len) - 2, std::ios::cur);
+        if (!in)
+            return false;
+    }
+}
+
+ImageJob makeImageJob(const std::string& path) {
+    ImageJob job;
+    job.path = path;
+    std::string lower = path;
+    for (char& c : lower) {
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (lower.size() >= 4 &&
+        lower.compare(lower.size() - 4, 4, ".png") == 0) {
+        readPngSize(path, job.width, job.height);
+    } else if ((lower.size() >= 4 &&
+                lower.compare(lower.size() - 4, 4, ".jpg") == 0) ||
+               (lower.size() >= 5 &&
+                lower.compare(lower.size() - 5, 5, ".jpeg") == 0)) {
+        readJpegSize(path, job.width, job.height);
+    }
+    return job;
+}
+
 QrCode toPythonQrCode(const boofcv_qr::QrCode& qr) {
     QrCode out;
     out.version = qr.version;
@@ -610,21 +736,6 @@ private:
     py::object imageType_;
 };
 
-void markRemainingBatchErrors(const std::vector<std::string>& inputPaths,
-                              std::vector<ScanResult>& results,
-                              std::atomic<std::size_t>& next,
-                              const std::string& message) {
-    while (true) {
-        std::size_t index = next.fetch_add(1);
-        if (index >= inputPaths.size())
-            break;
-        ScanResult result;
-        result.path = inputPaths[index];
-        result.error = message;
-        results[index] = std::move(result);
-    }
-}
-
 int32_t readOpenCvThreadsEnv() {
     const char* value = std::getenv("BOOFCV_QR_OPENCV_THREADS");
     if (value == nullptr)
@@ -634,6 +745,187 @@ int32_t readOpenCvThreadsEnv() {
     int32_t parsed = std::atoi(value);
     return parsed > 0 ? parsed : 0;
 }
+
+double readNonNegativeEnvDouble(const char* primary, const char* fallback,
+                                bool* wasSet) {
+    const char* value = std::getenv(primary);
+    if (value == nullptr && fallback != nullptr)
+        value = std::getenv(fallback);
+    if (value == nullptr) {
+        if (wasSet != nullptr)
+            *wasSet = false;
+        return 0.0;
+    }
+    if (wasSet != nullptr)
+        *wasSet = true;
+    char* end = nullptr;
+    double parsed = std::strtod(value, &end);
+    if (end == value || parsed < 0.0)
+        return 0.0;
+    return parsed;
+}
+
+int64_t mpixToPixels(double mpix) {
+    return static_cast<int64_t>(mpix * 1000000.0);
+}
+
+struct BatchMemoryConfig {
+    int64_t maxInFlightPixels = 0;
+    int64_t resetPipelinePixels = 0;
+};
+
+BatchMemoryConfig configureBatchMemory(std::size_t imageWorkers,
+                                       const BatchScanConfig& batchConfig) {
+    BatchMemoryConfig cfg;
+    bool wasSet = false;
+
+    if (batchConfig.maxInFlightMpix >= 0.0) {
+        cfg.maxInFlightPixels = mpixToPixels(batchConfig.maxInFlightMpix);
+    } else {
+        double maxMpix = readNonNegativeEnvDouble(
+            "BOOFCV_QR_MAX_IN_FLIGHT_MPIX", "QR_SCAN_MAX_IN_FLIGHT_MPIX",
+            &wasSet);
+        if (wasSet) {
+            cfg.maxInFlightPixels = mpixToPixels(maxMpix);
+        } else if (imageWorkers > 1) {
+            cfg.maxInFlightPixels = mpixToPixels(64.0);
+        }
+    }
+
+    if (batchConfig.resetPipelineMpix >= 0.0) {
+        cfg.resetPipelinePixels = mpixToPixels(batchConfig.resetPipelineMpix);
+    } else {
+        double resetMpix = readNonNegativeEnvDouble(
+            "BOOFCV_QR_RESET_PIPELINE_MPIX", "QR_SCAN_RESET_PIPELINE_MPIX",
+            &wasSet);
+        if (wasSet) {
+            cfg.resetPipelinePixels = mpixToPixels(resetMpix);
+        } else if (imageWorkers > 1) {
+            cfg.resetPipelinePixels = mpixToPixels(8.0);
+        }
+    }
+    return cfg;
+}
+
+class BatchScheduler {
+public:
+    BatchScheduler(const std::vector<ImageJob>& jobs, int64_t maxPixels)
+        : jobs_(jobs), maxPixels_(maxPixels) {
+        pending_.resize(jobs.size());
+        for (std::size_t i = 0; i < jobs.size(); i++)
+            pending_[i] = i;
+    }
+
+    class Lease {
+    public:
+        Lease() = default;
+        Lease(BatchScheduler* owner, std::size_t index, int64_t pixels)
+            : owner_(owner), index_(index), pixels_(pixels), valid_(true) {}
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
+        Lease(Lease&& other) noexcept
+            : owner_(other.owner_),
+              index_(other.index_),
+              pixels_(other.pixels_),
+              valid_(other.valid_) {
+            other.owner_ = nullptr;
+            other.index_ = 0;
+            other.pixels_ = 0;
+            other.valid_ = false;
+        }
+        Lease& operator=(Lease&& other) noexcept {
+            if (this != &other) {
+                release();
+                owner_ = other.owner_;
+                index_ = other.index_;
+                pixels_ = other.pixels_;
+                valid_ = other.valid_;
+                other.owner_ = nullptr;
+                other.index_ = 0;
+                other.pixels_ = 0;
+                other.valid_ = false;
+            }
+            return *this;
+        }
+        ~Lease() { release(); }
+
+        bool valid() const { return valid_; }
+        std::size_t index() const { return index_; }
+
+    private:
+        void release() {
+            if (owner_ == nullptr || !valid_)
+                return;
+            owner_->release(pixels_);
+            owner_ = nullptr;
+            index_ = 0;
+            pixels_ = 0;
+            valid_ = false;
+        }
+
+        BatchScheduler* owner_ = nullptr;
+        std::size_t index_ = 0;
+        int64_t pixels_ = 0;
+        bool valid_ = false;
+    };
+
+    Lease acquire() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        for (;;) {
+            if (pending_.empty())
+                return Lease();
+
+            if (maxPixels_ <= 0) {
+                std::size_t index = pending_.front();
+                pending_.pop_front();
+                return Lease(this, index, 0);
+            }
+
+            auto selected = pending_.end();
+            int64_t selectedWeight = 0;
+            for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+                int64_t weight = weightFor(*it);
+                if (inFlightPixels_ + weight <= maxPixels_) {
+                    selected = it;
+                    selectedWeight = weight;
+                    break;
+                }
+            }
+
+            if (selected != pending_.end()) {
+                std::size_t index = *selected;
+                pending_.erase(selected);
+                inFlightPixels_ += selectedWeight;
+                return Lease(this, index, selectedWeight);
+            }
+
+            condition_.wait(lock);
+        }
+    }
+
+private:
+    int64_t weightFor(std::size_t index) const {
+        int64_t pixels = jobs_[index].pixels();
+        if (pixels <= 0 || maxPixels_ <= 0)
+            return 0;
+        return std::min(pixels, maxPixels_);
+    }
+
+    void release(int64_t pixels) {
+        if (pixels > 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            inFlightPixels_ = std::max<int64_t>(0, inFlightPixels_ - pixels);
+        }
+        condition_.notify_all();
+    }
+
+    const std::vector<ImageJob>& jobs_;
+    std::deque<std::size_t> pending_;
+    int64_t maxPixels_ = 0;
+    int64_t inFlightPixels_ = 0;
+    std::mutex mutex_;
+    std::condition_variable condition_;
+};
 
 std::mutex& openCvThreadMutex() {
     static std::mutex mutex;
@@ -692,63 +984,106 @@ std::vector<ScanResult> scanBatchConfigured(py::object paths,
     if (workerCount > inputPaths.size())
         workerCount = inputPaths.size();
 
+    std::vector<ImageJob> jobs;
+    jobs.reserve(inputPaths.size());
+    for (const std::string& path : inputPaths)
+        jobs.push_back(makeImageJob(path));
+    BatchMemoryConfig memoryConfig =
+        configureBatchMemory(workerCount, batchConfig);
+    BatchScheduler scheduler(jobs, memoryConfig.maxInFlightPixels);
+
     configureOpenCvThreadsForBatch(workerCount, batchConfig.opencvThreads);
     {
         py::gil_scoped_release release;
-        std::atomic<std::size_t> next{0};
+        std::vector<std::atomic_bool> processed(inputPaths.size());
+        for (std::atomic_bool& flag : processed)
+            flag.store(false);
         std::vector<std::thread> workers;
         workers.reserve(workerCount);
+        std::mutex workerErrorMutex;
+        std::vector<std::string> workerErrors;
+        auto shouldResetPipeline = [&](int64_t pixels) {
+            return memoryConfig.resetPipelinePixels > 0 &&
+                   pixels >= memoryConfig.resetPipelinePixels;
+        };
         for (std::size_t worker = 0; worker < workerCount; worker++) {
             workers.emplace_back([&]() {
                 try {
-                    DetectorPipeline pipeline(cppConfig);
+                    auto pipeline =
+                        std::make_unique<DetectorPipeline>(cppConfig);
                     while (true) {
-                        std::size_t index = next.fetch_add(1);
-                        if (index >= inputPaths.size())
-                            break;
-
+                        std::size_t index = 0;
                         ScanResult result;
-                        result.path = inputPaths[index];
-                        auto t0 = std::chrono::steady_clock::now();
-                        try {
-                            cv::Mat gray = loadGrayFromPath(result.path);
-                            if (gray.empty()) {
-                                result.error = "Failed to load image: " + result.path;
-                            } else {
-                                pipeline.run(gray);
-                                for (const boofcv_qr::QrCode& qr :
-                                     pipeline.successes())
-                                    result.detections.push_back(toPythonQrCode(qr));
-                                for (const boofcv_qr::QrCode& qr :
-                                     pipeline.failures())
-                                    result.failures.push_back(toPythonQrCode(qr));
+                        {
+                            auto lease = scheduler.acquire();
+                            if (!lease.valid())
+                                break;
+                            index = lease.index();
+                            result.path = inputPaths[index];
+                            auto t0 = std::chrono::steady_clock::now();
+                            try {
+                                cv::Mat gray = loadGrayFromPath(result.path);
+                                if (gray.empty()) {
+                                    result.error =
+                                        "Failed to load image: " + result.path;
+                                } else {
+                                    int64_t pixels =
+                                        static_cast<int64_t>(gray.cols) *
+                                        static_cast<int64_t>(gray.rows);
+                                    pipeline->run(gray);
+                                    for (const boofcv_qr::QrCode& qr :
+                                         pipeline->successes()) {
+                                        result.detections.push_back(
+                                            toPythonQrCode(qr));
+                                    }
+                                    for (const boofcv_qr::QrCode& qr :
+                                         pipeline->failures()) {
+                                        result.failures.push_back(
+                                            toPythonQrCode(qr));
+                                    }
+                                    if (shouldResetPipeline(pixels)) {
+                                        pipeline = std::make_unique<DetectorPipeline>(
+                                            cppConfig);
+                                    }
+                                }
+                            } catch (const cv::Exception& e) {
+                                result.error =
+                                    std::string("OpenCV error: ") + e.what();
+                            } catch (const std::exception& e) {
+                                result.error = e.what();
+                            } catch (...) {
+                                result.error = "Unknown error while scanning";
                             }
-                        } catch (const cv::Exception& e) {
-                            result.error = std::string("OpenCV error: ") + e.what();
-                        } catch (const std::exception& e) {
-                            result.error = e.what();
-                        } catch (...) {
-                            result.error = "Unknown error while scanning";
+                            auto t1 = std::chrono::steady_clock::now();
+                            result.elapsed_ms =
+                                std::chrono::duration<double, std::milli>(t1 - t0)
+                                    .count();
                         }
-                        auto t1 = std::chrono::steady_clock::now();
-                        result.elapsed_ms =
-                            std::chrono::duration<double, std::milli>(t1 - t0).count();
                         results[index] = std::move(result);
+                        processed[index].store(true);
                     }
                 } catch (const cv::Exception& e) {
-                    markRemainingBatchErrors(
-                        inputPaths, results, next,
+                    std::lock_guard<std::mutex> lock(workerErrorMutex);
+                    workerErrors.push_back(
                         std::string("OpenCV worker error: ") + e.what());
                 } catch (const std::exception& e) {
-                    markRemainingBatchErrors(inputPaths, results, next, e.what());
+                    std::lock_guard<std::mutex> lock(workerErrorMutex);
+                    workerErrors.push_back(e.what());
                 } catch (...) {
-                    markRemainingBatchErrors(inputPaths, results, next,
-                                             "Unknown worker error");
+                    std::lock_guard<std::mutex> lock(workerErrorMutex);
+                    workerErrors.push_back("Unknown worker error");
                 }
             });
         }
         for (std::thread& worker : workers)
             worker.join();
+        std::string workerError = workerErrors.empty()
+            ? "Worker stopped before scanning image"
+            : workerErrors.front();
+        for (std::size_t i = 0; i < results.size(); i++) {
+            if (!processed[i].load() && results[i].error.empty())
+                results[i].error = workerError;
+        }
     }
 
     return results;
@@ -832,7 +1167,11 @@ PYBIND11_MODULE(_boofcv_qr, m) {
         .def(py::init<>())
         .def_readwrite("threads", &BatchScanConfig::threads)
         .def_readwrite("config", &BatchScanConfig::config)
-        .def_readwrite("opencv_threads", &BatchScanConfig::opencvThreads);
+        .def_readwrite("opencv_threads", &BatchScanConfig::opencvThreads)
+        .def_readwrite("max_in_flight_mpix",
+                       &BatchScanConfig::maxInFlightMpix)
+        .def_readwrite("reset_pipeline_mpix",
+                       &BatchScanConfig::resetPipelineMpix);
 
     py::class_<QrCode>(m, "QrCode")
         .def(py::init<>())

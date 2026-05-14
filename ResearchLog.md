@@ -1,5 +1,27 @@
 # ResearchLog
 
+## 2026-05-14 — Python batch memory-control parity
+
+### Finding
+
+The Python `scan_batch()` path had the same one-pipeline-per-worker memory
+shape as the CLI but only exposed worker count and OpenCV thread controls.
+Adding the CLI memory policy to `BatchScanConfig` gives Python callers the same
+deployment tradeoff without changing the legacy `scan_batch(paths, threads=N)`
+entry point.
+
+The Python binding now pre-reads PNG/JPEG dimensions for size-aware admission
+and uses the actual loaded image dimensions for the reset threshold. If the
+header dimensions are unavailable, the job still runs; it simply cannot be
+budgeted until the image is loaded.
+
+### Validation
+
+The compatibility smoke confirms the fields are writable and path scanning
+still returns the same fixture result. The Python timing smoke on
+`full_v1_L_M000.png` stayed in the expected range: **0.048 ms/image** for
+`scan_batch()` with 8 workers, 32-image batches, and 192 total fixture images.
+
 ## 2026-05-14 — Size-aware scheduler restores batch throughput
 
 ### Finding
