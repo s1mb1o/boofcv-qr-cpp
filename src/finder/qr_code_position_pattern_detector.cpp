@@ -102,9 +102,8 @@ bool QrCodePositionPatternDetector::checkLine(
     int32_t size = 0;
     bool black = samples_[0] < grayThreshold;
     type_[0] = black ? 0 : 1;
-    // Reset length_ tracking — Java's class fields are zeroed at
-    // class init then mutated; we re-zero per call to keep the state
-    // local to this scan.
+    // Keep C++ scan state local. Java's workspace array is stateful across
+    // calls, but matching that does not improve current C++ accuracy.
     for (int32_t k = 0; k < RUN_LEN_CAP; k++) length_[k] = 0;
 
     for (int32_t i = 0; i < SAMPLES_LEN_LOCAL; i++) {

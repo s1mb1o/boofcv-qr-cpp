@@ -54,6 +54,15 @@ public:
     bool getUseEdgeScan() const { return useEdgeScan_; }
     void setUseEdgeScan(bool v) { useEdgeScan_ = v; }
 
+    void releaseScratch() {
+        reader_.releaseImage();
+        std::vector<float>(12, 0.0f).swap(arrayX_);
+        std::vector<float>(12, 0.0f).swap(arrayY_);
+        std::vector<QrCode::Alignment*>().swap(lookup_);
+        qr_ = nullptr;
+        threshold_ = 0.0f;
+    }
+
     // Step 9's orchestrator (QrCodeDecoderImage) needs to bind the
     // homography on our internal grid reader before invoking
     // process(). Granted via friend so the mutable reader doesn't

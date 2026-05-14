@@ -62,6 +62,15 @@ public:
         sets.clear();
     }
 
+    void releaseMemory() {
+        std::vector<std::vector<int32_t>> freshBlocks;
+        freshBlocks.emplace_back(static_cast<std::size_t>(blockLength));
+        blocks.swap(freshBlocks);
+        std::vector<BlockIndexLength>().swap(sets);
+        tailBlockSize = 0;
+        activeBlocks = 1;
+    }
+
     // Adds a new (empty) point set to the end.
     void grow() {
         if (tailBlockSize >= blockLength) {

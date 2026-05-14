@@ -44,6 +44,16 @@ cmake --build build --target boofcv_qr qr_scan boofcv_qr_tests boofcv_qr_python 
 ctest --test-dir build --output-on-failure
 ```
 
+Apple Silicon profiling presets are available when using CMake 3.21+:
+
+```bash
+cmake --preset apple-arm64-release
+cmake --build --preset apple-arm64-release --target qr_scan boofcv_qr_python -- -j
+
+cmake --preset apple-arm64-relwithdebinfo
+cmake --build --preset apple-arm64-relwithdebinfo --target qr_scan -- -j
+```
+
 Disable optional targets if needed:
 
 ```bash
@@ -74,6 +84,34 @@ benchmarks:
 QR_SCAN_THREADS=8 build/qr_scan /path/to/images /path/to/output
 ```
 
+Parallel batch scans cap OpenCV's internal worker count to 1 by default to
+avoid multiplying `QR_SCAN_THREADS` by OpenCV's GCD/TBB workers. Override this
+for experiments with `QR_SCAN_OPENCV_THREADS=N` or
+`BOOFCV_QR_OPENCV_THREADS=N`.
+
+Multi-worker batch scans also limit high-resolution image concurrency by
+default: up to 64 megapixels may be processed at once, and worker pipelines
+release large scratch buffers after images of at least 8 megapixels. Override
+or disable these controls with
+`QR_SCAN_MAX_IN_FLIGHT_MPIX=N` and `QR_SCAN_RESET_PIPELINE_MPIX=N` (`0`
+disables each limit).
+
+Profile one image with stage timing:
+
+```bash
+build/qr_scan --profile image.png 1000
+```
+
+Run a dataset scan with a sidecar timing report. Normal batch JSON remains
+unchanged; timings are written to `stage_timings.json`.
+
+```bash
+QR_SCAN_THREADS=8 build/qr_scan --stage-timings /path/to/images /path/to/output
+```
+
+The same report can be enabled for the regression driver with
+`QR_SCAN_STAGE_TIMINGS=1`.
+
 ## Python Usage
 
 The Python package exposes a PyBoof-compatible QR subset under the
@@ -96,10 +134,32 @@ for qr in detector.detections:
 Batch scan image paths in parallel:
 
 ```python
-results = pb.scan_batch(["frame001.png", "frame002.png"], threads=8)
+batch = pb.BatchScanConfig()
+batch.threads = 8
+batch.max_in_flight_mpix = 64.0
+
+results = pb.scan_batch(["frame001.png", "frame002.png"], batch)
 for result in results:
+    if not result.ok:
+        continue
     for qr in result.detections:
         print(result.path, qr.message)
+```
+
+The legacy `scan_batch(paths, threads=8)` form remains supported.
+`scan_batch()` also caps OpenCV internal threads to 1 when using multiple image
+workers. Set `BatchScanConfig.opencv_threads` or
+`BOOFCV_QR_OPENCV_THREADS=N` to override it. Python batch scans also expose the
+CLI memory controls as `BatchScanConfig.max_in_flight_mpix` and
+`BatchScanConfig.reset_pipeline_mpix`; leave them negative for the default
+policy, set positive megapixel values to override, or set `0.0` to disable.
+
+For detection-only pipelines, call the first exposed stage API:
+
+```python
+candidates = detector.detect_polygons_only(image)
+for qr in candidates:
+    print(qr.version, qr.bounds.as_list(), qr.position_patterns["corner"])
 ```
 
 The main exposed QR types are:
@@ -108,7 +168,9 @@ The main exposed QR types are:
 |---|---|
 | `FactoryFiducial(np.uint8).qrcode()` | Construct a GrayU8 QR detector |
 | `ConfigQrCode` | QR decode options such as encoding and transposed-bit handling |
+| `BatchScanConfig` | Typed path-batch options for worker count, QR config, OpenCV threads, and memory budget |
 | `QrCodeDetector.detect(image)` | Detect QR codes in one `numpy.uint8` grayscale image |
+| `QrCodeDetector.detect_polygons_only(image)` | Return finder/bounds/alignment candidates without decode |
 | `scan_batch(paths, threads=0)` | Scan image paths in parallel using one pipeline per worker |
 | `QrCode` | Message, geometry, QR metadata, raw codewords, and RS status |
 | `Point2D` / `Polygon2D` | PyBoof-like geometry wrappers |
@@ -129,6 +191,11 @@ PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py
 See [docs/python_api.md](docs/python_api.md) and [examples/python/](examples/python/)
 for more Python examples.
 
+Packaging support and wheel policy are documented in
+[docs/packaging.md](docs/packaging.md). In short: macOS release wheels are
+built with `cibuildwheel` and repaired with `delocate`; Linux release wheels
+are currently system-OpenCV artifacts, not manylinux wheels.
+
 ## Regression Dataset
 
 The full regression harness expects BoofCV's `qrcodes_v3` dataset to be
@@ -141,6 +208,28 @@ BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
 ```
 
 The dataset itself is not vendored in this repository.
+
+For reproducible local speed and memory reports against the C++ CLI and the
+Java BoofCV reference:
+
+```bash
+BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
+  QR_BENCH_CPP_THREADS=8 \
+  tools/benchmark_compare.sh --cpp-only --skip-build /tmp/boofcv_qr_benchmark
+```
+
+The report includes commands, host/tool versions, `/usr/bin/time -l` RSS and
+memory footprint, C++ regression scores, and Java reference timing/RSS when a
+usable JDK and cached Gradle dependencies are available. Set
+`QR_BENCH_SKIP_JAVA=1` or pass `--cpp-only` / `--skip-java` for C++-only runs.
+Use `--skip-build` when comparing an already-built binary. To compare two saved
+reports without rerunning the dataset:
+
+```bash
+tools/benchmark_compare.sh --compare \
+  /tmp/bench_before/report.json \
+  /tmp/bench_after/report.json
+```
 
 ## Project Name
 

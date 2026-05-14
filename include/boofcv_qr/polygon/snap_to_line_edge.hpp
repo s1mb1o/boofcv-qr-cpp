@@ -56,6 +56,12 @@ public:
     // Sets the input image. Must be CV_8UC1.
     void setImage(const cv::Mat& image);
 
+    void releaseScratch() {
+        integral_.releaseImage();
+        std::vector<double>().swap(weights_);
+        std::vector<cv::Point2d>().swap(samplePts_);
+    }
+
     // Fits a line defined by the two points. Multiple calls might be
     // required to get a perfect fit. Returns true if successful or
     // false if the sample window collected too few in-image points

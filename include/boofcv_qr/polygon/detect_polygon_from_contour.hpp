@@ -194,6 +194,13 @@ public:
                           double tangentStep);
 
     void setImage(const cv::Mat& image);
+    void releaseImage() {
+        image_.release();
+        imageWidth_ = 0;
+        imageHeight_ = 0;
+        edgeInsideAverage_ = 0.0f;
+        edgeOutsideAverage_ = 0.0f;
+    }
 
     void process(const std::vector<cv::Point2i>& contour, bool isCCW);
 
@@ -303,6 +310,8 @@ public:
     // "Public API design", this owns its storage value-typed —
     // consumers wanting longer lifetimes should copy.
     const std::vector<DetectedInfo>& getFoundInfo() const { return foundInfo_; }
+
+    void releaseScratch();
 
     // The refine wrapper needs to mutate polygons in place after
     // threshold-bias adjustment and post-refine edge-intensity update.

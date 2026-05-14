@@ -1,5 +1,422 @@
 # ResearchLog
 
+## 2026-05-14 - Contour ownership copy is visible but not dominant
+
+### Finding
+
+The stage profiler still points at `contour_polygon` as the largest cost center:
+about two thirds of per-image time on the BoofCV dataset timing run. One
+avoidable cost was that each accepted polygon copied its materialized external
+contour into `DetectedInfo`, even though the source contour is not used after
+the save step.
+
+Moving the contour into `DetectedInfo` keeps the same retained result data but
+avoids duplicating the contour point vector for accepted candidates. The win is
+real but small, which means most remaining contour time is in candidate
+generation, split/merge fitting, edge scoring, and contour labeling rather than
+this final storage step.
+
+### Measurement
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`:
+
+| stage | before | after | delta |
+|---|---:|---:|---:|
+| pipeline_total | 25.136 ms/image | 25.061 ms/image | -0.30% |
+| contour_polygon | 16.432 ms/image | 16.259 ms/image | -1.05% |
+| finder_total | 16.772 ms/image | 16.599 ms/image | -1.04% |
+| binarization | 7.393 ms/image | 7.499 ms/image | +1.43% |
+
+Regression stayed at **936 / 1258** decoded (**74.40%**). The end-to-end
+C++-only benchmark run measured `cpp_batch` at **2939 ms** / **3.02 s** with
+the same decode rate.
+
+### Consequence
+
+The next contour work should target earlier loops: contour materialization,
+split/merge candidate fitting, and edge-intensity scoring. The final result
+copy was worth removing, but it is not the main reason `contour_polygon`
+dominates.
+
+## 2026-05-14 — Benchmark reports are now diffable
+
+### Finding
+
+The benchmark script was useful for one-off reports but awkward for iterative
+work: C++-only runs required remembering `QR_BENCH_SKIP_JAVA=1`, and before/after
+comparisons required manual JSON inspection.
+
+The script now has explicit run controls and a read-only compare mode. Compare
+mode consumes two existing `report.json` files and prints deltas for the values
+we use when deciding whether a performance change is worth keeping: elapsed
+time, real time, RSS, footprint, and decode rate.
+
+## 2026-05-14 — Scratch release beats detector rebuild for batch RSS
+
+### Finding
+
+The previous large-image policy reclaimed memory by replacing each worker's
+whole detector pipeline. That worked, but it mixed two concerns: dropping
+retained scratch and rebuilding configured detector objects.
+
+The retained memory was concentrated in shallow `cv::Mat` references to the
+last gray image plus binary/label images and contour work stores. Releasing
+those explicitly preserves configuration and avoids construction churn while
+dropping the same large buffers after high-resolution images.
+
+### Measurement
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`, default 64 MP budget:
+
+| run | elapsed | real | max RSS | footprint | decode |
+|---|---:|---:|---:|---:|---:|
+| scheduler + pipeline rebuild | 3211 ms | 3.30 s | 1060.1 MiB | 470.6 MiB | 936 / 1258 |
+| explicit scratch release | 3180 ms | 3.26 s | 981.3 MiB | 461.8 MiB | 936 / 1258 |
+
+The extra RSS reduction is about **79 MiB** on this dataset, and throughput
+did not regress.
+
+## 2026-05-14 — Python batch memory-control parity
+
+### Finding
+
+The Python `scan_batch()` path had the same one-pipeline-per-worker memory
+shape as the CLI but only exposed worker count and OpenCV thread controls.
+Adding the CLI memory policy to `BatchScanConfig` gives Python callers the same
+deployment tradeoff without changing the legacy `scan_batch(paths, threads=N)`
+entry point.
+
+The Python binding now pre-reads PNG/JPEG dimensions for size-aware admission
+and uses the actual loaded image dimensions for the reset threshold. If the
+header dimensions are unavailable, the job still runs; it simply cannot be
+budgeted until the image is loaded.
+
+### Validation
+
+The compatibility smoke confirms the fields are writable and path scanning
+still returns the same fixture result. The Python timing smoke on
+`full_v1_L_M000.png` stayed in the expected range: **0.048 ms/image** for
+`scan_batch()` with 8 workers, 32-image batches, and 192 total fixture images.
+
+## 2026-05-14 — Size-aware scheduler restores batch throughput
+
+### Finding
+
+The RSS budget did not need to serialize as much work as the first
+implementation did. The slow path came from FIFO admission: if the next image
+was large and the current pixel budget was partially occupied, that worker
+waited even when smaller later images could have fit.
+
+The replacement scheduler keeps the pending list in dataset order but scans for
+the first image that fits the current in-flight megapixel budget. Output order
+remains deterministic because normal batch mode still builds `summary.json`
+from per-image files in the original image order.
+
+### Measurement
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`, default 64 MP budget:
+
+| run | elapsed | real | max RSS | footprint | decode |
+|---|---:|---:|---:|---:|---:|
+| FIFO budget | 3734 ms | 3.82 s | 1072.1 MiB | 485.0 MiB | 936 / 1258 |
+| size-aware scheduler | 3211 ms | 3.30 s | 1060.1 MiB | 470.6 MiB | 936 / 1258 |
+
+This recovers about **14%** of the post-RSS wall time without giving back the
+memory reduction.
+
+## 2026-05-14 — Benchmark reproducibility and batch RSS audit
+
+### Finding
+
+The high batch resident set is driven by high-resolution images being processed
+concurrently and by per-worker QR pipelines retaining their largest scratch
+buffers. The normal batch path also kept every `Record` until the end, which is
+not the dominant cost on the 562-image BoofCV dataset but scales poorly for
+larger path batches.
+
+The new benchmark report script records enough state to reproduce comparisons:
+git commit/status, host, CMake/Python/Java versions, exact commands, macOS
+`/usr/bin/time -l` maximum resident set size, memory footprint, summary elapsed
+time, and C++ score.
+
+### Measurements
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`:
+
+| run | elapsed | real | max RSS | decode |
+|---|---:|---:|---:|---:|
+| pre-change C++ batch | 2673 ms | 2.73 s | 1412.9 MiB | 936 / 1258 |
+| final C++ batch, 64 MP budget | 3734 ms | 3.82 s | 1072.1 MiB | 936 / 1258 |
+| post-change C++ serial | 18146 ms | 18.83 s | 452.7 MiB | 936 / 1258 |
+
+The 48 MP budget produced lower RSS (**958.0 MiB**) but slowed the batch to
+**4.64 s**. The 64 MP budget is the better default tradeoff for this dataset:
+about **24%** lower RSS than the pre-change batch while preserving most of the
+parallel speedup.
+
+### Consequence
+
+Future performance work should treat the memory budget as part of benchmark
+metadata. For low-memory deployments, set `QR_SCAN_MAX_IN_FLIGHT_MPIX=48` or
+lower; for maximum throughput on memory-rich machines, set it to `0` and leave
+only `QR_SCAN_RESET_PIPELINE_MPIX=8` or disable both controls.
+
+## 2026-05-13 — Python API completeness pass
+
+### Finding
+
+Issue #1 does not require replacing the existing PyBoof-shaped entry points.
+The useful gap is an additive layer on top of them:
+
+- keep `FactoryFiducial(np.uint8).qrcode()` and `detect(image)` stable;
+- expose the first stage-level Python API as `detect_polygons_only(image)`;
+- add a typed `BatchScanConfig` for batch worker/OpenCV-thread/QR options;
+- keep BoofCV/PyBoof camelCase result fields while adding Pythonic aliases;
+- make batch and QR results easy to log with `as_dict()` helpers.
+
+This preserves migration friendliness for PyBoof-style code and exposes enough
+intermediate metadata for downstream recovery pipelines without widening the
+Python package into a full PyBoof replacement.
+
+### Consequence
+
+The next Python API additions should be driven by concrete recovery-pipeline
+needs: raw stage wrappers for bit sampling/RS/message decode, richer error
+diagnostics, or NumPy-friendly geometry arrays. Those can be added without
+breaking the current QR-focused surface.
+
+Validation after the API expansion kept the detector baseline unchanged:
+436/436 C++/Python tests passed, BoofCV dataset regression stayed at 74.40%,
+and the fixture profile was 0.13 ms/image for the CLI path and 0.036 ms/image
+for Python `scan_batch()` with 8 workers.
+
+## 2026-05-13 — Python wheel packaging hardening
+
+### Finding
+
+Issue #2 is best solved in two layers:
+
+- macOS release wheels can be repeatably built with `cibuildwheel` and repaired
+  with `delocate` after installing Homebrew OpenCV.
+- Linux wheels should remain explicitly labeled **system-OpenCV** artifacts for
+  now. The workflow builds them on Ubuntu, inspects them with `auditwheel show`,
+  and smoke-installs them, but does not claim manylinux compliance.
+
+The reason not to force manylinux in this pass is OpenCV. A policy-compliant
+manylinux wheel would need OpenCV built inside the manylinux image and then
+vendored by `auditwheel repair`, or a deliberately smaller bundled OpenCV
+subset. That is a separate packaging project because it affects build time,
+wheel size, and license/compliance review.
+
+### Validation
+
+Local clean-wheel smoke passed on macOS arm64 / Python 3.14:
+
+```bash
+python3 -m pip wheel . --no-deps -w /tmp/boofcv_qr_dist_check
+python3 -m venv /tmp/boofcv_qr_smoke
+/tmp/boofcv_qr_smoke/bin/python -m pip install numpy /tmp/boofcv_qr_dist_check/*.whl
+BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr \
+  /tmp/boofcv_qr_smoke/bin/python tests/python/test_pyboof_compat.py
+```
+
+Result: wheel built as
+`boofcv_qr_cpp-0.1.0-cp314-cp314-macosx_15_0_arm64.whl`; install and smoke
+test exited 0.
+
+## 2026-05-13 — Apple Silicon thread audit and preset baseline
+
+### Finding
+
+OpenCV on this Apple Silicon machine reports **12** internal threads with the
+GCD backend. That oversubscribes by default when `qr_scan` or Python
+`scan_batch()` also runs image-level workers (`QR_SCAN_THREADS=8` or
+`threads=8`). Batch paths now cap OpenCV internal threads to **1** by default
+and allow override with `BOOFCV_QR_OPENCV_THREADS=N` or
+`QR_SCAN_OPENCV_THREADS=N`.
+
+Apple Silicon CMake presets were added for Release and RelWithDebInfo arm64
+builds:
+
+```bash
+cmake --preset apple-arm64-release
+cmake --build --preset apple-arm64-release --target qr_scan boofcv_qr_python -- -j
+```
+
+### Measurements
+
+Before the OpenCV cap, the issue #6 stage-timing run with `QR_SCAN_THREADS=8`
+completed in **3016 ms**. After the cap, the same dataset timing path printed
+`OpenCV threads=1, capped for image-parallel batch` and completed in **2949 ms**
+on the first run; a later normal regression run completed in **2843 ms** versus
+the previous same-thread normal regression at **2889 ms**. Treat this as a
+small/noisy win, not an algorithmic speedup.
+
+Validation commands:
+
+```bash
+build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 5000
+PYTHONPATH=build/python python3 tools/python/profile_python.py \
+  tests/fixtures/qr/full_v1_L_M000.png --iters 1000 --batch-size 32 --threads 8
+BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh
+```
+
+Results:
+
+| check | result |
+|---|---:|
+| CLI profile fixture | 0.18 ms/iter |
+| Python `scan_batch` fixture, sequential validation run | 0.034 ms/image |
+| Regression aggregate | 74.40%, PASS |
+
+### Consequence
+
+The verified hot loops remain contour/polygon extraction and binarization.
+No NEON-specific rewrite was attempted here because the current evidence points
+at broader contour and threshold data-flow work, not a small isolated SIMD loop.
+
+## 2026-05-13 — Stage-level QR timing baseline
+
+### Finding
+
+Issue #6 now has explicit timing at the pipeline and decoder levels. The CLI
+profile path reports binarization, contour/polygon extraction, finder
+validation, graph wiring, decoder format/version/alignment/transform/sampling,
+RS correction, message decode, and residual overhead. Batch timing writes a
+sidecar `stage_timings.json` grouped by category and image-size bucket.
+
+Fixture profile on this Apple Silicon machine:
+
+```bash
+build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 1000
+```
+
+Result: **0.14 ms/iter**. Top stages were `contour_polygon`
+(**0.0478 ms/iter**, 35.2%) and `binarization` (**0.0241 ms/iter**, 17.7%).
+
+Full BoofCV dataset timing:
+
+```bash
+QR_SCAN_THREADS=8 build/qr_scan --stage-timings \
+  /Users/ashmelev/Projects/30_moonlighting/pricetag-vision-datasets/data/external/boofcv-qrcodes/qrcodes \
+  /tmp/qr_stage_timing
+```
+
+Overall mean stage timing was **29.40 ms/image**. The top two bottlenecks were:
+
+| stage | mean ms/image | share |
+|---|---:|---:|
+| `contour_polygon` | 19.296 | 65.6% |
+| `binarization` | 8.553 | 29.1% |
+
+The slowest category means were `lots` (133.40 ms/image), `brightness`
+(103.81 ms/image), and `bright_spots` (78.45 ms/image). The `ge_8mp` bucket
+averaged 88.58 ms/image, confirming that image size is the dominant driver.
+
+### Consequence
+
+The next performance work should target contour/polygon extraction first and
+binarization second. Decoder micro-optimizations are currently lower leverage:
+`decoder_sampling` averaged 0.623 ms/image, while RS and message decode were
+below 0.1 ms/image and 0.01 ms/image respectively.
+
+## 2026-05-13 — Regression failure snapshot workflow
+
+### Finding
+
+Issue #5 did not need a separate committed snapshot file for each accepted
+residual. The durable artifact is better as a generated taxonomy tied to the
+current `summary.json`, because the exact image list can change whenever the
+detector changes. `run_regression.sh` now writes
+`tests/regression/baseline_cpp/failure_taxonomy.json` every run and uses it to
+print exact images when a category drifts.
+
+The taxonomy separates the useful first-order classes for future work:
+
+- `no_decoder_candidate`: no decoded QR or failed candidate reached scoring.
+- `iou_mismatch`: candidates exist but do not overlap GT at the scoring IoU.
+- `decoder_failure:<cause>` / `matched_decode_failure:<cause>`: localization
+  happened, but format/version/RS/readout failed.
+- `payload_mismatch`: payload-only regression fixture decoded something, but
+  not the expected message.
+
+### Consequence
+
+Future performance or accuracy changes can inspect the generated JSON before
+opening per-image files. Regression failures now have enough image/stage detail
+to decide whether the next fix belongs in thresholding, finder/candidate
+formation, sampling/decoder, or payload parsing.
+
+## 2026-05-12 — Accuracy target clarification
+
+### Decision
+
+Do not tune C++ results to match Java for its own sake. The product target is
+C++ recognition against the dataset ground truth: if C++ decodes a QR correctly,
+that is sufficient even when Java differs. Java remains valuable as a reference
+implementation for finding stage-level divergences, but Java/C++ deltas caused
+by floating-point accumulation, compiler/runtime behavior, or Java workspace
+state should not be fixed unless they also improve C++ ground-truth accuracy
+without adding false positives.
+
+### Consequence
+
+The previous `checkLine()` experiment that removed the local `length_[]` reset
+was reverted. It matched Java's stateful workspace semantics, but it was
+regression-neutral on the BoofCV dataset and did not improve C++ recognition.
+Future accuracy work should target C++ misses against ground truth, starting
+with the `no_decoder_candidate` bucket surfaced by
+`tests/regression/failure_taxonomy.py`.
+
+## 2026-05-12 — Accuracy parity taxonomy pass
+
+### Why
+
+Start issue #3 by turning the current BoofCV dataset gap into image-level
+failure buckets, then test the smallest source-level parity fix found while
+reading the top residual path.
+
+### Findings
+
+Fresh regression stayed at **74.40%** aggregate decode rate. The aggregate is
+still byte-identical to Java because negative monitor/glare drift is offset by
+positive small-N categories, but the current image-level Java/C++ deltas are:
+
+| category | C++ | Java | net | Java-positive/C++-negative images |
+|---|---:|---:|---:|---|
+| `monitor` | 12/17 | 14/17 | -2 GT | `image011`, `image012` (`no_decoder_candidate`), `image014` (`ERROR_CORRECTION`) |
+| `glare` | 15/53 | 17/53 | -2 GT | `image005`, `image022` (`no_decoder_candidate`) |
+
+`monitor/image017` is C++-positive/Java-negative, so it offsets one of the
+three monitor misses in the category-level delta. `glare/image007` is not a
+Java/C++ delta in the current locked baselines; both sides decode two GT and
+record one failed candidate.
+
+Across the full dataset taxonomy, `no_decoder_candidate` is the largest C++
+miss bucket (111 image instances), and it is also the dominant product-relevant
+bucket for the monitor/glare residuals. That keeps the next accuracy target in
+the threshold/finder candidate path before decoder micro-fixes.
+
+### Parity checks tried
+
+- Source comparison found one C++-only behavior in
+  `QrCodePositionPatternDetector::checkLine()`: the port cleared `length_[]`
+  per call, while BoofCV Java leaves the workspace array stateful. Removing the
+  reset is source-level parity-correct but regression-neutral.
+- A separate strict-FP build with `-ffp-contract=off` produced the same
+  74.40% score and identical taxonomy, so the threshold residual is not a
+  simple fused-multiply-add contraction issue.
+- Fresh Java stage dumps could not be generated on this machine because no
+  Java runtime is installed; this pass used the checked-in Java summary as the
+  reference.
+
+### Tooling
+
+Added `tests/regression/failure_taxonomy.py` to classify each summary record by
+C++ stage (`no_decoder_candidate`, `decoder_failure:<cause>`,
+`localization_miss`, `ok`) and, when a Java summary is supplied, by Java/C++
+parity direction.
+
 ## 2026-05-11 — Python batch API and release-readiness pass
 
 ### Why

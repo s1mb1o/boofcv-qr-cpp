@@ -74,6 +74,14 @@ public:
 
     const Config& config() const { return cfg_; }
 
+    void releaseScratch() {
+        std::vector<int32_t>().swap(stats_);
+        blocksWide_ = 0;
+        blocksHigh_ = 0;
+        blockWidth_ = 0;
+        blockHeight_ = 0;
+    }
+
 private:
     Config cfg_;
 

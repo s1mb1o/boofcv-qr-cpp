@@ -295,12 +295,17 @@ non-detection. Java has the same convention.
 
 ## Known parity residuals
 
-The C++ port reaches **-0.08pp aggregate from Java's 74.40% baseline** on
+The C++ port reaches **+0.00pp aggregate from Java's 74.40% baseline** on
 the locked `qrcodes_v3` regression set (562 images, 1258 GT). 11 of 17
 categories are within ±2pp of Java; 6 categories are outside the band
 for two distinct, well-understood reasons. Future engineers staring at
 the per-category table should read this section before assuming any of
 the residuals is a fixable bug.
+
+Java parity is a diagnostic lens, not the product target. The C++ detector is
+judged by correct recognition against ground truth. Do not change C++ solely to
+imitate Java floating-point edge cases or mutable-workspace behavior unless the
+change also improves C++ ground-truth accuracy without adding false positives.
 
 ### 1. `monitor` -11.76pp + `glare` -3.77pp — **`ThresholdBlockOtsu` binarizer divergence** (re-attributed in ADR 05)
 
@@ -312,15 +317,15 @@ Empirical breakdown:
 
 | category | C++-unique misses (Java decodes, C++ doesn't) | mechanism |
 |---|---|---|
-| `monitor` | 2 of 17 images: `image011`, `image012` | finder-check stage flips |
-| `glare`   | 3 of 53 GT (across `image005`, `image007`, `image022`) | polygon-fit stage rejects |
+| `monitor` | 3 Java-positive/C++-negative images: `image011`, `image012`, `image014`; offset by C++-positive/Java-negative `image017`, net -2/17 | finder-check flips plus one decoder-side miss |
+| `glare`   | 2 Java-positive/C++-negative GT: `image005`, `image022` | polygon/finder candidate stage rejects |
 
 **Mechanism on `monitor`** (finder-check stage). The polygon for the
 QR's bottom-left finder IS detected (corner positions agree with Java
 within 1 px). But our `ContourEdgeIntensity` averages 30 tangent-
-direction probes along the boundary. Because OpenCV's contour visits a
-slightly different set of pixels than BoofCV's, those 30 probes land
-on slightly different positions. The resulting `(edgeInside +
+direction probes along the boundary. Because the binarizer's edge
+wandering changes the contour boundary, those 30 probes land on
+slightly different positions. The resulting `(edgeInside +
 edgeOutside) / 2` `grayThreshold` differs from Java's by ~7 grayvalue
 units. On borderline images that's enough to flip the `1:1:3:1:1`
 raster check that decides whether the polygon is a finder pattern.
@@ -329,14 +334,13 @@ raster check that decides whether the polygon is a finder pattern.
 tiny (~5–10 px wide; perimeter ~43 px on the borderline cases —
 exactly at the `minimumContour = ConfigLength::fixed(40)` floor). The
 polyline corner finder (`PolylineSplitMerge`) needs to fit a 4-corner
-convex polygon to a contour with that few pixels. With OpenCV's
-contour pixel encoding (CCW-in-image, Moore-neighbor 8-connectivity,
-slightly different inner-loop ordering than `LinearContourLabelChang2004`),
-the corner finder rejects the contour where Java's equivalent passes.
-Net: the finder polygon never makes it into the candidate list at all.
+convex polygon to a contour with that few pixels. With the binarizer's
+edge-wandering perturbing that small binary contour, the corner finder
+rejects the contour where Java's equivalent passes. Net: the finder
+polygon never makes it into the candidate list at all.
 
 Both mechanisms are sensitivity amplifications of the same underlying
-contour-encoding divergence — a few-pixel boundary shift propagates
+binarizer edge-wandering — a few-pixel boundary shift propagates
 into a `~7-unit` greyvalue threshold shift on `monitor` (tipping the
 1:1:3:1:1 check) or a `~1-pixel` corner-position shift on `glare`
 (tipping the polyline corner finder). Tiny-feature inputs and

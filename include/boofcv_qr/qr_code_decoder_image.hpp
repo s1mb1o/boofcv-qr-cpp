@@ -70,6 +70,25 @@ struct PolygonOnlyResult {
     std::vector<QrCode> qrCodes;
 };
 
+// Optional wall-clock timing for QrCodeDecoderImage internals. Values
+// are additive over one process() call and expressed in milliseconds.
+struct QrCodeDecoderImageTiming {
+    double formatMs = 0.0;
+    double versionMs = 0.0;
+    double alignmentMs = 0.0;
+    double transformMs = 0.0;
+    double samplingMs = 0.0;
+    double rsMs = 0.0;
+    double messageMs = 0.0;
+
+    int32_t candidates = 0;
+    int32_t decodeAttempts = 0;
+    int32_t transposedAttempts = 0;
+    int32_t samplingAttempts = 0;
+    int32_t rsAttempts = 0;
+    int32_t messageAttempts = 0;
+};
+
 // Forward-declare the test-only access shim so the friend grant in
 // `QrCodeDecoderImage` compiles without test code in the public include
 // path. The shim is defined alongside the test fixture in
@@ -133,6 +152,9 @@ public:
     // and `getFailures()` reflect what was decoded.
     void process(const std::vector<PositionPatternNode>& pps,
                  const cv::Mat& gray);
+    void process(const std::vector<PositionPatternNode>& pps,
+                 const cv::Mat& gray,
+                 QrCodeDecoderImageTiming* timing);
 
     // ---- Stage-isolation public entry points (CLAUDE.md mandate). ----
     //
@@ -184,6 +206,17 @@ public:
     const std::vector<QrCode>& getSuccesses() const { return successes_; }
     const std::vector<QrCode>& getFailures() const { return failures_; }
 
+    void releaseScratch() {
+        decoder_.releaseScratch();
+        alignmentLocator_.releaseScratch();
+        gridReader_.releaseImage();
+        std::vector<QrCode>().swap(successes_);
+        std::vector<QrCode>().swap(failures_);
+        std::vector<QrCode>().swap(storageQR_);
+        bits_.releaseMemory();
+        std::vector<float>().swap(intensityBits_);
+    }
+
     // Read-only flag mirroring the Config setting that's currently
     // active. (Set at ctor time via Config; runtime mutation is not
     // supported per the reentrant-Config contract.)
@@ -221,7 +254,8 @@ public:
     friend class QrCodeDecoderImagePeer;
 
 private:
-    bool decode(const cv::Mat& gray, QrCode& qr);
+    bool decode(const cv::Mat& gray, QrCode& qr,
+                QrCodeDecoderImageTiming* timing);
     bool readRawData(QrCode& qr);
     float readBitIntensityAndThresholdDownRight(
         QrCode& qr, const std::vector<Point2I>& locationBits);

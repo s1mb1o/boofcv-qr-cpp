@@ -22,7 +22,11 @@ def main() -> None:
 
     for qr in detector.detections:
         print(qr.message)
-        print(qr.bounds.convert_tuple())
+        print(qr.bounds.as_list())
+        print(qr.as_dict()["raw_codewords"])
+
+    for candidate in detector.detect_polygons_only(image):
+        print("candidate", candidate.version, candidate.position_patterns["corner"])
 
 
 if __name__ == "__main__":

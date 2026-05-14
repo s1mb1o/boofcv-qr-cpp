@@ -1,5 +1,412 @@
 # ChangeLog
 
+## 2026-05-14 - perf: avoid accepted-contour copy in polygon detection
+
+Closed issue #12.
+
+### Changed
+
+- [src/polygon/detect_polygon_from_contour.cpp](src/polygon/detect_polygon_from_contour.cpp):
+  move the accepted contour into `DetectedInfo` instead of copying its point
+  vector after validation. The source contour is no longer read in that loop,
+  so this preserves detector output while removing one allocation-heavy copy on
+  the contour/polygon hot path.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8`, the stage-timing
+run moved `contour_polygon` from **16.432 ms/image** to **16.259 ms/image**
+(-1.05%). `pipeline_total` moved from **25.136 ms/image** to
+**25.061 ms/image**. The standard C++ benchmark report measured batch runtime
+at **2939 ms** / **3.02 s** with decode unchanged at **936 / 1258**
+(**74.40%**).
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_tests -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `QR_SCAN_THREADS=8 build/qr_scan --stage-timings ... /tmp/qr_stage_issue12_after_move`
+  -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `BOOFCV_QR_DATASET_ROOT=... tools/benchmark_compare.sh --cpp-only --skip-build /tmp/qr_bench_issue12_after`
+  -> PASS.
+
+## 2026-05-14 — tooling: benchmark run flags and report compare mode
+
+Closed issue #11.
+
+### Added
+
+- [tools/benchmark_compare.sh](tools/benchmark_compare.sh): `--skip-build`,
+  `--cpp-only` / `--skip-java`, and `--compare before/report.json
+  after/report.json`.
+- Compare mode prints a markdown delta table for elapsed time, real time, RSS,
+  footprint, and decode rate without requiring the dataset env or macOS timing
+  tools.
+
+### Compatibility
+
+The existing environment-variable workflow remains supported:
+`QR_BENCH_SKIP_JAVA=1`, `QR_BENCH_SKIP_BUILD=1`,
+`QR_BENCH_CPP_THREADS=N`, and positional `output_dir` all continue to work.
+
+### Verification
+
+- `bash -n tools/benchmark_compare.sh` -> PASS.
+- `tools/benchmark_compare.sh --help` -> PASS.
+- `tools/benchmark_compare.sh --compare /tmp/qr_bench_scratch_release/report.json /tmp/qr_bench_scratch_release_final/report.json`
+  -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... tools/benchmark_compare.sh --cpp-only --skip-build /tmp/qr_bench_cpp_only_flags`
+  -> PASS.
+
+## 2026-05-14 — memory: release large batch scratch without pipeline rebuilds
+
+Closed issue #10.
+
+### Changed
+
+- Added `releaseScratch()` hooks through the QR pipeline for retained
+  `cv::Mat` image references, binarizer histograms, contour labels, packed
+  contour points, polygon/refinement work buffers, QR decoder scratch, and
+  alignment/grid-reader image refs.
+- CLI and Python batch workers now call `releaseLargeScratch()` after images
+  crossing the existing `*_RESET_PIPELINE_MPIX` threshold instead of rebuilding
+  the configured detector pipeline.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8`, C++ batch RSS
+dropped from **1060.1 MiB** after the scheduler pass to **981.3 MiB**. Batch
+elapsed time was **3180 ms** and decode stayed unchanged at **936 / 1258**
+(**74.40%**).
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_python -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `QR_SCAN_THREADS=2 build/qr_scan --stage-timings tests/fixtures/qr /tmp/qr_scratch_stage`
+  plus JSON validation -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `BOOFCV_QR_DATASET_ROOT=... QR_BENCH_CPP_THREADS=8 QR_BENCH_SKIP_JAVA=1 tools/benchmark_compare.sh /tmp/qr_bench_scratch_release_final`
+  -> PASS, C++ batch RSS 981.3 MiB.
+- `PYTHONPATH=build/python python3 tools/python/profile_python.py tests/fixtures/qr/full_v1_L_M000.png --iters 200 --batch-size 32 --threads 8`
+  -> PASS, batch 0.043 ms/image.
+
+## 2026-05-14 — python: expose batch memory controls
+
+Closed issue #9.
+
+### Added
+
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  `BatchScanConfig.max_in_flight_mpix` and
+  `BatchScanConfig.reset_pipeline_mpix`, plus the same size-aware scheduler and
+  large-image scratch-release policy used by the CLI batch path.
+- [python/boofcv_qr/__init__.pyi](python/boofcv_qr/__init__.pyi): typed stubs
+  for the new batch memory controls.
+
+### Compatibility
+
+`scan_batch(paths, threads=N, config=None)` is unchanged. The new fields are
+only on `BatchScanConfig`; negative values keep the default/env policy, `0.0`
+disables a control, and positive values override in megapixels. Environment
+fallbacks are `BOOFCV_QR_MAX_IN_FLIGHT_MPIX` /
+`QR_SCAN_MAX_IN_FLIGHT_MPIX` and `BOOFCV_QR_RESET_PIPELINE_MPIX` /
+`QR_SCAN_RESET_PIPELINE_MPIX`.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_python -- -j` -> PASS.
+- `PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py` -> PASS.
+- `PYTHONPATH=build/python python3 tools/python/profile_python.py tests/fixtures/qr/full_v1_L_M000.png --iters 200 --batch-size 32 --threads 8`
+  -> PASS, batch 0.048 ms/image.
+
+## 2026-05-14 — perf: add size-aware batch scheduler
+
+Closed the first pass on issue #8.
+
+### Changed
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): replaced FIFO batch admission
+  plus a blocking pixel-budget semaphore with a size-aware scheduler. Workers
+  now take the first pending image that fits the active megapixel budget, so
+  smaller images can continue while large images wait for enough memory budget.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8` and the default
+64 MP in-flight budget, batch elapsed time improved from **3734 ms** to
+**3211 ms**. RSS stayed in the same band (**1072.1 MiB** before, **1060.1 MiB**
+after), and decode stayed unchanged at **936 / 1258** (**74.40%**).
+
+### Verification
+
+- `cmake --build build --target qr_scan -- -j` -> PASS.
+- `QR_SCAN_THREADS=4 build/qr_scan tests/fixtures/qr /tmp/qr_sched_fixture`
+  plus score and JSON validation -> PASS.
+- `QR_SCAN_THREADS=2 build/qr_scan --stage-timings tests/fixtures/qr /tmp/qr_sched_stage`
+  plus JSON validation -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_BENCH_CPP_THREADS=8 QR_BENCH_SKIP_JAVA=1 tools/benchmark_compare.sh /tmp/qr_bench_sched`
+  -> PASS, C++ aggregate decode rate 74.40%.
+
+## 2026-05-14 — perf: add reproducible memory benchmark and reduce batch RSS
+
+### Added
+
+- [tools/benchmark_compare.sh](tools/benchmark_compare.sh): reproducible local
+  benchmark runner for C++ serial, C++ batch, and the Java BoofCV reference.
+  The report captures commands, host/tool versions, `/usr/bin/time -l` maximum
+  resident set size, macOS memory footprint, elapsed time, and C++ regression
+  score.
+
+### Changed
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): normal batch mode writes
+  per-image records from workers and builds ordered `summary.json` from those
+  files instead of retaining every `Record` in memory.
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): multi-worker batch scans now
+  cap high-resolution in-flight work to 64 MP by default and rebuild worker
+  pipelines after images of at least 8 MP. Override with
+  `QR_SCAN_MAX_IN_FLIGHT_MPIX=N` and `QR_SCAN_RESET_PIPELINE_MPIX=N`; set either
+  to `0` to disable that control.
+- [README.md](README.md) and [SMOKE_TESTS.md](SMOKE_TESTS.md): documented the
+  memory controls and benchmark report workflow.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8`, C++ batch RSS
+dropped from **1412.9 MiB** to **1072.1 MiB** with
+`QR_SCAN_MAX_IN_FLIGHT_MPIX=64` and the default 8 MP pipeline reset. Regression
+decode stayed unchanged at **936 / 1258** (**74.40%**). Batch wall time moved
+from **2.73 s** to **3.82 s** in the final report run.
+
+### Verification
+
+- `cmake --build build --target qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `QR_SCAN_THREADS=4 build/qr_scan tests/fixtures/qr /tmp/qr_fixture_mem` plus
+  `tests/regression/score.py` and JSON validation -> PASS.
+- `QR_SCAN_THREADS=2 build/qr_scan --stage-timings tests/fixtures/qr /tmp/qr_stage_mem_smoke`
+  plus JSON validation -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `BOOFCV_QR_DATASET_ROOT=... QR_BENCH_CPP_THREADS=8 tools/benchmark_compare.sh /tmp/qr_bench_after_rss64`
+  -> PASS, C++ aggregate decode rate 74.40%.
+
+## 2026-05-13 — python: expand PyBoof-compatible API surface
+
+Closed the Python API completeness part of issue #1.
+
+### Added
+
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  `BatchScanConfig`, `QrCodeAlignment`, `QrCodeDetector.detect_polygons_only()`,
+  `Point2D.as_tuple()`, `Polygon2D.as_list()`, polygon indexing, QR result
+  Pythonic aliases, `QrCode.as_dict()`, `ScanResult.ok`, and
+  `ScanResult.as_dict()`.
+- [python/boofcv_qr/__init__.pyi](python/boofcv_qr/__init__.pyi): typed stubs
+  for the expanded result/config surface and overloaded `scan_batch()`.
+- [docs/python_api.md](docs/python_api.md), [README.md](README.md), and
+  [examples/python/scan_qr.py](examples/python/scan_qr.py): examples for typed
+  batch config, polygon-only detection, and result metadata helpers.
+- [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md): release note coverage
+  for the expanded Python API.
+
+### Compatibility
+
+Existing calls remain supported: `scan_batch(paths, threads=0, config=None)`
+and `QrCodeDetector.detect(image)` are unchanged. The new
+`scan_batch(paths, BatchScanConfig())` form is additive.
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_tests boofcv_qr_python -- -j`
+  -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `PYTHONPATH=build/python python3 tests/python/test_pyboof_compat.py` -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 5000` -> PASS,
+  0.13 ms/image on the local fixture run.
+
+## 2026-05-13 — packaging: add cibuildwheel release path
+
+Closed the packaging hardening part of issue #2.
+
+### Added
+
+- [pyproject.toml](pyproject.toml): `cibuildwheel` build/test config for
+  CPython 3.10-3.14 and macOS `delocate` repair.
+- [.github/workflows/release.yml](.github/workflows/release.yml): macOS
+  `cibuildwheel` job, Linux system-OpenCV wheel job with `auditwheel show`,
+  release-artifact smoke installs, and a separate source-archive job.
+- [docs/packaging.md](docs/packaging.md): supported Python/OS/OpenCV matrix,
+  macOS wheel workflow, Linux system-OpenCV policy, and local wheel smoke.
+
+### Policy
+
+Linux artifacts are deliberately named `linux-system-opencv` and are not
+advertised as manylinux. True manylinux support needs an explicit OpenCV
+bundling strategy before `auditwheel repair` can produce policy-compliant
+portable wheels.
+
+### Verification
+
+- `python3 -m pip wheel . --no-deps -w /tmp/boofcv_qr_dist_check` -> PASS.
+- Clean venv install of `numpy` plus the built wheel -> PASS.
+- `BOOFCV_QR_FIXTURE_DIR=tests/fixtures/qr /tmp/boofcv_qr_smoke/bin/python tests/python/test_pyboof_compat.py`
+  -> PASS.
+
+## 2026-05-13 — perf: cap OpenCV threads for Apple Silicon batch scans
+
+Closed the Apple Silicon threading part of issue #4.
+
+### Added
+
+- [CMakePresets.json](CMakePresets.json): Release and RelWithDebInfo arm64
+  presets for Apple Silicon profiling.
+- [README.md](README.md), [SMOKE_TESTS.md](SMOKE_TESTS.md), and
+  [docs/python_api.md](docs/python_api.md): documented Apple Silicon build
+  commands and OpenCV thread controls.
+
+### Changed
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): image-parallel batch mode now
+  caps OpenCV internal threads to 1 by default and prints the active OpenCV
+  thread count. Override with `QR_SCAN_OPENCV_THREADS=N` or
+  `BOOFCV_QR_OPENCV_THREADS=N`.
+- [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
+  Python `scan_batch()` applies the same default OpenCV thread cap for
+  multi-worker scans.
+
+### Findings
+
+Local OpenCV uses the GCD backend with 12 internal threads. With
+`QR_SCAN_THREADS=8`, the cap avoids image-worker × OpenCV-worker
+oversubscription. Dataset timing stayed in the same band: 3016 ms before the
+cap versus 2949 ms in the first timing run after the cap; normal regression was
+2889 ms before and 2843 ms after.
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_python -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `cmake --preset apple-arm64-release` -> PASS.
+- `cmake --build --preset apple-arm64-release --target qr_scan boofcv_qr_python -- -j`
+  -> PASS.
+- `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 5000` -> PASS.
+- `PYTHONPATH=build/python python3 tools/python/profile_python.py tests/fixtures/qr/full_v1_L_M000.png --iters 1000 --batch-size 32 --threads 8`
+  -> PASS, batch 0.034 ms/image on the sequential validation run.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+
+## 2026-05-13 — perf: add stage-level QR timing reports
+
+Closed the profiling observability gap from issue #6 without changing the
+default scan JSON schema.
+
+### Added
+
+- [include/boofcv_qr/qr_code_decoder_image.hpp](include/boofcv_qr/qr_code_decoder_image.hpp):
+  optional `QrCodeDecoderImageTiming` output for decoder format/version,
+  alignment, transform, sampling, RS, and message-decode stages.
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): `--profile` now prints a
+  stage timing table; `--stage-timings <input_dir> <output_dir>` writes
+  `stage_timings.json` with `overall`, `by_category`, `by_size_bucket`, and
+  top-bottleneck summaries.
+- [README.md](README.md) and [SMOKE_TESTS.md](SMOKE_TESTS.md): documented CLI
+  timing commands.
+
+### Findings
+
+On the BoofCV dataset with `QR_SCAN_THREADS=8`, the timing sidecar identifies
+`contour_polygon` as the top stage at 19.296 ms/image (65.6%) and
+`binarization` second at 8.553 ms/image (29.1%).
+
+### Verification
+
+- `cmake --build build --target qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `build/qr_scan --profile tests/fixtures/qr/full_v1_L_M000.png 1000` -> PASS.
+- `QR_SCAN_THREADS=8 build/qr_scan --stage-timings /path/to/boofcv-qrcodes/qrcodes /tmp/qr_stage_timing`
+  -> PASS, report written.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- Normal regression `summary.json` contains no timing fields; timing remains a
+  sidecar-only schema.
+
+## 2026-05-13 — regression: add image-level failure snapshots
+
+Closed the regression-suite observability gap from issue #5 by making failed
+dataset runs point at images instead of only categories.
+
+### Changed
+
+- [tests/regression/failure_taxonomy.py](tests/regression/failure_taxonomy.py):
+  now separates `no_decoder_candidate`, `iou_mismatch`, decoder failures, and
+  `payload_mismatch`, and records compact per-image counts in the JSON report.
+- [tools/cli/run_regression.sh](tools/cli/run_regression.sh): generates
+  `tests/regression/baseline_cpp/failure_taxonomy.json` after scoring and, on
+  drift, prints affected images with their likely stage.
+- [SMOKE_TESTS.md](SMOKE_TESTS.md): documented the regression taxonomy workflow.
+
+### Verification
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 tests/regression/failure_taxonomy.py tests/regression/baseline_cpp/summary.json --java-summary tests/regression/baseline_java/summary.json --output /tmp/qr_taxonomy_check.json --limit 8`
+  -> PASS.
+
+## 2026-05-12 (later) — accuracy: use product accuracy over Java fitting
+
+Clarified the accuracy target: Java BoofCV remains a useful diagnostic
+baseline, but C++ behavior should not be changed solely to mimic Java floating
+point or workspace-state quirks when C++ already recognizes the QR against
+ground truth.
+
+### Changed
+
+- [src/finder/qr_code_position_pattern_detector.cpp](src/finder/qr_code_position_pattern_detector.cpp):
+  restored the local RLE workspace reset in `checkLine()` because the previous
+  Java-statefulness match was regression-neutral and not a product-accuracy
+  improvement.
+- [ResearchLog.md](ResearchLog.md),
+  [docs/decisions/06_threshold_block_otsu_audit.md](docs/decisions/06_threshold_block_otsu_audit.md),
+  and [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md):
+  documented that Java/C++ residuals caused by floating-point/runtime
+  differences are accepted unless they hurt C++ ground-truth recognition.
+
+## 2026-05-12 — accuracy: add failure taxonomy for BoofCV parity
+
+Started the accuracy-parity track by making the Java/C++ regression gap
+inspectable at image and stage level.
+
+### Added
+
+- [tests/regression/failure_taxonomy.py](tests/regression/failure_taxonomy.py):
+  image-level taxonomy for C++ misses and optional Java/C++ parity drift.
+
+### Changed
+
+- [src/finder/qr_code_position_pattern_detector.cpp](src/finder/qr_code_position_pattern_detector.cpp):
+  removed a C++-only per-call RLE workspace reset so `checkLine()` matches
+  BoofCV Java's stateful workspace semantics.
+- [tests/accepted_residuals.json](tests/accepted_residuals.json),
+  [docs/decisions/06_threshold_block_otsu_audit.md](docs/decisions/06_threshold_block_otsu_audit.md),
+  [src/decoder/qr_code_decoder_image.md](src/decoder/qr_code_decoder_image.md),
+  and [ResearchLog.md](ResearchLog.md): refreshed the monitor/glare residual
+  image taxonomy and corrected the stale `glare/image007` note.
+
+### Verification
+
+- `cmake --build build --target boofcv_qr_tests qr_scan -- -j` -> PASS.
+- `ctest --test-dir build -R "QrCodePositionPatternDetector" --output-on-failure`
+  -> 6/6 PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `PYTHONDONTWRITEBYTECODE=1 python3 tests/regression/failure_taxonomy.py tests/regression/baseline_cpp/summary.json --java-summary tests/regression/baseline_java/summary.json --output /tmp/qr_accuracy_parity_taxonomy.json --limit 12`
+  -> PASS.
+
 ## 2026-05-11 (later²¹) — release: harden Python API and GitHub packaging
 
 Prepared the repository for a first GitHub release and expanded the Python

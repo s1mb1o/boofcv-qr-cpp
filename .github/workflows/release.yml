@@ -7,13 +7,38 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-artifacts:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
-    runs-on: ${{ matrix.os }}
+  macos-wheels:
+    name: macOS cibuildwheel
+    runs-on: macos-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cibuildwheel
+        run: python -m pip install --upgrade pip cibuildwheel==3.3.1 delocate
+
+      - name: Build repaired macOS wheels
+        env:
+          CIBW_PLATFORM: macos
+        run: python -m cibuildwheel --output-dir dist
+
+      - name: Upload macOS wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: boofcv-qr-cpp-macos-cibuildwheel
+          path: dist/*.whl
+
+  linux-system-opencv-wheels:
+    name: Linux system-OpenCV wheel / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
@@ -27,7 +52,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install Ubuntu dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -35,30 +59,54 @@ jobs:
             cmake \
             libopencv-dev
 
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
-        run: brew install opencv
+      - name: Install Python build tools
+        run: python -m pip install --upgrade pip numpy auditwheel
 
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w dist
 
-      - name: Build source archive
-        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+      - name: Inspect Linux wheel policy
+        run: auditwheel show dist/*.whl
+
+      - name: Install wheel and run Python smoke
+        shell: bash
         run: |
+          python -m venv /tmp/boofcv_qr_smoke
+          /tmp/boofcv_qr_smoke/bin/python -m pip install --upgrade pip
+          /tmp/boofcv_qr_smoke/bin/python -m pip install numpy dist/*.whl
+          BOOFCV_QR_FIXTURE_DIR="$PWD/tests/fixtures/qr" \
+            /tmp/boofcv_qr_smoke/bin/python tests/python/test_pyboof_compat.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: boofcv-qr-cpp-linux-system-opencv-py${{ matrix.python-version }}
+          path: dist/*.whl
+
+  source-archive:
+    name: Source archive
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build source archive
+        run: |
+          mkdir -p dist
           git archive --format=tar.gz \
             --prefix=boofcv-qr-cpp-${GITHUB_REF_NAME}/ \
             -o dist/boofcv-qr-cpp-${GITHUB_REF_NAME}.tar.gz \
             HEAD
 
-      - name: Upload artifacts
+      - name: Upload source archive
         uses: actions/upload-artifact@v4
         with:
-          name: boofcv-qr-cpp-${{ runner.os }}-py${{ matrix.python-version }}
-          path: dist/*
+          name: boofcv-qr-cpp-source
+          path: dist/*.tar.gz
 
   github-release:
     name: GitHub release
-    needs: build-artifacts
+    needs: [macos-wheels, linux-system-opencv-wheels, source-archive]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:

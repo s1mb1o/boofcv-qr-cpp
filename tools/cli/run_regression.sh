@@ -19,6 +19,9 @@ SCORE_OUT="${REPO_ROOT}/tests/regression/baseline_cpp/score.json"
 BASELINE_JSON="${REPO_ROOT}/tests/baseline.json"
 ACCEPTED_RESIDUALS_JSON="${REPO_ROOT}/tests/accepted_residuals.json"
 SCORE_PY="${REPO_ROOT}/tests/regression/score.py"
+TAXONOMY_PY="${REPO_ROOT}/tests/regression/failure_taxonomy.py"
+TAXONOMY_OUT="${REPO_ROOT}/tests/regression/baseline_cpp/failure_taxonomy.json"
+JAVA_SUMMARY="${REPO_ROOT}/tests/regression/baseline_java/summary.json"
 
 if [[ ! -d "${DATASET_ROOT}" ]]; then
     echo "Dataset not found: ${DATASET_ROOT}" >&2
@@ -44,6 +47,21 @@ echo ">>> Running qr_scan against ${DATASET_ROOT}..."
 echo ">>> Scoring against ground truth..."
 python3 "${SCORE_PY}" "${CPP_OUTPUT_DIR}/summary.json" "${SCORE_OUT}" --iou 0.5
 
+echo ""
+echo ">>> Building image-level failure taxonomy..."
+if [[ -f "${JAVA_SUMMARY}" ]]; then
+    PYTHONDONTWRITEBYTECODE=1 python3 "${TAXONOMY_PY}" \
+        "${CPP_OUTPUT_DIR}/summary.json" \
+        --java-summary "${JAVA_SUMMARY}" \
+        --output "${TAXONOMY_OUT}" \
+        --limit 12
+else
+    PYTHONDONTWRITEBYTECODE=1 python3 "${TAXONOMY_PY}" \
+        "${CPP_OUTPUT_DIR}/summary.json" \
+        --output "${TAXONOMY_OUT}" \
+        --limit 12
+fi
+
 # 4. Diff per-category against the locked Java baseline.
 #
 # Categories within ±2pp of Java are tagged "in-band". Categories listed
@@ -64,6 +82,8 @@ from pathlib import Path
 
 baseline = json.loads(Path("${BASELINE_JSON}").read_text())
 score = json.loads(Path("${SCORE_OUT}").read_text())
+taxonomy_path = Path("${TAXONOMY_OUT}")
+taxonomy = json.loads(taxonomy_path.read_text()) if taxonomy_path.exists() else {}
 try:
     accepted_doc = json.loads(Path("${ACCEPTED_RESIDUALS_JSON}").read_text())
 except FileNotFoundError:
@@ -114,20 +134,51 @@ delta_agg = (s_agg - b_agg) * 100.0
 print(f"{'AGGREGATE':<16} {fmt_pct(b_agg):>9} {fmt_pct(s_agg):>9} {delta_agg:+7.2f}pp")
 print("")
 
+def print_category_images(cat, limit=12):
+    bucket = taxonomy.get("categories", {}).get(cat, {})
+    rows = bucket.get("notable_images", [])
+    rows = [
+        r for r in rows
+        if r.get("cpp_stage") != "ok" or r.get("parity") not in ("same", "no_java_reference")
+    ]
+    rows.sort(key=lambda r: (
+        r.get("cpp_decode_success", 0) - r.get("java_decode_success", 0),
+        -r.get("cpp_missed_gt", 0),
+        r.get("cpp_stage", ""),
+        r.get("image_path", ""),
+    ))
+    if not rows:
+        print(f"  {cat}: no image-level taxonomy rows available")
+        return
+    for r in rows[:limit]:
+        delta = r.get("cpp_decode_success", 0) - r.get("java_decode_success", 0)
+        print(
+            f"  {r.get('image_path', '<unknown>')}: "
+            f"stage={r.get('cpp_stage', '<unknown>')} "
+            f"cpp={r.get('cpp_decode_success', 0)} "
+            f"java={r.get('java_decode_success', 0)} "
+            f"delta={delta:+d} "
+            f"dets={r.get('cpp_detections', 0)} "
+            f"failures={r.get('cpp_failures', 0)}"
+        )
+
 failed = bool(real_regressions or accepted_drifts)
 if real_regressions:
     print(f"FAIL: {len(real_regressions)} new regression(s) — categories outside +/-2pp")
     print(f"      AND not listed in tests/accepted_residuals.json:")
     for cat, d in real_regressions:
         print(f"  {cat}: {d:+.2f}pp")
+        print_category_images(cat)
 if accepted_drifts:
     print(f"FAIL: {len(accepted_drifts)} accepted residual(s) drifted past tolerance:")
     for cat, observed, expected, tol in accepted_drifts:
         print(f"  {cat}: observed {observed:+.2f}pp, expected {expected:+.2f}pp ±{tol:.1f}")
+        print_category_images(cat)
     print("      Update tests/accepted_residuals.json + the ADR if this is the new")
     print("      accepted state, or investigate the regression.")
 if not failed:
     print("PASS: no new regressions; all out-of-band categories are documented")
     print("      residuals within their accepted-tolerance bands.")
+    print(f"      Image-level taxonomy: {taxonomy_path}")
 sys.exit(1 if failed else 0)
 PY
