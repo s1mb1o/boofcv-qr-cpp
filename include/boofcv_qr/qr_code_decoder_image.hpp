@@ -206,6 +206,17 @@ public:
     const std::vector<QrCode>& getSuccesses() const { return successes_; }
     const std::vector<QrCode>& getFailures() const { return failures_; }
 
+    void releaseScratch() {
+        decoder_.releaseScratch();
+        alignmentLocator_.releaseScratch();
+        gridReader_.releaseImage();
+        std::vector<QrCode>().swap(successes_);
+        std::vector<QrCode>().swap(failures_);
+        std::vector<QrCode>().swap(storageQR_);
+        bits_.releaseMemory();
+        std::vector<float>().swap(intensityBits_);
+    }
+
     // Read-only flag mirroring the Config setting that's currently
     // active. (Set at ctor time via Config; runtime mutation is not
     // supported per the reentrant-Config contract.)

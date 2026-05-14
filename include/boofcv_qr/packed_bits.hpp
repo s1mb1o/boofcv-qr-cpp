@@ -203,6 +203,11 @@ public:
         }
     }
 
+    void releaseMemory() {
+        std::vector<std::uint8_t>().swap(data);
+        size = 0;
+    }
+
     /**
      * Increase the data array so it can store `amountBits` more.
      * If saveValue is true the existing bytes are preserved.

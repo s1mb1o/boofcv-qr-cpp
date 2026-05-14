@@ -99,7 +99,7 @@ BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
 Expected: the script prints `PASS: no new regressions` and aggregate decode
 rate remains at 74.40% against the locked baseline. Batch output should also
 show `OpenCV threads=1, capped for image-parallel batch`, `max in-flight
-64.0 MP`, and `reset pipeline >= 8.0 MP` unless the corresponding environment
+64.0 MP`, and `release scratch >= 8.0 MP` unless the corresponding environment
 override is set.
 
 The regression driver also writes an image-level taxonomy to

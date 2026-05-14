@@ -26,6 +26,13 @@ public:
     // upper bound).
     double compute(double x0, double y0, double x1, double y1);
 
+    void releaseImage() {
+        image_.release();
+        imageWidth_ = 0;
+        imageHeight_ = 0;
+        length_ = 0.0;
+    }
+
     // True if `(x, y)` is inside the image. Strict less-than at the
     // upper bound (matches BoofCV's `BoofMiscOps.isInside`).
     bool isInside(double x, double y) const;

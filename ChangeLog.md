@@ -1,5 +1,39 @@
 # ChangeLog
 
+## 2026-05-14 — memory: release large batch scratch without pipeline rebuilds
+
+Closed issue #10.
+
+### Changed
+
+- Added `releaseScratch()` hooks through the QR pipeline for retained
+  `cv::Mat` image references, binarizer histograms, contour labels, packed
+  contour points, polygon/refinement work buffers, QR decoder scratch, and
+  alignment/grid-reader image refs.
+- CLI and Python batch workers now call `releaseLargeScratch()` after images
+  crossing the existing `*_RESET_PIPELINE_MPIX` threshold instead of rebuilding
+  the configured detector pipeline.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8`, C++ batch RSS
+dropped from **1060.1 MiB** after the scheduler pass to **981.3 MiB**. Batch
+elapsed time was **3180 ms** and decode stayed unchanged at **936 / 1258**
+(**74.40%**).
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_python -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `QR_SCAN_THREADS=2 build/qr_scan --stage-timings tests/fixtures/qr /tmp/qr_scratch_stage`
+  plus JSON validation -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `BOOFCV_QR_DATASET_ROOT=... QR_BENCH_CPP_THREADS=8 QR_BENCH_SKIP_JAVA=1 tools/benchmark_compare.sh /tmp/qr_bench_scratch_release_final`
+  -> PASS, C++ batch RSS 981.3 MiB.
+- `PYTHONPATH=build/python python3 tools/python/profile_python.py tests/fixtures/qr/full_v1_L_M000.png --iters 200 --batch-size 32 --threads 8`
+  -> PASS, batch 0.043 ms/image.
+
 ## 2026-05-14 — python: expose batch memory controls
 
 Closed issue #9.
@@ -9,7 +43,7 @@ Closed issue #9.
 - [bindings/python/boofcv_qr_bindings.cpp](bindings/python/boofcv_qr_bindings.cpp):
   `BatchScanConfig.max_in_flight_mpix` and
   `BatchScanConfig.reset_pipeline_mpix`, plus the same size-aware scheduler and
-  large-image pipeline reset policy used by the CLI batch path.
+  large-image scratch-release policy used by the CLI batch path.
 - [python/boofcv_qr/__init__.pyi](python/boofcv_qr/__init__.pyi): typed stubs
   for the new batch memory controls.
 

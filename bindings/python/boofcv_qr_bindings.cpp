@@ -642,6 +642,13 @@ public:
         orchestrator_.process(positions, gray);
     }
 
+    void releaseLargeScratch() {
+        binary_.release();
+        binarizer_.releaseScratch();
+        finder_->releaseScratch();
+        orchestrator_.releaseScratch();
+    }
+
     std::vector<boofcv_qr::QrCode> detectPolygonsOnly(const cv::Mat& gray) {
         binarizer_.process(gray, binary_);
         finder_->process(gray, binary_);
@@ -1041,10 +1048,8 @@ std::vector<ScanResult> scanBatchConfigured(py::object paths,
                                         result.failures.push_back(
                                             toPythonQrCode(qr));
                                     }
-                                    if (shouldResetPipeline(pixels)) {
-                                        pipeline = std::make_unique<DetectorPipeline>(
-                                            cppConfig);
-                                    }
+                                    if (shouldResetPipeline(pixels))
+                                        pipeline->releaseLargeScratch();
                                 }
                             } catch (const cv::Exception& e) {
                                 result.error =

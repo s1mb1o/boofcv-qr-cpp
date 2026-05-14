@@ -74,6 +74,8 @@ public:
     void setConnectRule(ConnectRule rule);
     ConnectRule getConnectRule() const { return tracer->getConnectRule(); }
 
+    void releaseScratch();
+
 private:
     void handleStep1();
     void handleStep2(cv::Mat& labeled, int32_t label);

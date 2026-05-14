@@ -53,6 +53,17 @@ public:
     static int32_t getLengthBitsBytes(int32_t version);
     static int32_t getLengthBitsKanji(int32_t version);
 
+    void releaseScratch() {
+        std::vector<std::uint8_t>().swap(message);
+        std::vector<std::uint8_t>().swap(ecc);
+        std::string().swap(utils.workString);
+        std::string().swap(utils.selectedByteEncoding);
+        utils.failureCause = Failure::NONE;
+        utils.encodingEci.reset();
+        encodingEci.reset();
+        totalErrorBits = 0;
+    }
+
     // Public mutable surface so tests / consumers can inspect intermediate
     // state. Mirrors Java's package-private fields.
     bool ignorePaddingBytes = false;

@@ -178,4 +178,10 @@ void LinearContourLabelChang2004::setConnectRule(ConnectRule rule) {
         tracer = std::make_unique<ContourTracer>(rule);
 }
 
+void LinearContourLabelChang2004::releaseScratch() {
+    border.release();
+    packedPoints.releaseMemory();
+    std::vector<ContourPacked>().swap(contours);
+}
+
 }  // namespace boofcv_qr

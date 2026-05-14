@@ -62,8 +62,9 @@ oversubscription. Set `BatchScanConfig.opencv_threads`, or
 experiments.
 
 Multi-worker scans also use the same memory controls as the CLI. By default,
-up to 64 megapixels may be in flight and worker pipelines are rebuilt after
-images of at least 8 megapixels. Set `BatchScanConfig.max_in_flight_mpix` and
+up to 64 megapixels may be in flight and worker pipelines release large
+scratch buffers after images of at least 8 megapixels. Set
+`BatchScanConfig.max_in_flight_mpix` and
 `BatchScanConfig.reset_pipeline_mpix` to positive values to override, set either
 to `0.0` to disable that control, or leave the default negative value to use
 environment/default policy. Environment fallbacks are

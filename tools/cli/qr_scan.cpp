@@ -329,6 +329,13 @@ struct Pipeline {
         runTimed(gray, nullptr);
     }
 
+    void releaseLargeScratch() {
+        binary.release();
+        binarizer.releaseScratch();
+        finder->releaseScratch();
+        orchestrator.releaseScratch();
+    }
+
     void runTimed(const cv::Mat& gray, StageTiming* timing) {
         auto totalStart = std::chrono::steady_clock::now();
         auto t0 = totalStart;
@@ -1487,7 +1494,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
                     memoryConfig.maxInFlightFromEnv ? " via QR_SCAN_MAX_IN_FLIGHT_MPIX" : "");
     }
     if (memoryConfig.resetPipelinePixels > 0) {
-        std::printf(" (reset pipeline >= %.1f MP%s)",
+        std::printf(" (release scratch >= %.1f MP%s)",
                     static_cast<double>(memoryConfig.resetPipelinePixels) / 1000000.0,
                     memoryConfig.resetPipelineFromEnv ? " via QR_SCAN_RESET_PIPELINE_MPIX" : "");
     }
@@ -1531,7 +1538,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
                         processOne(*pipe, jobs[index].path, inputDir,
                                    records[index], collectTimings);
                         if (shouldResetPipeline(index))
-                            pipe = std::make_unique<Pipeline>();
+                            pipe->releaseLargeScratch();
                     }
                     printProgress();
                 }
@@ -1552,7 +1559,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
                         processOne(*pipe, jobs[index].path, inputDir, rec,
                                    collectTimings);
                         if (shouldResetPipeline(index))
-                            pipe = std::make_unique<Pipeline>();
+                            pipe->releaseLargeScratch();
                     }
                     if (!writeRecordFile(inputDir, outputDir, jobs[index].path,
                                          rec, &ioMutex)) {

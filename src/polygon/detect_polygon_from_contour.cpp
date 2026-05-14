@@ -552,4 +552,29 @@ bool DetectPolygonFromContour::touchesBorder(
     return false;
 }
 
+void DetectPolygonFromContour::releaseScratch() {
+    splits_.clear();
+    borderCorners_.clear();
+    polygonWork_.clear();
+    polygonDistorted_.clear();
+    contourTmp_.clear();
+    polygonPixel_.clear();
+    foundInfo_.clear();
+    contours_.clear();
+
+    std::vector<int32_t>().swap(splits_);
+    std::vector<uint8_t>().swap(borderCorners_);
+    std::vector<cv::Point2d>().swap(polygonWork_);
+    std::vector<cv::Point2d>().swap(polygonDistorted_);
+    std::vector<cv::Point2i>().swap(contourTmp_);
+    std::vector<cv::Point2i>().swap(polygonPixel_);
+    std::vector<DetectedInfo>().swap(foundInfo_);
+    std::vector<Contour>().swap(contours_);
+
+    labeled_.release();
+    contourLabeller_.releaseScratch();
+    if (contourEdgeIntensity_)
+        contourEdgeIntensity_->releaseImage();
+}
+
 }  // namespace boofcv_qr

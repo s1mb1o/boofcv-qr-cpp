@@ -1,5 +1,30 @@
 # ResearchLog
 
+## 2026-05-14 — Scratch release beats detector rebuild for batch RSS
+
+### Finding
+
+The previous large-image policy reclaimed memory by replacing each worker's
+whole detector pipeline. That worked, but it mixed two concerns: dropping
+retained scratch and rebuilding configured detector objects.
+
+The retained memory was concentrated in shallow `cv::Mat` references to the
+last gray image plus binary/label images and contour work stores. Releasing
+those explicitly preserves configuration and avoids construction churn while
+dropping the same large buffers after high-resolution images.
+
+### Measurement
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`, default 64 MP budget:
+
+| run | elapsed | real | max RSS | footprint | decode |
+|---|---:|---:|---:|---:|---:|
+| scheduler + pipeline rebuild | 3211 ms | 3.30 s | 1060.1 MiB | 470.6 MiB | 936 / 1258 |
+| explicit scratch release | 3180 ms | 3.26 s | 981.3 MiB | 461.8 MiB | 936 / 1258 |
+
+The extra RSS reduction is about **79 MiB** on this dataset, and throughput
+did not regress.
+
 ## 2026-05-14 — Python batch memory-control parity
 
 ### Finding

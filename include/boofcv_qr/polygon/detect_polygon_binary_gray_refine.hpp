@@ -28,6 +28,7 @@ public:
     explicit ScoreLineSegmentEdge(int32_t numSamples) : numSamples_(numSamples) {}
 
     void setImage(const cv::Mat& image) { integral_.setImage(image); }
+    void releaseImage() { integral_.releaseImage(); }
 
     // Returns average tangential derivative along the line segment.
     // Derivative is computed in direction of tangent. A positive step in
@@ -58,6 +59,7 @@ public:
                           int32_t numSamples);
 
     void setImage(const cv::Mat& image) { scorer_.setImage(image); }
+    void releaseImage() { scorer_.releaseImage(); }
 
     // Compute average inside/outside intensity along each side. Returns
     // true if any side had an in-image sample.
@@ -86,19 +88,22 @@ private:
 
 // Mirror of `boofcv.alg.shapes.polygon.AdjustPolygonForThresholdBias`.
 class AdjustPolygonForThresholdBias {
-public:
-    // Adjust the polygon vertices to undo the floor() bias the binary
-    // threshold introduces. Polygon may LOSE vertices if a corner
-    // becomes a near-duplicate of its neighbour after the shift —
-    // caller must check `polygon.size()` afterwards.
-    void process(std::vector<cv::Point2d>& polygon, bool clockwise);
-
 private:
     // Per-side line-segment scratch — `(a.x, a.y, b.x, b.y)` per side.
     struct LineSeg2D {
         cv::Point2d a;
         cv::Point2d b;
     };
+
+public:
+    // Adjust the polygon vertices to undo the floor() bias the binary
+    // threshold introduces. Polygon may LOSE vertices if a corner
+    // becomes a near-duplicate of its neighbour after the shift —
+    // caller must check `polygon.size()` afterwards.
+    void process(std::vector<cv::Point2d>& polygon, bool clockwise);
+    void releaseScratch() { std::vector<LineSeg2D>().swap(segments_); }
+
+private:
     std::vector<LineSeg2D> segments_;
 };
 
@@ -131,6 +136,16 @@ public:
     // Detect polygons in `gray` using the binary mask `binary`. Both
     // must be `CV_8UC1`.
     void process(const cv::Mat& gray, const cv::Mat& binary);
+
+    void releaseScratch() {
+        detector_->releaseScratch();
+        if (refineGray_)
+            refineGray_->releaseScratch();
+        if (adjustForBias_)
+            adjustForBias_->releaseScratch();
+        edgeIntensity_.releaseImage();
+        std::vector<cv::Point2d>().swap(work_);
+    }
 
     // Refines the fit of the polygon at `info`. Returns true if any
     // refinement stage improved the fit.

@@ -47,6 +47,11 @@ public:
         return *squareDetector_;
     }
 
+    void releaseScratch() {
+        gray_.release();
+        squareDetector_->releaseScratch();
+    }
+
     double getProfilingMS() const { return profilingMS_; }
     double getLastContourPolygonMS() const { return lastContourPolygonMS_; }
     double getLastFinderValidationMS() const { return lastFinderValidationMS_; }

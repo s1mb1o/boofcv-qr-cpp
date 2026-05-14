@@ -39,6 +39,11 @@ public:
     // header copy); caller must keep the underlying buffer alive for
     // the duration of reads.
     void setImage(const cv::Mat& image);
+    void releaseImage() {
+        image_.release();
+        imageWidth = 0;
+        imageHeight = 0;
+    }
 
     // 4-corner setup (single finder pattern). Sets the working threshold.
     void setSquare(const std::array<cv::Point2d, 4>& square, float threshold);

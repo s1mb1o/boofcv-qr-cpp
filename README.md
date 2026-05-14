@@ -90,9 +90,9 @@ for experiments with `QR_SCAN_OPENCV_THREADS=N` or
 `BOOFCV_QR_OPENCV_THREADS=N`.
 
 Multi-worker batch scans also limit high-resolution image concurrency by
-default: up to 64 megapixels may be processed at once, and worker pipelines are
-rebuilt after images of at least 8 megapixels so large scratch buffers are not
-retained for the whole batch. Override or disable these controls with
+default: up to 64 megapixels may be processed at once, and worker pipelines
+release large scratch buffers after images of at least 8 megapixels. Override
+or disable these controls with
 `QR_SCAN_MAX_IN_FLIGHT_MPIX=N` and `QR_SCAN_RESET_PIPELINE_MPIX=N` (`0`
 disables each limit).
 

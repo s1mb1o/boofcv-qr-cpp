@@ -36,6 +36,8 @@ struct RefinePolygonToGray {
     // if it failed (e.g. shape too small or all sides reverted).
     virtual bool refine(const std::vector<cv::Point2d>& input,
                          std::vector<cv::Point2d>& output) = 0;
+
+    virtual void releaseScratch() {}
 };
 
 // Mirror of `boofcv.factory.shape.ConfigRefinePolygonLineToImage`.
@@ -69,6 +71,12 @@ public:
 
     bool refine(const std::vector<cv::Point2d>& input,
                  std::vector<cv::Point2d>& output) override;
+
+    void releaseScratch() override {
+        snapToEdge_.releaseScratch();
+        std::vector<LineGeneral2D>().swap(general_);
+        std::vector<cv::Point2d>().swap(previous_);
+    }
 
     SnapToLineEdge& getSnapToEdge() { return snapToEdge_; }
     const SnapToLineEdge& getSnapToEdge() const { return snapToEdge_; }
