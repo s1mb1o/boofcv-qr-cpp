@@ -1,5 +1,42 @@
 # ResearchLog
 
+## 2026-05-14 — Benchmark reproducibility and batch RSS audit
+
+### Finding
+
+The high batch resident set is driven by high-resolution images being processed
+concurrently and by per-worker QR pipelines retaining their largest scratch
+buffers. The normal batch path also kept every `Record` until the end, which is
+not the dominant cost on the 562-image BoofCV dataset but scales poorly for
+larger path batches.
+
+The new benchmark report script records enough state to reproduce comparisons:
+git commit/status, host, CMake/Python/Java versions, exact commands, macOS
+`/usr/bin/time -l` maximum resident set size, memory footprint, summary elapsed
+time, and C++ score.
+
+### Measurements
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`:
+
+| run | elapsed | real | max RSS | decode |
+|---|---:|---:|---:|---:|
+| pre-change C++ batch | 2673 ms | 2.73 s | 1412.9 MiB | 936 / 1258 |
+| final C++ batch, 64 MP budget | 3734 ms | 3.82 s | 1072.1 MiB | 936 / 1258 |
+| post-change C++ serial | 18146 ms | 18.83 s | 452.7 MiB | 936 / 1258 |
+
+The 48 MP budget produced lower RSS (**958.0 MiB**) but slowed the batch to
+**4.64 s**. The 64 MP budget is the better default tradeoff for this dataset:
+about **24%** lower RSS than the pre-change batch while preserving most of the
+parallel speedup.
+
+### Consequence
+
+Future performance work should treat the memory budget as part of benchmark
+metadata. For low-memory deployments, set `QR_SCAN_MAX_IN_FLIGHT_MPIX=48` or
+lower; for maximum throughput on memory-rich machines, set it to `0` and leave
+only `QR_SCAN_RESET_PIPELINE_MPIX=8` or disable both controls.
+
 ## 2026-05-13 — Python API completeness pass
 
 ### Finding

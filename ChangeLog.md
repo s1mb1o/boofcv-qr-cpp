@@ -1,5 +1,49 @@
 # ChangeLog
 
+## 2026-05-14 — perf: add reproducible memory benchmark and reduce batch RSS
+
+### Added
+
+- [tools/benchmark_compare.sh](tools/benchmark_compare.sh): reproducible local
+  benchmark runner for C++ serial, C++ batch, and the Java BoofCV reference.
+  The report captures commands, host/tool versions, `/usr/bin/time -l` maximum
+  resident set size, macOS memory footprint, elapsed time, and C++ regression
+  score.
+
+### Changed
+
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): normal batch mode writes
+  per-image records from workers and builds ordered `summary.json` from those
+  files instead of retaining every `Record` in memory.
+- [tools/cli/qr_scan.cpp](tools/cli/qr_scan.cpp): multi-worker batch scans now
+  cap high-resolution in-flight work to 64 MP by default and rebuild worker
+  pipelines after images of at least 8 MP. Override with
+  `QR_SCAN_MAX_IN_FLIGHT_MPIX=N` and `QR_SCAN_RESET_PIPELINE_MPIX=N`; set either
+  to `0` to disable that control.
+- [README.md](README.md) and [SMOKE_TESTS.md](SMOKE_TESTS.md): documented the
+  memory controls and benchmark report workflow.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8`, C++ batch RSS
+dropped from **1412.9 MiB** to **1072.1 MiB** with
+`QR_SCAN_MAX_IN_FLIGHT_MPIX=64` and the default 8 MP pipeline reset. Regression
+decode stayed unchanged at **936 / 1258** (**74.40%**). Batch wall time moved
+from **2.73 s** to **3.82 s** in the final report run.
+
+### Verification
+
+- `cmake --build build --target qr_scan -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `QR_SCAN_THREADS=4 build/qr_scan tests/fixtures/qr /tmp/qr_fixture_mem` plus
+  `tests/regression/score.py` and JSON validation -> PASS.
+- `QR_SCAN_THREADS=2 build/qr_scan --stage-timings tests/fixtures/qr /tmp/qr_stage_mem_smoke`
+  plus JSON validation -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `BOOFCV_QR_DATASET_ROOT=... QR_BENCH_CPP_THREADS=8 tools/benchmark_compare.sh /tmp/qr_bench_after_rss64`
+  -> PASS, C++ aggregate decode rate 74.40%.
+
 ## 2026-05-13 — python: expand PyBoof-compatible API surface
 
 Closed the Python API completeness part of issue #1.

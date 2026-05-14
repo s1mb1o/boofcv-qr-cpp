@@ -89,6 +89,13 @@ avoid multiplying `QR_SCAN_THREADS` by OpenCV's GCD/TBB workers. Override this
 for experiments with `QR_SCAN_OPENCV_THREADS=N` or
 `BOOFCV_QR_OPENCV_THREADS=N`.
 
+Multi-worker batch scans also limit high-resolution image concurrency by
+default: up to 64 megapixels may be processed at once, and worker pipelines are
+rebuilt after images of at least 8 megapixels so large scratch buffers are not
+retained for the whole batch. Override or disable these controls with
+`QR_SCAN_MAX_IN_FLIGHT_MPIX=N` and `QR_SCAN_RESET_PIPELINE_MPIX=N` (`0`
+disables each limit).
+
 Profile one image with stage timing:
 
 ```bash
@@ -197,6 +204,20 @@ BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
 ```
 
 The dataset itself is not vendored in this repository.
+
+For reproducible local speed and memory reports against the C++ CLI and the
+Java BoofCV reference:
+
+```bash
+BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
+  QR_BENCH_CPP_THREADS=8 \
+  tools/benchmark_compare.sh /tmp/boofcv_qr_benchmark
+```
+
+The report includes commands, host/tool versions, `/usr/bin/time -l` RSS and
+memory footprint, C++ regression scores, and Java reference timing/RSS when a
+usable JDK and cached Gradle dependencies are available. Set
+`QR_BENCH_SKIP_JAVA=1` for C++-only runs.
 
 ## Project Name
 

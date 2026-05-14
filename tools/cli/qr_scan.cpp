@@ -13,6 +13,8 @@
 //   qr_scan <single_image.png>           # single-image; emits JSON to stdout
 //   qr_scan --stage-timings <input_dir> <output_dir>  # batch + sidecar timing report
 //   QR_SCAN_THREADS=N qr_scan <input_dir> <output_dir>  # pin batch workers
+//   QR_SCAN_MAX_IN_FLIGHT_MPIX=N qr_scan <input_dir> <output_dir>  # cap large-image concurrency
+//   QR_SCAN_RESET_PIPELINE_MPIX=N qr_scan <input_dir> <output_dir>  # release worker scratch after large images
 //
 // JSON is emitted with a small hand-written serialiser — pulling in
 // nlohmann/json for one CLI binary isn't worth it. The shape matches
@@ -36,6 +38,7 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -557,6 +560,109 @@ std::string recordJson(const Record& rec) {
     return oss.str();
 }
 
+fs::path recordOutputPath(const fs::path& inputDir,
+                          const fs::path& outputDir,
+                          const fs::path& imagePath) {
+    fs::path rel = fs::relative(imagePath, inputDir);
+    fs::path outFile = outputDir / rel;
+    outFile.replace_extension(".json");
+    return outFile;
+}
+
+bool writeRecordFile(const fs::path& inputDir,
+                     const fs::path& outputDir,
+                     const fs::path& imagePath,
+                     const Record& rec,
+                     std::mutex* ioMutex = nullptr) {
+    std::string json = recordJson(rec);
+    fs::path outFile = recordOutputPath(inputDir, outputDir, imagePath);
+
+    auto write = [&]() {
+        fs::create_directories(outFile.parent_path());
+        std::ofstream f(outFile);
+        if (!f.is_open()) {
+            std::fprintf(stderr, "Cannot open record file %s\n",
+                         outFile.string().c_str());
+            return false;
+        }
+        f << json;
+        return true;
+    };
+
+    if (ioMutex != nullptr) {
+        std::lock_guard<std::mutex> lock(*ioMutex);
+        return write();
+    }
+    return write();
+}
+
+bool beginSummary(std::ofstream& summary,
+                  const fs::path& inputDir,
+                  const fs::path& outputDir,
+                  std::size_t imageCount,
+                  int32_t warmupN) {
+    fs::path summaryFile = outputDir / "summary.json";
+    summary.open(summaryFile);
+    if (!summary.is_open()) {
+        std::fprintf(stderr, "Cannot open summary file %s\n",
+                     summaryFile.string().c_str());
+        return false;
+    }
+    summary << "{\n";
+    summary << "  \"dataset_root\" : \"" << JsonWriter::escape(inputDir.string()) << "\",\n";
+    summary << "  \"output_root\" : \"" << JsonWriter::escape(outputDir.string()) << "\",\n";
+    summary << "  \"port_version\" : \"qr-boofcv-cpp-9b\",\n";
+    summary << "  \"image_count\" : " << JsonWriter::num(static_cast<int32_t>(imageCount)) << ",\n";
+    summary << "  \"warmup_images\" : " << JsonWriter::num(warmupN) << ",\n";
+    summary << "  \"records\" : [";
+    return true;
+}
+
+void endSummary(std::ofstream& summary, int64_t totalMs) {
+    summary << " ],\n";
+    summary << "  \"total_elapsed_ms\" : " << JsonWriter::num(totalMs) << "\n";
+    summary << "}\n";
+    summary.close();
+}
+
+bool writeSummaryFromRecordFiles(
+    const fs::path& inputDir,
+    const fs::path& outputDir,
+    const std::vector<fs::path>& images,
+    int32_t warmupN,
+    std::chrono::steady_clock::time_point globalStart,
+    int64_t& totalMsOut) {
+    std::ofstream summary;
+    if (!beginSummary(summary, inputDir, outputDir, images.size(), warmupN))
+        return false;
+
+    bool firstRec = true;
+    for (const fs::path& image : images) {
+        fs::path recordFile = recordOutputPath(inputDir, outputDir, image);
+        std::ifstream f(recordFile);
+        if (!f.is_open()) {
+            std::fprintf(stderr, "Cannot open record file %s for summary\n",
+                         recordFile.string().c_str());
+            return false;
+        }
+        if (firstRec) {
+            firstRec = false;
+            summary << " ";
+        } else {
+            summary << ", ";
+        }
+        summary << f.rdbuf();
+    }
+
+    auto globalEnd = std::chrono::steady_clock::now();
+    totalMsOut =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            globalEnd - globalStart)
+            .count();
+    endSummary(summary, totalMsOut);
+    return true;
+}
+
 // ---------------------------------------------------------------------
 // Greyscale image loader. Mirrors BoofCV's `UtilImageIO.loadImage(path,
 // GrayU8.class)` which uses Java's ImageIO directly without applying
@@ -601,6 +707,130 @@ std::vector<fs::path> collectImages(const fs::path& root) {
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+struct ImageJob {
+    fs::path path;
+    int32_t width = 0;
+    int32_t height = 0;
+
+    int64_t pixels() const {
+        return static_cast<int64_t>(width) * static_cast<int64_t>(height);
+    }
+};
+
+uint16_t be16(const unsigned char* p) {
+    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) |
+                                 static_cast<uint16_t>(p[1]));
+}
+
+int32_t be32(const unsigned char* p) {
+    return (static_cast<int32_t>(p[0]) << 24) |
+           (static_cast<int32_t>(p[1]) << 16) |
+           (static_cast<int32_t>(p[2]) << 8) |
+           static_cast<int32_t>(p[3]);
+}
+
+bool isJpegSof(unsigned char marker) {
+    return marker == 0xC0 || marker == 0xC1 || marker == 0xC2 ||
+           marker == 0xC3 || marker == 0xC5 || marker == 0xC6 ||
+           marker == 0xC7 || marker == 0xC9 || marker == 0xCA ||
+           marker == 0xCB || marker == 0xCD || marker == 0xCE ||
+           marker == 0xCF;
+}
+
+bool readPngSize(const fs::path& path, int32_t& width, int32_t& height) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open())
+        return false;
+    unsigned char header[24] = {};
+    in.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (in.gcount() != static_cast<std::streamsize>(sizeof(header)))
+        return false;
+    const unsigned char signature[8] =
+        {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    if (!std::equal(signature, signature + 8, header))
+        return false;
+    width = be32(header + 16);
+    height = be32(header + 20);
+    return width > 0 && height > 0;
+}
+
+bool readJpegSize(const fs::path& path, int32_t& width, int32_t& height) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open())
+        return false;
+
+    unsigned char b[2] = {};
+    in.read(reinterpret_cast<char*>(b), 2);
+    if (in.gcount() != 2 || b[0] != 0xFF || b[1] != 0xD8)
+        return false;
+
+    for (;;) {
+        unsigned char c = 0;
+        do {
+            in.read(reinterpret_cast<char*>(&c), 1);
+            if (!in)
+                return false;
+        } while (c != 0xFF);
+
+        do {
+            in.read(reinterpret_cast<char*>(&c), 1);
+            if (!in)
+                return false;
+        } while (c == 0xFF);
+
+        if (c == 0xD9 || c == 0xDA)
+            return false;
+        if (c >= 0xD0 && c <= 0xD7)
+            continue;
+
+        unsigned char lenBytes[2] = {};
+        in.read(reinterpret_cast<char*>(lenBytes), 2);
+        if (in.gcount() != 2)
+            return false;
+        uint16_t len = be16(lenBytes);
+        if (len < 2)
+            return false;
+
+        if (isJpegSof(c)) {
+            unsigned char sof[5] = {};
+            in.read(reinterpret_cast<char*>(sof), sizeof(sof));
+            if (in.gcount() != static_cast<std::streamsize>(sizeof(sof)))
+                return false;
+            height = be16(sof + 1);
+            width = be16(sof + 3);
+            return width > 0 && height > 0;
+        }
+
+        in.seekg(static_cast<std::streamoff>(len) - 2, std::ios::cur);
+        if (!in)
+            return false;
+    }
+}
+
+ImageJob makeImageJob(const fs::path& path) {
+    ImageJob job;
+    job.path = path;
+
+    std::string ext = path.extension().string();
+    for (char& c : ext) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (ext == ".png") {
+        readPngSize(path, job.width, job.height);
+    } else if (ext == ".jpg" || ext == ".jpeg") {
+        readJpegSize(path, job.width, job.height);
+    }
+    return job;
+}
+
+std::vector<ImageJob> makeImageJobs(const std::vector<fs::path>& images) {
+    std::vector<ImageJob> jobs;
+    jobs.reserve(images.size());
+    for (const fs::path& image : images)
+        jobs.push_back(makeImageJob(image));
+    return jobs;
 }
 
 int32_t chooseBatchThreads(std::size_t imageCount) {
@@ -704,6 +934,124 @@ int32_t readPositiveEnvInt(const std::vector<const char*>& names,
     }
     return 0;
 }
+
+double readNonNegativeEnvDouble(const char* name, bool* wasSet) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        if (wasSet != nullptr)
+            *wasSet = false;
+        return 0.0;
+    }
+    if (wasSet != nullptr)
+        *wasSet = true;
+    char* end = nullptr;
+    double parsed = std::strtod(value, &end);
+    if (end == value || parsed < 0.0)
+        return 0.0;
+    return parsed;
+}
+
+struct BatchMemoryConfig {
+    int64_t maxInFlightPixels = 0;
+    int64_t resetPipelinePixels = 0;
+    bool maxInFlightFromEnv = false;
+    bool resetPipelineFromEnv = false;
+};
+
+int64_t mpixToPixels(double mpix) {
+    return static_cast<int64_t>(mpix * 1000000.0);
+}
+
+BatchMemoryConfig configureBatchMemory(int32_t imageWorkers) {
+    BatchMemoryConfig cfg;
+    bool wasSet = false;
+    double maxMpix = readNonNegativeEnvDouble("QR_SCAN_MAX_IN_FLIGHT_MPIX", &wasSet);
+    cfg.maxInFlightFromEnv = wasSet;
+    if (wasSet) {
+        cfg.maxInFlightPixels = mpixToPixels(maxMpix);
+    } else if (imageWorkers > 1) {
+        cfg.maxInFlightPixels = mpixToPixels(64.0);
+    }
+
+    double resetMpix = readNonNegativeEnvDouble("QR_SCAN_RESET_PIPELINE_MPIX", &wasSet);
+    cfg.resetPipelineFromEnv = wasSet;
+    if (wasSet) {
+        cfg.resetPipelinePixels = mpixToPixels(resetMpix);
+    } else if (imageWorkers > 1) {
+        cfg.resetPipelinePixels = mpixToPixels(8.0);
+    }
+    return cfg;
+}
+
+class PixelBudget {
+public:
+    explicit PixelBudget(int64_t maxPixels) : maxPixels_(maxPixels) {}
+
+    class Lease {
+    public:
+        Lease() = default;
+        Lease(PixelBudget* owner, int64_t pixels)
+            : owner_(owner), pixels_(pixels) {}
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
+        Lease(Lease&& other) noexcept
+            : owner_(other.owner_), pixels_(other.pixels_) {
+            other.owner_ = nullptr;
+            other.pixels_ = 0;
+        }
+        Lease& operator=(Lease&& other) noexcept {
+            if (this != &other) {
+                release();
+                owner_ = other.owner_;
+                pixels_ = other.pixels_;
+                other.owner_ = nullptr;
+                other.pixels_ = 0;
+            }
+            return *this;
+        }
+        ~Lease() { release(); }
+
+    private:
+        void release() {
+            if (owner_ == nullptr)
+                return;
+            owner_->release(pixels_);
+            owner_ = nullptr;
+            pixels_ = 0;
+        }
+
+        PixelBudget* owner_ = nullptr;
+        int64_t pixels_ = 0;
+    };
+
+    Lease acquire(int64_t pixels) {
+        if (maxPixels_ <= 0 || pixels <= 0)
+            return Lease();
+        int64_t weight = std::min(pixels, maxPixels_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait(lock, [&]() {
+            return inFlightPixels_ + weight <= maxPixels_;
+        });
+        inFlightPixels_ += weight;
+        return Lease(this, weight);
+    }
+
+private:
+    void release(int64_t pixels) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            inFlightPixels_ -= pixels;
+            if (inFlightPixels_ < 0)
+                inFlightPixels_ = 0;
+        }
+        condition_.notify_all();
+    }
+
+    int64_t maxPixels_ = 0;
+    int64_t inFlightPixels_ = 0;
+    std::mutex mutex_;
+    std::condition_variable condition_;
+};
 
 struct OpenCvThreadConfig {
     int32_t before = 0;
@@ -1048,6 +1396,7 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
     std::vector<fs::path> images = collectImages(inputDir);
     std::printf("Found %zu images under %s\n", images.size(),
                 inputDir.string().c_str());
+    std::vector<ImageJob> jobs = makeImageJobs(images);
 
     // Warm up on up to 5 images (matches Java's Baseline.java warmup).
     int32_t warmupN = std::min(static_cast<int32_t>(images.size()), 5);
@@ -1064,6 +1413,8 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
 
     int32_t numThreads = chooseBatchThreads(images.size());
     OpenCvThreadConfig openCvThreads = configureOpenCvThreads(numThreads);
+    BatchMemoryConfig memoryConfig = configureBatchMemory(numThreads);
+    PixelBudget pixelBudget(memoryConfig.maxInFlightPixels);
     std::printf("Processing with %d worker thread%s",
                 numThreads, numThreads == 1 ? "" : "s");
     if (const char* env = std::getenv("QR_SCAN_THREADS")) {
@@ -1079,89 +1430,130 @@ int runBatch(const fs::path& inputDir, const fs::path& outputDir,
     if (collectTimings) {
         std::printf(" + stage timings");
     }
+    if (memoryConfig.maxInFlightPixels > 0) {
+        std::printf(" (max in-flight %.1f MP%s)",
+                    static_cast<double>(memoryConfig.maxInFlightPixels) / 1000000.0,
+                    memoryConfig.maxInFlightFromEnv ? " via QR_SCAN_MAX_IN_FLIGHT_MPIX" : "");
+    }
+    if (memoryConfig.resetPipelinePixels > 0) {
+        std::printf(" (reset pipeline >= %.1f MP%s)",
+                    static_cast<double>(memoryConfig.resetPipelinePixels) / 1000000.0,
+                    memoryConfig.resetPipelineFromEnv ? " via QR_SCAN_RESET_PIPELINE_MPIX" : "");
+    }
     std::printf("\n");
 
     auto globalStart = std::chrono::steady_clock::now();
 
-    std::vector<Record> records(images.size());
     std::atomic<std::size_t> nextIndex{0};
     std::atomic<int32_t> completed{0};
+    std::atomic<int32_t> writeFailures{0};
     std::mutex printMutex;
+    std::mutex ioMutex;
     std::vector<std::thread> workers;
     workers.reserve(static_cast<std::size_t>(numThreads));
 
-    for (int32_t workerIdx = 0; workerIdx < numThreads; workerIdx++) {
-        workers.emplace_back([&]() {
-            Pipeline pipe;
-            for (;;) {
-                std::size_t index = nextIndex.fetch_add(1);
-                if (index >= images.size())
-                    break;
+    auto shouldResetPipeline = [&](std::size_t index) {
+        return memoryConfig.resetPipelinePixels > 0 &&
+               jobs[index].pixels() >= memoryConfig.resetPipelinePixels;
+    };
 
-                processOne(pipe, images[index], inputDir, records[index],
-                           collectTimings);
+    auto printProgress = [&]() {
+        int32_t done = completed.fetch_add(1) + 1;
+        if (done % 50 == 0 || done == static_cast<int32_t>(images.size())) {
+            std::lock_guard<std::mutex> lock(printMutex);
+            std::printf("[%d/%zu] processed\n", done, images.size());
+        }
+    };
 
-                int32_t done = completed.fetch_add(1) + 1;
-                if (done % 50 == 0 ||
-                    done == static_cast<int32_t>(images.size())) {
-                    std::lock_guard<std::mutex> lock(printMutex);
-                    std::printf("[%d/%zu] processed\n", done, images.size());
+    std::vector<Record> records;
+    if (collectTimings) {
+        records.resize(images.size());
+        for (int32_t workerIdx = 0; workerIdx < numThreads; workerIdx++) {
+            workers.emplace_back([&]() {
+                auto pipe = std::make_unique<Pipeline>();
+                for (;;) {
+                    std::size_t index = nextIndex.fetch_add(1);
+                    if (index >= images.size())
+                        break;
+
+                    {
+                        auto lease = pixelBudget.acquire(jobs[index].pixels());
+                        processOne(*pipe, jobs[index].path, inputDir,
+                                   records[index], collectTimings);
+                        if (shouldResetPipeline(index))
+                            pipe = std::make_unique<Pipeline>();
+                    }
+                    printProgress();
                 }
-            }
-        });
+            });
+        }
+    } else {
+        for (int32_t workerIdx = 0; workerIdx < numThreads; workerIdx++) {
+            workers.emplace_back([&]() {
+                auto pipe = std::make_unique<Pipeline>();
+                for (;;) {
+                    std::size_t index = nextIndex.fetch_add(1);
+                    if (index >= images.size())
+                        break;
+
+                    Record rec;
+                    {
+                        auto lease = pixelBudget.acquire(jobs[index].pixels());
+                        processOne(*pipe, jobs[index].path, inputDir, rec,
+                                   collectTimings);
+                        if (shouldResetPipeline(index))
+                            pipe = std::make_unique<Pipeline>();
+                    }
+                    if (!writeRecordFile(inputDir, outputDir, jobs[index].path,
+                                         rec, &ioMutex)) {
+                        writeFailures.fetch_add(1);
+                    }
+                    printProgress();
+                }
+            });
+        }
     }
 
     for (std::thread& worker : workers)
         worker.join();
 
-    // Write files after processing so the records array remains in sorted
-    // image order even when processing finishes out-of-order.
-    fs::path summaryFile = outputDir / "summary.json";
-    std::ofstream summary(summaryFile);
-    if (!summary.is_open()) {
-        std::fprintf(stderr, "Cannot open summary file %s\n",
-                     summaryFile.string().c_str());
+    if (writeFailures.load() > 0)
+        return 2;
+
+    int64_t totalMs = 0;
+    if (collectTimings) {
+        // Write files after processing so the records array remains in sorted
+        // image order even when processing finishes out-of-order.
+        std::ofstream summary;
+        if (!beginSummary(summary, inputDir, outputDir, images.size(), warmupN))
+            return 2;
+
+        bool firstRec = true;
+        for (std::size_t i = 0; i < images.size(); i++) {
+            if (!writeRecordFile(inputDir, outputDir, images[i], records[i]))
+                return 2;
+
+            // Append to summary.json's records array.
+            if (firstRec) {
+                firstRec = false;
+                summary << " ";
+            } else {
+                summary << ", ";
+            }
+            summary << recordJson(records[i]);
+        }
+        auto globalEnd = std::chrono::steady_clock::now();
+        totalMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                globalEnd - globalStart)
+                .count();
+        endSummary(summary, totalMs);
+    } else if (!writeSummaryFromRecordFiles(inputDir, outputDir, images,
+                                            warmupN, globalStart, totalMs)) {
         return 2;
     }
-    summary << "{\n";
-    summary << "  \"dataset_root\" : \"" << JsonWriter::escape(inputDir.string()) << "\",\n";
-    summary << "  \"output_root\" : \"" << JsonWriter::escape(outputDir.string()) << "\",\n";
-    summary << "  \"port_version\" : \"qr-boofcv-cpp-9b\",\n";
-    summary << "  \"image_count\" : " << JsonWriter::num(static_cast<int32_t>(images.size())) << ",\n";
-    summary << "  \"warmup_images\" : " << JsonWriter::num(warmupN) << ",\n";
-    summary << "  \"records\" : [";
 
-    bool firstRec = true;
-    for (std::size_t i = 0; i < images.size(); i++) {
-        // Write per-image JSON file mirroring dataset structure.
-        fs::path rel = fs::relative(images[i], inputDir);
-        fs::path outFile = outputDir / rel;
-        outFile.replace_extension(".json");
-        fs::create_directories(outFile.parent_path());
-        std::ofstream f(outFile);
-        if (f.is_open()) {
-            f << recordJson(records[i]);
-        }
-
-        // Append to summary.json's records array.
-        if (firstRec) {
-            firstRec = false;
-            summary << " ";
-        } else {
-            summary << ", ";
-        }
-        summary << recordJson(records[i]);
-    }
-    summary << " ],\n";
-    auto globalEnd = std::chrono::steady_clock::now();
-    int64_t totalMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            globalEnd - globalStart)
-            .count();
-    summary << "  \"total_elapsed_ms\" : " << JsonWriter::num(totalMs) << "\n";
-    summary << "}\n";
-    summary.close();
-
+    fs::path summaryFile = outputDir / "summary.json";
     std::printf("Wrote %s (%zu records, %lld ms total)\n",
                 summaryFile.string().c_str(), images.size(),
                 static_cast<long long>(totalMs));
@@ -1385,6 +1777,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "  qr_scan <input_dir> <output_dir>          batch\n");
         std::fprintf(stderr, "      env: QR_SCAN_THREADS=N pins batch worker count\n");
         std::fprintf(stderr, "      env: QR_SCAN_STAGE_TIMINGS=1 writes stage_timings.json\n");
+        std::fprintf(stderr, "      env: QR_SCAN_MAX_IN_FLIGHT_MPIX=N caps large-image concurrency\n");
+        std::fprintf(stderr, "      env: QR_SCAN_RESET_PIPELINE_MPIX=N releases scratch after large images\n");
         std::fprintf(stderr, "  qr_scan <single_image.png>                single image\n");
         std::fprintf(stderr, "  qr_scan --dump-stages <image> <outDir>    stage dumps\n");
         std::fprintf(stderr, "  qr_scan --profile <image> <iters>         loop image for profiling\n");

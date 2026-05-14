@@ -98,8 +98,9 @@ BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
 
 Expected: the script prints `PASS: no new regressions` and aggregate decode
 rate remains at 74.40% against the locked baseline. Batch output should also
-show `OpenCV threads=1, capped for image-parallel batch` unless
-`QR_SCAN_OPENCV_THREADS` or `BOOFCV_QR_OPENCV_THREADS` is set.
+show `OpenCV threads=1, capped for image-parallel batch`, `max in-flight
+64.0 MP`, and `reset pipeline >= 8.0 MP` unless the corresponding environment
+override is set.
 
 The regression driver also writes an image-level taxonomy to
 `tests/regression/baseline_cpp/failure_taxonomy.json`. If a category drifts out
@@ -116,3 +117,16 @@ PYTHONDONTWRITEBYTECODE=1 python3 tests/regression/failure_taxonomy.py \
   --output /tmp/qr_failure_taxonomy.json \
   --limit 12
 ```
+
+## Benchmark Reproducibility and Memory Report
+
+```bash
+BOOFCV_QR_DATASET_ROOT=/path/to/boofcv-qrcodes/qrcodes \
+  QR_BENCH_CPP_THREADS=8 \
+  tools/benchmark_compare.sh /tmp/boofcv_qr_benchmark
+```
+
+Expected: `report.md` and `report.json` are written with host/tool versions,
+commands, C++ serial/batch RSS, macOS memory footprint, regression score, and
+Java reference timing/RSS when Java is available. Use `QR_BENCH_SKIP_JAVA=1`
+for a C++-only smoke.
