@@ -1,5 +1,37 @@
 # ChangeLog
 
+## 2026-05-14 - perf: avoid accepted-contour copy in polygon detection
+
+Closed issue #12.
+
+### Changed
+
+- [src/polygon/detect_polygon_from_contour.cpp](src/polygon/detect_polygon_from_contour.cpp):
+  move the accepted contour into `DetectedInfo` instead of copying its point
+  vector after validation. The source contour is no longer read in that loop,
+  so this preserves detector output while removing one allocation-heavy copy on
+  the contour/polygon hot path.
+
+### Measurements
+
+On the BoofCV `qrcodes_v3` dataset with `QR_SCAN_THREADS=8`, the stage-timing
+run moved `contour_polygon` from **16.432 ms/image** to **16.259 ms/image**
+(-1.05%). `pipeline_total` moved from **25.136 ms/image** to
+**25.061 ms/image**. The standard C++ benchmark report measured batch runtime
+at **2939 ms** / **3.02 s** with decode unchanged at **936 / 1258**
+(**74.40%**).
+
+### Verification
+
+- `cmake --build build --target qr_scan boofcv_qr_tests -- -j` -> PASS.
+- `ctest --test-dir build --output-on-failure` -> 436/436 PASS.
+- `QR_SCAN_THREADS=8 build/qr_scan --stage-timings ... /tmp/qr_stage_issue12_after_move`
+  -> PASS.
+- `BOOFCV_QR_DATASET_ROOT=... QR_SCAN_THREADS=8 bash tools/cli/run_regression.sh`
+  -> PASS, aggregate decode rate 74.40%.
+- `BOOFCV_QR_DATASET_ROOT=... tools/benchmark_compare.sh --cpp-only --skip-build /tmp/qr_bench_issue12_after`
+  -> PASS.
+
 ## 2026-05-14 — tooling: benchmark run flags and report compare mode
 
 Closed issue #11.

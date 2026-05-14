@@ -1,5 +1,43 @@
 # ResearchLog
 
+## 2026-05-14 - Contour ownership copy is visible but not dominant
+
+### Finding
+
+The stage profiler still points at `contour_polygon` as the largest cost center:
+about two thirds of per-image time on the BoofCV dataset timing run. One
+avoidable cost was that each accepted polygon copied its materialized external
+contour into `DetectedInfo`, even though the source contour is not used after
+the save step.
+
+Moving the contour into `DetectedInfo` keeps the same retained result data but
+avoids duplicating the contour point vector for accepted candidates. The win is
+real but small, which means most remaining contour time is in candidate
+generation, split/merge fitting, edge scoring, and contour labeling rather than
+this final storage step.
+
+### Measurement
+
+BoofCV `qrcodes_v3`, Apple Silicon, `QR_SCAN_THREADS=8`:
+
+| stage | before | after | delta |
+|---|---:|---:|---:|
+| pipeline_total | 25.136 ms/image | 25.061 ms/image | -0.30% |
+| contour_polygon | 16.432 ms/image | 16.259 ms/image | -1.05% |
+| finder_total | 16.772 ms/image | 16.599 ms/image | -1.04% |
+| binarization | 7.393 ms/image | 7.499 ms/image | +1.43% |
+
+Regression stayed at **936 / 1258** decoded (**74.40%**). The end-to-end
+C++-only benchmark run measured `cpp_batch` at **2939 ms** / **3.02 s** with
+the same decode rate.
+
+### Consequence
+
+The next contour work should target earlier loops: contour materialization,
+split/merge candidate fitting, and edge-intensity scoring. The final result
+copy was worth removing, but it is not the main reason `contour_polygon`
+dominates.
+
 ## 2026-05-14 — Benchmark reports are now diffable
 
 ### Finding

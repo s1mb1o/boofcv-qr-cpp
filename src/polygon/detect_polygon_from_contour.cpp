@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 namespace boofcv_qr {
 
@@ -505,7 +506,7 @@ void DetectPolygonFromContour::findCandidateShapes(const cv::Mat& /*gray*/) {
         info.external = true;
         info.edgeInside = edgeInside;
         info.edgeOutside = edgeOutside;
-        info.contour = c;
+        info.contour = std::move(c);
         info.polygon = polygonWork_;
         info.polygonDistorted = polygonDistorted_;
         info.borderCorners = borderCorners_;
